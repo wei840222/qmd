@@ -554,16 +554,23 @@ QMD stays local by default. To use remote embeddings or remote LLM models, confi
 
 ```yaml
 models:
-  embed: openai:text-embedding-3-small      # or openai:text-embedding-3-large
+  embed: openai:text-embedding-3-small        # or openai:text-embedding-3-large
   embed_base_url: https://bifrost.home-infra.weii.cloud/v1 # Optional proxy / self-hosted endpoint
-  embed_dimension: 1536                     # Optional: explicit vector dimension override
+  embed_dimension: 1536                       # Optional: explicit vector dimension override
 
-  # Optional: Remote LLM Query Expansion & Reranking
-  rerank_api_url: https://bifrost.home-infra.weii.cloud/v1
-  rerank_api_model: bge-reranker-v2-m3
+  # Optional: Remote LLM Query Expansion
   expand_api_url: https://bifrost.home-infra.weii.cloud/v1
   expand_api_model: qwen3-7b-instruct
+
+  # Optional: Remote Reranking (supports both /v1/rerank and /v1/chat/completions LLM endpoints)
+  rerank_api_url: https://bifrost.home-infra.weii.cloud/v1
+  rerank_api_model: bge-reranker-v2-m3
+
+# Optional: Custom User Dictionary for CJK segmentation
+dictionary: ~/.config/qmd/dictionary.txt
 ```
+
+> **Reranker Endpoints:** `rerank_api_url` supports both dedicated Cross-Encoder endpoints (`/v1/rerank`) and general LLM endpoints (`/v1/chat/completions`). If pointing to a chat completions API or if `/v1/rerank` returns 404, QMD automatically uses structured LLM chat reranking.
 
 `qmd init` writes local defaults only; it does not prompt for or generate a remote embedding configuration. To use a remote endpoint, edit `index.yml` manually, set credentials (if required), and complete preflight below.
 
