@@ -154,6 +154,11 @@ hyde: hypothetical passage answer (50-100 words)`;
       return { results: [], model };
     }
 
+    // If explicit chat completions URL is configured for rerank, route directly to LLM chat rerank
+    if (this.rerankApiUrl!.endsWith("/chat/completions")) {
+      return this.rerankViaChatCompletions(query, documents, model);
+    }
+
     try {
       const url = this.rerankApiUrl!.endsWith("/rerank")
         ? this.rerankApiUrl!
@@ -173,6 +178,11 @@ hyde: hypothetical passage answer (50-100 words)`;
           documents: docsPayload,
         }),
       });
+
+      // If /rerank returns 404 (endpoint not supported), fallback to LLM Chat Reranking
+      if (res.status === 404) {
+        return this.rerankViaChatCompletions(query, documents, model);
+      }
 
       if (!res.ok) {
         this.rerankCircuitBroken = true;
@@ -199,6 +209,85 @@ hyde: hypothetical passage answer (50-100 words)`;
       this.rerankCircuitBroken = true;
       throw err;
     }
+  }
+
+  /**
+   * Rerank documents via LLM Chat Completions API (/v1/chat/completions).
+   * Useful when server has no dedicated /v1/rerank endpoint (e.g. standard LLM endpoint).
+   */
+  private async rerankViaChatCompletions(
+    query: string,
+    documents: RerankDocument[],
+    model: string,
+  ): Promise<RerankResult> {
+    const systemPrompt = `You are a document relevance reranker. Rank each candidate document by relevance to the search query.
+Output ONLY a JSON object containing a "results" array. Each item must have:
+- "index": integer (0-based candidate index)
+- "score": number between 0.0 (irrelevant) and 1.0 (highly relevant)`;
+
+    const docItems = documents.map((d, i) => {
+      const text = typeof d === "string" ? d : d.text;
+      return `[Candidate ${i}]\n${text.slice(0, 1000)}`;
+    }).join("\n\n");
+
+    const userPrompt = `Query: ${query}\n\nCandidate Documents:\n${docItems}`;
+
+    const url = this.rerankApiUrl!.includes("/chat/completions")
+      ? this.rerankApiUrl!
+      : `${this.rerankApiUrl}/chat/completions`;
+
+    const res = await this.fetchImpl(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(this.rerankApiKey ? { authorization: `Bearer ${this.rerankApiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0.1,
+      }),
+    });
+
+    if (!res.ok) {
+      this.rerankCircuitBroken = true;
+      throw new Error(`LLM Chat Rerank API returned status ${res.status}`);
+    }
+
+    const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const rawContent = data.choices?.[0]?.message?.content ?? "";
+
+    const formattedResults: RerankDocumentResult[] = [];
+    try {
+      const jsonMatch = /\{[\s\S]*\}/.exec(rawContent);
+      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : rawContent) as {
+        results?: Array<{ index: number; score: number }>;
+      };
+
+      const resultsList = parsed.results ?? [];
+      for (const item of resultsList) {
+        if (typeof item.index === "number" && item.index >= 0 && item.index < documents.length) {
+          const doc = documents[item.index];
+          const file = typeof doc === "string" ? doc : doc?.file ?? `doc_${item.index}`;
+          formattedResults.push({
+            file,
+            score: normalizeRerankScore(Number(item.score) || 0),
+            index: item.index,
+          });
+        }
+      }
+    } catch {
+      // If parsing fails, fall back to sequential scoring
+      documents.forEach((d, i) => {
+        const file = typeof d === "string" ? d : d.file;
+        formattedResults.push({ file, score: 0.5, index: i });
+      });
+    }
+
+    return { results: formattedResults, model };
   }
 
   async dispose(): Promise<void> {}

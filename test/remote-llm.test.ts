@@ -105,6 +105,38 @@ describe("TODO 1: RemoteLLM & HybridLLM Integration", () => {
       expect(res.results[2]?.score).toBe(0.85);
     });
 
+    test("rerank falls back to LLM chat completions reranking on 404 or when /chat/completions is configured", async () => {
+      mockResponseBody = {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                results: [
+                  { index: 0, score: 0.92 },
+                  { index: 1, score: 0.15 },
+                ],
+              }),
+            },
+          },
+        ],
+      };
+
+      const llm = new RemoteLLM({
+        rerankApiUrl: `http://127.0.0.1:${serverPort}/v1/chat/completions`,
+        rerankApiModel: "gpt-4o-mini",
+      });
+
+      const docs: RerankDocument[] = [
+        { file: "doc1.md", text: "First candidate text" },
+        { file: "doc2.md", text: "Second candidate text" },
+      ];
+
+      const res = await llm.rerank("connection pool timeout", docs);
+      expect(res.results).toHaveLength(2);
+      expect(res.results[0]).toEqual({ file: "doc1.md", score: 0.92, index: 0 });
+      expect(res.results[1]).toEqual({ file: "doc2.md", score: 0.15, index: 1 });
+    });
+
     test("circuit breaker triggers when remote API fails", async () => {
       mockResponseStatus = 500;
 
