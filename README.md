@@ -616,8 +616,8 @@ reports the reason and remediation.
 
 Query expansion uses one shared `auto | force | skip` policy across CLI, SDK, and
 MCP. Precedence is: explicit skip or `lex:` skips expansion; explicit force,
-`expand:`, or `--expand` forces it; otherwise `auto` skips CJK and strong lexical
-signals, and expands remaining queries. Explicit force fails if the expansion
+`expand:`, or `--expand` forces it; under `auto`, CJK queries skip local model expansion (0ms bypass) but automatically expand when a remote LLM (`generate_api_url`) is configured; strong lexical
+signals skip expansion, and remaining queries expand. Explicit force fails if the expansion
 model is unavailable rather than silently changing behavior.
 
 ## Installation

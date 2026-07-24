@@ -158,6 +158,7 @@ flowchart TD
 ```
 
 - **Per-operation Routing (`HybridLLM`)**: Operation routing for query expansion and reranking is completely decoupled. Callers can specify remote endpoints for expansion, reranking, or both while keeping embedding local.
+- **CJK Auto-Expansion with Remote LLM**: Under `auto` mode, CJK queries skip local 1.7B expansion (0ms bypass) to avoid low-quality English translation output, but automatically expand when a remote LLM (`generate_api_url`) is configured.
 - **Graceful Local Fallback**: When remote endpoints emit errors or fail network connections, per-endpoint circuit breakers trip and operations gracefully fall back to local `LlamaCpp` models without interrupting search queries.
 - **Dual Reranking Support**: `RemoteLLM` supports both dedicated Cross-Encoder endpoints (`/v1/rerank`) and general LLM endpoints (`/v1/chat/completions`). When `/v1/rerank` receives an HTTP 404 response, it automatically switches to structured LLM Chat Completions reranking.
 - **Sigmoid Score Normalization**: Reranker outputs emitting raw log-odds scores are automatically normalized using sigmoid $\sigma(x) = \frac{1}{1 + e^{-x}}$ to standard $0 \dots 1$ bounds for rank fusion.
