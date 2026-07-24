@@ -1,6 +1,7 @@
 {
   "name": "@tobilu/qmd",
   "version": "2.6.3",
+  "packageManager": "pnpm@11.15.1",
   "description": "Query Markup Documents - On-device hybrid search for markdown files with BM25, vector search, and LLM reranking",
   "type": "module",
   "main": "dist/index.js",
@@ -16,13 +17,17 @@
   },
   "files": [
     "bin/",
+    "data/",
     "dist/",
     "skills/",
     "scripts/build.mjs",
     "scripts/check-package-grammars.mjs",
+    "scripts/build-zh-tw-dictionary.mjs",
     "scripts/package-smoke.mjs",
+    "scripts/refresh-zhtw-candidates.mjs",
     "scripts/test-all.mjs",
     "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
     "CHANGELOG.md"
   ],
   "scripts": {
@@ -30,11 +35,15 @@
     "build": "node scripts/build.mjs",
     "test": "node scripts/test-all.mjs",
     "test:types": "node ./node_modules/typescript/bin/tsc -p tsconfig.build.json --noEmit",
-    "test:node": "node ./node_modules/vitest/vitest.mjs run --reporter=verbose --testTimeout 60000",
-    "test:bun": "bun test --timeout 60000 --preload ./src/test-preload.ts",
+    "test:node": "bun scripts/test-runtime.mjs node",
+    "test:bun": "bun scripts/test-runtime.mjs bun",
+    "test:models:node": "bun scripts/test-runtime.mjs node --models-only",
+    "test:models:bun": "bun scripts/test-runtime.mjs bun --models-only",
     "test:unit": "CI=true node ./node_modules/vitest/vitest.mjs run --reporter=verbose --testTimeout 60000 test/ && CI=true bun test --timeout 60000 --preload ./src/test-preload.ts test/",
+    "test:quality": "node ./node_modules/vitest/vitest.mjs run --reporter=verbose test/eval-cjk.test.ts",
     "test:package": "node scripts/package-smoke.mjs",
     "qmd": "tsx src/cli/qmd.ts",
+    "bench": "bun src/cli/qmd.ts bench",
     "index": "tsx src/cli/qmd.ts index",
     "vector": "tsx src/cli/qmd.ts vector",
     "search": "tsx src/cli/qmd.ts search",
@@ -57,10 +66,11 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
+    "@node-rs/jieba": "2.0.1",
     "better-sqlite3": "12.10.0",
     "fast-glob": "3.3.3",
-    "node-llama-cpp": "3.18.1",
-    "picomatch": "4.0.4",
+    "node-llama-cpp": "3.19.1",
+    "picomatch": "4.0.5",
     "sqlite-vec": "0.1.9",
     "tree-sitter-go": "0.25.0",
     "tree-sitter-python": "0.25.0",
@@ -80,19 +90,20 @@
   "devDependencies": {
     "@types/better-sqlite3": "7.6.13",
     "tsx": "4.21.0",
-    "vitest": "3.2.4"
+    "vitest": "3.2.6"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "better-sqlite3",
-      "esbuild",
-      "node-llama-cpp",
-      "tree-sitter-go",
-      "tree-sitter-javascript",
-      "tree-sitter-python",
-      "tree-sitter-rust",
-      "tree-sitter-typescript"
-    ]
+  "overrides": {
+    "@hono/node-server": "1.19.13",
+    "ajv": "8.18.0",
+    "fast-uri": "3.1.4",
+    "hono": "4.12.25",
+    "path-to-regexp": "8.4.0",
+    "postcss": "8.5.12",
+    "qs": "6.15.3",
+    "rollup": "4.59.0",
+    "simple-git": "3.36.0",
+    "tar": "7.5.19",
+    "vite": "7.3.5"
   },
   "peerDependencies": {
     "typescript": "^5.9.3"
