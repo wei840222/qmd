@@ -57,9 +57,6 @@ export interface ModelsConfig {
   generate_api_url?: string;
   generate_api_model?: string;
   generate_api_key?: string;
-  expand_api_url?: string;
-  expand_api_model?: string;
-  expand_api_key?: string;
   rerank_api_url?: string;
   rerank_api_model?: string;
   rerank_api_key?: string;

@@ -16,9 +16,6 @@ export interface RemoteLLMOptions {
   generateApiUrl?: string;
   generateApiModel?: string;
   generateApiKey?: string;
-  expandApiUrl?: string;
-  expandApiModel?: string;
-  expandApiKey?: string;
   rerankApiUrl?: string;
   rerankApiModel?: string;
   rerankApiKey?: string;
@@ -39,26 +36,22 @@ function normalizeRerankScore(score: number): number {
 }
 
 export class RemoteLLM implements LLM {
-  private readonly expandApiUrl?: string;
-  private readonly expandApiModel?: string;
-  private readonly expandApiKey?: string;
+  private readonly generateApiUrl?: string;
+  private readonly generateApiModel?: string;
+  private readonly generateApiKey?: string;
   private readonly rerankApiUrl?: string;
   private readonly rerankApiModel?: string;
   private readonly rerankApiKey?: string;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly timeoutMs: number;
 
-  private expandCircuitBroken = false;
+  private generateCircuitBroken = false;
   private rerankCircuitBroken = false;
 
   constructor(options: RemoteLLMOptions) {
-    const rawExpandUrl = options.generateApiUrl ?? options.expandApiUrl;
-    const rawExpandModel = options.generateApiModel ?? options.expandApiModel;
-    const rawExpandKey = options.generateApiKey ?? options.expandApiKey;
-
-    this.expandApiUrl = rawExpandUrl?.trim().replace(/\/+$/, "");
-    this.expandApiModel = rawExpandModel?.trim();
-    this.expandApiKey = rawExpandKey?.trim();
+    this.generateApiUrl = options.generateApiUrl?.trim().replace(/\/+$/, "");
+    this.generateApiModel = options.generateApiModel?.trim();
+    this.generateApiKey = options.generateApiKey?.trim();
     this.rerankApiUrl = options.rerankApiUrl?.trim().replace(/\/+$/, "");
     this.rerankApiModel = options.rerankApiModel?.trim();
     this.rerankApiKey = options.rerankApiKey?.trim();
@@ -67,7 +60,7 @@ export class RemoteLLM implements LLM {
   }
 
   get supportsExpand(): boolean {
-    return Boolean(this.expandApiUrl && this.expandApiModel && !this.expandCircuitBroken);
+    return Boolean(this.generateApiUrl && this.generateApiModel && !this.generateCircuitBroken);
   }
 
   get supportsRerank(): boolean {
@@ -102,18 +95,18 @@ hyde: hypothetical passage answer (50-100 words)`;
       : `Query: ${query}`;
 
     try {
-      const url = this.expandApiUrl!.endsWith("/chat/completions")
-        ? this.expandApiUrl!
-        : `${this.expandApiUrl}/chat/completions`;
+      const url = this.generateApiUrl!.endsWith("/chat/completions")
+        ? this.generateApiUrl!
+        : `${this.generateApiUrl}/chat/completions`;
 
       const res = await this.fetchImpl(url, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          ...(this.expandApiKey ? { authorization: `Bearer ${this.expandApiKey}` } : {}),
+          ...(this.generateApiKey ? { authorization: `Bearer ${this.generateApiKey}` } : {}),
         },
         body: JSON.stringify({
-          model: this.expandApiModel,
+          model: this.generateApiModel,
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: userPrompt },
@@ -123,7 +116,7 @@ hyde: hypothetical passage answer (50-100 words)`;
       });
 
       if (!res.ok) {
-        this.expandCircuitBroken = true;
+        this.generateCircuitBroken = true;
         throw new Error(`Remote expansion API returned status ${res.status}`);
       }
 
@@ -146,7 +139,7 @@ hyde: hypothetical passage answer (50-100 words)`;
 
       return results;
     } catch (err) {
-      this.expandCircuitBroken = true;
+      this.generateCircuitBroken = true;
       throw err;
     }
   }

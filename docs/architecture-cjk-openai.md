@@ -146,7 +146,7 @@ flowchart TD
     H -->|No| L0[LlamaCpp local models only]
     H -->|Yes| EX[expandQuery] & RK[rerank]
 
-    EX --> EXQ{expand_api_url configured?}
+    EX --> EXQ{generate_api_url configured?}
     EXQ -->|Yes| R1[RemoteLLM -> POST /v1/chat/completions]
     EXQ -->|No / Error| L1[LlamaCpp local expansion]
 
