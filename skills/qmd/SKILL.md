@@ -265,16 +265,19 @@ models:
   embed_base_url: https://bifrost.home-infra.weii.cloud/v1 # Optional proxy / self-hosted endpoint
   embed_dimension: 1536                       # Optional: explicit vector dimension override
 
-  # Optional: Remote LLM Query Expansion (generate) & Reranking (rerank)
+  # Optional: Remote LLM Query Expansion (generate)
   generate_api_url: https://bifrost.home-infra.weii.cloud/v1
   generate_api_model: qwen3-7b-instruct
 
+  # Optional: Remote Reranking (supports both /v1/rerank and /v1/chat/completions LLM endpoints)
   rerank_api_url: https://bifrost.home-infra.weii.cloud/v1
-  rerank_api_model: bge-reranker-v2-m3
+  rerank_api_model: bge-reranker-v2-m3        # or gpt-4o-mini / qwen3-7b-instruct
 
 # Optional: Custom User Dictionary for CJK segmentation
 dictionary: ~/.config/qmd/dictionary.txt
 ```
+
+> **Reranker Endpoints:** `rerank_api_url` supports both Cross-Encoder reranker endpoints (`/v1/rerank`) and general LLM chat endpoints (`/v1/chat/completions`). If pointing to a chat completions endpoint or if `/v1/rerank` returns HTTP 404, QMD automatically uses structured LLM chat reranking.
 
 Health and diagnostics:
 
