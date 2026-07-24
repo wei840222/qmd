@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "baseline_id": "cjk-zh-tw-lexical-v1",
+  "fixture": "cjk-zh-tw.json",
+  "fixture_version": 2,
+  "corpus_sha256": "4083ad241d30e6582fd4c47581dcb2e71b41004d638e1c4a5c91c5a6ad3d5815",
+  "implementation_sha256": "53b5d826ac13bbca159099bd664eaf4f26ec9aae8d771ac3ce756c2b941957b3",
+  "scoring_schema": "qmd-cjk-lexical-rrf-v1",
+  "qmd_revision": {
+    "commit": "e428df76bc0274d9e93eb7ca3e95673315c42e90",
+    "worktree_dirty": true
+  },
+  "generated_at": "2026-07-23T19:31:13Z",
+  "runtime": {
+    "engine": "bun",
+    "bun": "1.3.14",
+    "node": "v24.18.0",
+    "platform": "Linux",
+    "arch": "x86_64"
+  },
+  "runs": {
+    "warmup": 5,
+    "measured": 50
+  },
+  "metrics": {
+    "recall_at_10": 0.84375,
+    "mrr_at_10": 0.828125,
+    "shared_character_false_positive_count": 1
+  },
+  "approval": {
+    "status": "candidate"
+  },
+  "latency_ms": {
+    "p50": 0.8334820000000036,
+    "p95": 1.1067860000000564,
+    "observation_only": true
+  },
+  "performance_observation": {
+    "measured_at": "2026-07-24T00:08:44Z",
+    "cold_rebuild_ms": 30.540026999999952,
+    "index_logical_payload_bytes": {
+      "char": 16024,
+      "word": 8208,
+      "bigram": 10277
+    },
+    "database_file_bytes": 327680,
+    "observation_only": true
+  },
+  "hybrid_observation": {
+    "runs": {
+      "warmup": 1,
+      "measured": 20
+    },
+    "latency_ms": {
+      "p50": 34.748279999999795,
+      "p95": 48.503311000000394
+    },
+    "observation_only": true
+  }
+}

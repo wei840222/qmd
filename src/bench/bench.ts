@@ -24,10 +24,11 @@ import {
   type HybridQueryResult,
   type ExpandedQuery,
 } from "../index.js";
+import { resolveFixtureQueries } from "./fixture.js";
 import { scoreResults } from "./score.js";
 import type {
   BenchmarkFixture,
-  BenchmarkQuery,
+  ResolvedBenchmarkQuery,
   BackendResult,
   QueryResult,
   BenchmarkResult,
@@ -35,7 +36,7 @@ import type {
 
 type Backend = {
   name: string;
-  run: (store: QMDStore, query: BenchmarkQuery, limit: number, collection?: string) => Promise<string[]>;
+  run: (store: QMDStore, query: ResolvedBenchmarkQuery, limit: number, collection?: string) => Promise<string[]>;
 };
 
 type ParsedStructuredQuery = {
@@ -167,7 +168,7 @@ const BACKENDS: Backend[] = [
 async function runQuery(
   store: QMDStore,
   backend: Backend,
-  query: BenchmarkQuery,
+  query: ResolvedBenchmarkQuery,
   collection?: string,
 ): Promise<BackendResult> {
   const limit = Math.max(query.expected_in_top_k, 10);
@@ -184,9 +185,13 @@ async function runQuery(
       recall_at_1: 0,
       recall_at_3: 0,
       recall_at_5: 0,
+      recall_at_10: 0,
       mrr: 0,
+      mrr_at_10: 0,
       f1: 0,
       hits_at_k: 0,
+      false_positive_count: 0,
+      false_positive_files: [],
       total_expected: query.expected_files.length,
       latency_ms: Date.now() - start,
       top_files: [],
@@ -196,7 +201,12 @@ async function runQuery(
   }
 
   const latency_ms = Date.now() - start;
-  const scores = scoreResults(resultFiles, query.expected_files, query.expected_in_top_k);
+  const scores = scoreResults(
+    resultFiles,
+    query.expected_files,
+    query.expected_in_top_k,
+    query.must_not_match_files,
+  );
 
   return {
     ...scores,
@@ -212,14 +222,14 @@ function formatTable(results: QueryResult[]): string {
   const num = (n: number) => n.toFixed(2).padStart(5);
 
   lines.push(
-    `${pad("Query", 25)} ${pad("Backend", 8)} ${pad("P@k", 6)} ${pad("R@1", 6)} ${pad("R@3", 6)} ${pad("R@5", 6)} ${pad("MRR", 6)} ${pad("F1", 6)} ${pad("ms", 8)}`
+    `${pad("Query", 25)} ${pad("Backend", 8)} ${pad("P@k", 6)} ${pad("R@1", 6)} ${pad("R@3", 6)} ${pad("R@5", 6)} ${pad("R@10", 6)} ${pad("MRR@10", 7)} ${pad("FP", 4)} ${pad("F1", 6)} ${pad("ms", 8)}`
   );
-  lines.push("-".repeat(88));
+  lines.push("-".repeat(108));
 
   for (const r of results) {
     for (const [backend, br] of Object.entries(r.backends)) {
       lines.push(
-        `${pad(r.id, 25)} ${pad(backend, 8)} ${num(br.precision_at_k)} ${num(br.recall_at_1)} ${num(br.recall_at_3)} ${num(br.recall_at_5)} ${num(br.mrr)} ${num(br.f1)} ${String(Math.round(br.latency_ms)).padStart(7)}ms`
+        `${pad(r.id, 25)} ${pad(backend, 8)} ${num(br.precision_at_k)} ${num(br.recall_at_1)} ${num(br.recall_at_3)} ${num(br.recall_at_5)} ${num(br.recall_at_10)} ${num(br.mrr_at_10)} ${String(br.false_positive_count).padStart(3)} ${num(br.f1)} ${String(Math.round(br.latency_ms)).padStart(7)}ms`
       );
     }
     lines.push("");
@@ -240,7 +250,8 @@ function computeSummary(results: QueryResult[]): BenchmarkResult["summary"] {
   }
 
   for (const name of Array.from(backendNames)) {
-    let totalP = 0, totalR = 0, totalR1 = 0, totalR3 = 0, totalR5 = 0, totalMrr = 0, totalF1 = 0, totalLat = 0, count = 0;
+    let totalP = 0, totalR = 0, totalR1 = 0, totalR3 = 0, totalR5 = 0, totalR10 = 0;
+    let totalMrr = 0, totalMrr10 = 0, totalFp = 0, totalF1 = 0, totalLat = 0, count = 0;
     for (const r of results) {
       const br = r.backends[name];
       if (!br) continue;
@@ -249,7 +260,10 @@ function computeSummary(results: QueryResult[]): BenchmarkResult["summary"] {
       totalR1 += br.recall_at_1;
       totalR3 += br.recall_at_3;
       totalR5 += br.recall_at_5;
+      totalR10 += br.recall_at_10;
       totalMrr += br.mrr;
+      totalMrr10 += br.mrr_at_10;
+      totalFp += br.false_positive_count;
       totalF1 += br.f1;
       totalLat += br.latency_ms;
       count++;
@@ -261,7 +275,10 @@ function computeSummary(results: QueryResult[]): BenchmarkResult["summary"] {
         avg_recall_at_1: totalR1 / count,
         avg_recall_at_3: totalR3 / count,
         avg_recall_at_5: totalR5 / count,
+        avg_recall_at_10: totalR10 / count,
         avg_mrr: totalMrr / count,
+        avg_mrr_at_10: totalMrr10 / count,
+        false_positive_count: totalFp,
         avg_f1: totalF1 / count,
         avg_latency_ms: totalLat / count,
       };
@@ -282,6 +299,7 @@ export async function runBenchmark(
   if (!fixture.queries || !Array.isArray(fixture.queries)) {
     throw new Error("Invalid fixture: missing 'queries' array");
   }
+  const queries = resolveFixtureQueries(fixture);
 
   // Open store
   const store = await createStore({
@@ -298,7 +316,7 @@ export async function runBenchmark(
 
   // Run queries
   const results: QueryResult[] = [];
-  for (const query of fixture.queries) {
+  for (const query of queries) {
     const backends: Record<string, BackendResult> = {};
 
     for (const backend of activeBackends) {
@@ -315,6 +333,7 @@ export async function runBenchmark(
       id: query.id,
       query: query.query,
       type: query.type,
+      ...(query.scenario_tags ? { scenario_tags: query.scenario_tags } : {}),
       backends,
     });
   }
@@ -342,7 +361,7 @@ export async function runBenchmark(
     const num = (n: number) => n.toFixed(3).padStart(6);
     for (const [name, s] of Object.entries(summary)) {
       console.log(
-        `  ${pad(name, 8)} P@k=${num(s.avg_precision)} R@1=${num(s.avg_recall_at_1)} R@3=${num(s.avg_recall_at_3)} R@5=${num(s.avg_recall_at_5)} MRR=${num(s.avg_mrr)} F1=${num(s.avg_f1)} Avg=${Math.round(s.avg_latency_ms)}ms`
+        `  ${pad(name, 8)} P@k=${num(s.avg_precision)} R@1=${num(s.avg_recall_at_1)} R@3=${num(s.avg_recall_at_3)} R@5=${num(s.avg_recall_at_5)} R@10=${num(s.avg_recall_at_10)} MRR@10=${num(s.avg_mrr_at_10)} FP=${s.false_positive_count} F1=${num(s.avg_f1)} Avg=${Math.round(s.avg_latency_ms)}ms`
       );
     }
   }

@@ -15,10 +15,23 @@ export interface BenchmarkQuery {
   type: "exact" | "semantic" | "topical" | "cross-domain" | "alias";
   /** Human-readable description of what this tests */
   description: string;
-  /** File paths (relative to collection) that should appear in results */
-  expected_files: string[];
+  /** Legacy file paths (relative to collection) that should appear in results */
+  expected_files?: string[];
+  /** Stable document IDs that should appear in results */
+  relevant_doc_ids?: string[];
+  /** Stable document IDs that must not appear in the top 10 results */
+  must_not_match_doc_ids?: string[];
+  /** Scenario labels used to group benchmark results */
+  scenario_tags?: string[];
   /** How many of expected_files should appear in top-k results */
   expected_in_top_k: number;
+}
+
+export interface BenchmarkDocument {
+  /** Stable identifier used by query relevance judgements */
+  id: string;
+  /** File path relative to the benchmark collection */
+  file: string;
 }
 
 export interface BenchmarkFixture {
@@ -28,8 +41,15 @@ export interface BenchmarkFixture {
   version: number;
   /** Optional collection to search within */
   collection?: string;
+  /** Stable document catalogue for version 2 relevance judgements */
+  documents?: BenchmarkDocument[];
   /** The test queries */
   queries: BenchmarkQuery[];
+}
+
+export interface ResolvedBenchmarkQuery extends Omit<BenchmarkQuery, "expected_files"> {
+  expected_files: string[];
+  must_not_match_files: string[];
 }
 
 export interface BackendResult {
@@ -43,12 +63,20 @@ export interface BackendResult {
   recall_at_3: number;
   /** Fraction of expected files found in the top 5 results */
   recall_at_5: number;
+  /** Fraction of expected files found in the top 10 results */
+  recall_at_10: number;
   /** Reciprocal rank of first relevant result (1/rank, 0 if not found) */
   mrr: number;
+  /** Reciprocal rank of first relevant result within the top 10 */
+  mrr_at_10: number;
   /** Harmonic mean of precision_at_k and recall */
   f1: number;
   /** Number of expected files found in top-k */
   hits_at_k: number;
+  /** Number of prohibited files found in the top 10 */
+  false_positive_count: number;
+  /** Prohibited files found in the top 10 */
+  false_positive_files: string[];
   /** Total expected files */
   total_expected: number;
   /** Wall-clock latency in milliseconds */
@@ -65,6 +93,7 @@ export interface QueryResult {
   id: string;
   query: string;
   type: string;
+  scenario_tags?: string[];
   backends: Record<string, BackendResult>;
 }
 
@@ -78,7 +107,10 @@ export interface BenchmarkResult {
     avg_recall_at_1: number;
     avg_recall_at_3: number;
     avg_recall_at_5: number;
+    avg_recall_at_10: number;
     avg_mrr: number;
+    avg_mrr_at_10: number;
+    false_positive_count: number;
     avg_f1: number;
     avg_latency_ms: number;
   }>;
