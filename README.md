@@ -557,6 +557,7 @@ QMD stays local by default. To use remote embeddings or remote LLM models, confi
 models:
   embed: openai:text-embedding-3-small      # or openai:text-embedding-3-large
   embed_base_url: https://bifrost.home-infra.weii.cloud/v1 # Optional proxy / self-hosted endpoint
+  embed_dimension: 1536                     # Optional: explicit vector dimension override
 
   # Optional: Remote LLM Query Expansion & Reranking
   rerank_api_url: https://bifrost.home-infra.weii.cloud/v1

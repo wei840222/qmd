@@ -206,8 +206,11 @@ function resolveSource(
       const models = requireRecord(config.models, "models");
       const hasEmbed = hasOwn(models, "embed");
       const hasEmbedBaseUrl = hasOwn(models, "embed_base_url");
+      const customDimension = hasOwn(models, "embed_dimension")
+        ? parseDimension(models.embed_dimension, "models.embed_dimension")
+        : undefined;
 
-      if (hasEmbed || hasEmbedBaseUrl) {
+      if (hasEmbed || hasEmbedBaseUrl || customDimension !== undefined) {
         const baseUrl = hasEmbedBaseUrl
           ? requireBaseUrl(models.embed_base_url, "models.embed_base_url")
           : DEFAULT_OPENAI_BASE_URL;
@@ -219,19 +222,20 @@ function resolveSource(
               ? embedValue.slice("openai:".length)
               : embedValue === "openai" ? OPENAI_EMBEDDING_MODEL : embedValue;
             const model = rawModel || OPENAI_EMBEDDING_MODEL;
-            const dimension = OPENAI_EMBEDDING_MODELS.get(model);
-            if (dimension === undefined && embedValue.startsWith("openai:")) {
+            const expectedDimension = OPENAI_EMBEDDING_MODELS.get(model);
+            if (expectedDimension === undefined && embedValue.startsWith("openai:")) {
               const supported = Array.from(OPENAI_EMBEDDING_MODELS.keys()).join(", ");
               throw new EmbeddingConfigError(
                 `models.embed OpenAI model must be one of: ${supported}. Got: ${model}`,
               );
             }
+            const dimension = customDimension ?? expectedDimension ?? OPENAI_EMBEDDING_DIMENSION;
 
             return {
               canonical: Object.freeze({
                 provider: "openai",
                 model: model as OpenAIEmbeddingModel,
-                dimension: dimension ?? OPENAI_EMBEDDING_DIMENSION,
+                dimension,
                 baseUrl,
               }),
               source: "legacy-models",
@@ -241,18 +245,18 @@ function resolveSource(
             canonical: Object.freeze({
               provider: "local",
               model: embedValue,
-              dimension: null,
+              dimension: customDimension ?? null,
             }),
             source: "legacy-models",
           };
         }
 
-        // Only embed_base_url is provided under models
+        // Only embed_base_url / embed_dimension is provided under models
         return {
           canonical: Object.freeze({
             provider: "openai",
             model: OPENAI_EMBEDDING_MODEL,
-            dimension: OPENAI_EMBEDDING_DIMENSION,
+            dimension: customDimension ?? OPENAI_EMBEDDING_DIMENSION,
             baseUrl,
           }),
           source: "legacy-models",

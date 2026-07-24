@@ -115,6 +115,26 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
         baseUrl: "https://bifrost.home-infra.weii.cloud/v1",
       });
     });
+
+    test("supports custom models.embed_dimension override", () => {
+      const resolved = resolveEmbeddingConfig({
+        config: {
+          models: {
+            embed: "openai:text-embedding-3-small",
+            embed_base_url: "https://bifrost.home-infra.weii.cloud/v1",
+            embed_dimension: 512,
+          },
+        },
+        defaultLocalModel,
+      });
+
+      expect(resolved.canonical).toEqual({
+        provider: "openai",
+        model: "text-embedding-3-small",
+        dimension: 512,
+        baseUrl: "https://bifrost.home-infra.weii.cloud/v1",
+      });
+    });
   });
 
   describe("TODO 4: optional OPENAI_API_KEY for custom endpoints", () => {
