@@ -17,7 +17,7 @@ texts/
 !skills/**/*.md
 !finetune/*.md
 !docs/*.md
-!tasks/*.md
+tasks/
 !test/eval-cjk-docs/*.md
 finetune/outputs/
 finetune/data/train/
