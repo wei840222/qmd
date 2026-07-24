@@ -558,19 +558,19 @@ models:
   embed_base_url: https://bifrost.home-infra.weii.cloud/v1 # Optional proxy / self-hosted endpoint
   embed_dimension: 1536                       # Optional: explicit vector dimension override
 
-  # Optional: Remote LLM Query Expansion (generate / expand)
-  generate_api_url: https://bifrost.home-infra.weii.cloud/v1
+  # Optional: Remote LLM Query Expansion (supports generate_url / generate_base_url / generate_api_url)
+  generate_url: https://bifrost.home-infra.weii.cloud/v1 # Base URL or full endpoint
   generate_api_model: qwen3-7b-instruct
 
-  # Optional: Remote Reranking (supports both /v1/rerank and /v1/chat/completions LLM endpoints)
-  rerank_api_url: https://bifrost.home-infra.weii.cloud/v1
+  # Optional: Remote Reranking (supports rerank_url / rerank_base_url / rerank_api_url)
+  rerank_url: https://bifrost.home-infra.weii.cloud/v1  # Supports both /v1/rerank and /v1/chat/completions LLM endpoints
   rerank_api_model: bge-reranker-v2-m3
 
 # Optional: Custom User Dictionary for CJK segmentation
 dictionary: ~/.config/qmd/dictionary.txt
 ```
 
-> **Reranker Endpoints:** `rerank_api_url` supports both dedicated Cross-Encoder endpoints (`/v1/rerank`) and general LLM endpoints (`/v1/chat/completions`). If pointing to a chat completions API or if `/v1/rerank` returns 404, QMD automatically uses structured LLM chat reranking.
+> **Smart URL Resolution & Reranker Endpoints:** Remote LLM URLs support `_url`, `_base_url`, and `_api_url` aliases. When given a Base URL (e.g. `https://.../v1`), QMD automatically appends `/chat/completions` or `/rerank`. If a full endpoint URL is provided, it is used directly. For reranking, QMD supports both dedicated Cross-Encoder endpoints (`/v1/rerank`) and general LLM endpoints (`/v1/chat/completions`).
 
 `qmd init` writes local defaults only; it does not prompt for or generate a remote embedding configuration. To use a remote endpoint, edit `index.yml` manually, set credentials (if required), and complete preflight below.
 

@@ -13,9 +13,13 @@ import type {
 } from "./llm.js";
 
 export interface RemoteLLMOptions {
+  generateUrl?: string;
+  generateBaseUrl?: string;
   generateApiUrl?: string;
   generateApiModel?: string;
   generateApiKey?: string;
+  rerankUrl?: string;
+  rerankBaseUrl?: string;
   rerankApiUrl?: string;
   rerankApiModel?: string;
   rerankApiKey?: string;
@@ -35,6 +39,20 @@ function normalizeRerankScore(score: number): number {
   return score;
 }
 
+export function resolveEndpointUrl(
+  rawUrl: string | undefined,
+  defaultEndpoint: "/chat/completions" | "/rerank",
+): string | undefined {
+  if (!rawUrl) return undefined;
+  const trimmed = rawUrl.trim().replace(/\/+$/, "");
+  if (!trimmed) return undefined;
+
+  if (trimmed.endsWith("/chat/completions") || trimmed.endsWith("/rerank")) {
+    return trimmed;
+  }
+  return `${trimmed}${defaultEndpoint}`;
+}
+
 export class RemoteLLM implements LLM {
   private readonly generateApiUrl?: string;
   private readonly generateApiModel?: string;
@@ -49,10 +67,13 @@ export class RemoteLLM implements LLM {
   private rerankCircuitBroken = false;
 
   constructor(options: RemoteLLMOptions) {
-    this.generateApiUrl = options.generateApiUrl?.trim().replace(/\/+$/, "");
+    const rawGenerateUrl = options.generateUrl ?? options.generateBaseUrl ?? options.generateApiUrl;
+    const rawRerankUrl = options.rerankUrl ?? options.rerankBaseUrl ?? options.rerankApiUrl;
+
+    this.generateApiUrl = resolveEndpointUrl(rawGenerateUrl, "/chat/completions");
     this.generateApiModel = options.generateApiModel?.trim();
     this.generateApiKey = options.generateApiKey?.trim();
-    this.rerankApiUrl = options.rerankApiUrl?.trim().replace(/\/+$/, "");
+    this.rerankApiUrl = resolveEndpointUrl(rawRerankUrl, "/rerank");
     this.rerankApiModel = options.rerankApiModel?.trim();
     this.rerankApiKey = options.rerankApiKey?.trim();
     this.fetchImpl = options.fetch ?? globalThis.fetch;

@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { RemoteLLM, sigmoid } from "../src/remote-llm.js";
+import { RemoteLLM, resolveEndpointUrl, sigmoid } from "../src/remote-llm.js";
 import { HybridLLM } from "../src/hybrid-llm.js";
 import type { LLM, Queryable, RerankDocument, RerankResult } from "../src/llm.js";
 import { resolveExpansionPolicy } from "../src/search/query-expansion.js";
@@ -42,11 +42,21 @@ describe("TODO 1: RemoteLLM & HybridLLM Integration", () => {
   });
 
   describe("RemoteLLM", () => {
-    test("supportsExpand and supportsRerank flags work correctly", () => {
+    test("supportsExpand and supportsRerank flags work correctly with URL aliases and smart endpoint resolution", () => {
+
+      // Smart resolution: Base URL gets default endpoint appended
+      expect(resolveEndpointUrl("http://127.0.0.1:8080/v1", "/chat/completions")).toBe("http://127.0.0.1:8080/v1/chat/completions");
+      expect(resolveEndpointUrl("http://127.0.0.1:8080/v1/", "/rerank")).toBe("http://127.0.0.1:8080/v1/rerank");
+
+      // Explicit endpoint URLs are preserved as-is
+      expect(resolveEndpointUrl("http://127.0.0.1:8080/v1/chat/completions", "/chat/completions")).toBe("http://127.0.0.1:8080/v1/chat/completions");
+      expect(resolveEndpointUrl("http://127.0.0.1:8080/v1/rerank", "/rerank")).toBe("http://127.0.0.1:8080/v1/rerank");
+
+      // Supports generate_url / generate_base_url / generate_api_url aliases
       const llm = new RemoteLLM({
-        generateApiUrl: `http://127.0.0.1:${serverPort}/v1/chat/completions`,
+        generateUrl: `http://127.0.0.1:${serverPort}/v1`,
         generateApiModel: "gpt-4o-mini",
-        rerankApiUrl: `http://127.0.0.1:${serverPort}/v1/rerank`,
+        rerankBaseUrl: `http://127.0.0.1:${serverPort}/v1`,
         rerankApiModel: "bge-reranker-v2-m3",
       });
 

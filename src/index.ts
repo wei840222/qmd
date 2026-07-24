@@ -99,6 +99,8 @@ import {
   writeCanonicalEmbeddingConfig,
 } from "./embedding/config.js";
 import { rebuildCjkLexicalIndex } from "./search/cjk-index.js";
+import { RemoteLLM } from "./remote-llm.js";
+import { HybridLLM } from "./hybrid-llm.js";
 import type { ExpansionMode } from "./search/query-expansion.js";
 import {
   createCollectionConfigSource,
@@ -482,7 +484,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
   }
   // Create a per-store LlamaCpp instance — lazy-loads models on first use,
   // auto-unloads after 5 min inactivity to free VRAM.
-  const llm = new LlamaCpp({
+  const localLlm = new LlamaCpp({
     embedModel: embedding.canonical.provider === "local"
       ? embedding.canonical.model
       : DEFAULT_EMBED_MODEL_URI,
@@ -491,11 +493,32 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     inactivityTimeoutMs: 5 * 60 * 1000,
     disposeModelsOnInactivity: true,
   });
+
+  const rawGenerateUrl = config?.models?.generate_url ?? config?.models?.generate_base_url ?? config?.models?.generate_api_url;
+  const rawRerankUrl = config?.models?.rerank_url ?? config?.models?.rerank_base_url ?? config?.models?.rerank_api_url;
+  const hasRemoteLLM = Boolean(rawGenerateUrl || rawRerankUrl);
+
+  const remoteLlm = hasRemoteLLM
+    ? new RemoteLLM({
+        generateUrl: config?.models?.generate_url,
+        generateBaseUrl: config?.models?.generate_base_url,
+        generateApiUrl: config?.models?.generate_api_url,
+        generateApiModel: config?.models?.generate_api_model,
+        generateApiKey: config?.models?.generate_api_key,
+        rerankUrl: config?.models?.rerank_url,
+        rerankBaseUrl: config?.models?.rerank_base_url,
+        rerankApiUrl: config?.models?.rerank_api_url,
+        rerankApiModel: config?.models?.rerank_api_model,
+        rerankApiKey: config?.models?.rerank_api_key,
+      })
+    : undefined;
+
+  const llm = remoteLlm ? new HybridLLM(localLlm, remoteLlm) : localLlm;
   internal.llm = llm;
   let closeEmbeddingResources: () => Promise<void>;
   let remoteKeyConfigured = false;
   if (embedding.canonical.provider === "local") {
-    const embeddingOwner = new LocalEmbeddingProviderOwner(llm, {
+    const embeddingOwner = new LocalEmbeddingProviderOwner(localLlm, {
       model: embedding.canonical.model,
       dimension: embedding.canonical.dimension ?? undefined,
     });
@@ -547,7 +570,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         await provider.close();
       } finally {
         try {
-          await waitForLLMSessionsToDrain(llm);
+          await waitForLLMSessionsToDrain(localLlm);
         } finally {
           await llm.dispose();
         }

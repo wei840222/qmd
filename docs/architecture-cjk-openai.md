@@ -146,11 +146,11 @@ flowchart TD
     H -->|No| L0[LlamaCpp local models only]
     H -->|Yes| EX[expandQuery] & RK[rerank]
 
-    EX --> EXQ{generate_api_url configured?}
+    EX --> EXQ{generate_url / _base_url / _api_url?}
     EXQ -->|Yes| R1[RemoteLLM -> POST /v1/chat/completions]
     EXQ -->|No / Error| L1[LlamaCpp local expansion]
 
-    RK --> RKQ{rerank_api_url configured?}
+    RK --> RKQ{rerank_url / _base_url / _api_url?}
     RKQ -->|Yes| R2Q{Endpoint type?}
     R2Q -->|/v1/rerank| R2[RemoteLLM -> POST /v1/rerank<br/>+ Sigmoid normalization]
     R2Q -->|/v1/chat/completions or 404| R3[RemoteLLM -> POST /v1/chat/completions<br/>+ Structured JSON LLM Reranking]
@@ -158,7 +158,8 @@ flowchart TD
 ```
 
 - **Per-operation Routing (`HybridLLM`)**: Operation routing for query expansion and reranking is completely decoupled. Callers can specify remote endpoints for expansion, reranking, or both while keeping embedding local.
-- **CJK Auto-Expansion with Remote LLM**: Under `auto` mode, CJK queries skip local 1.7B expansion (0ms bypass) to avoid low-quality English translation output, but automatically expand when a remote LLM (`generate_api_url`) is configured.
+- **Smart Endpoint & Alias Resolution**: Supports `_url`, `_base_url`, and `_api_url` aliases. Given a Base URL (e.g. `https://.../v1`), RemoteLLM automatically appends `/chat/completions` or `/rerank`. Explicit endpoint URLs (ending in `/chat/completions` or `/rerank`) are preserved as-is.
+- **CJK Auto-Expansion with Remote LLM**: Under `auto` mode, CJK queries skip local 1.7B expansion (0ms bypass) to avoid low-quality English translation output, but automatically expand when a remote LLM is configured.
 - **Graceful Local Fallback**: When remote endpoints emit errors or fail network connections, per-endpoint circuit breakers trip and operations gracefully fall back to local `LlamaCpp` models without interrupting search queries.
 - **Dual Reranking Support**: `RemoteLLM` supports both dedicated Cross-Encoder endpoints (`/v1/rerank`) and general LLM endpoints (`/v1/chat/completions`). When `/v1/rerank` receives an HTTP 404 response, it automatically switches to structured LLM Chat Completions reranking.
 - **Sigmoid Score Normalization**: Reranker outputs emitting raw log-odds scores are automatically normalized using sigmoid $\sigma(x) = \frac{1}{1 + e^{-x}}$ to standard $0 \dots 1$ bounds for rank fusion.
