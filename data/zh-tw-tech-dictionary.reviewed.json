@@ -1,0 +1,614 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "2e0f4e4912a8ffdacf7fa3a155cb20c29cba043b",
+  "reviews": [
+    {
+      "source": {
+        "from": "內存",
+        "to": [
+          "記憶體"
+        ],
+        "domain": "IT",
+        "type": "cross_strait",
+        "context": "@domain IT。區分 RAM (記憶體) 與 ROM/Flash (儲存空間)",
+        "english": "memory (RAM)"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "記憶體"
+      ],
+      "category": "memory-storage",
+      "rationale": "Uses 「記憶體」 specifically for RAM memory and avoids conflating volatile memory with persistent storage."
+    },
+    {
+      "source": {
+        "from": "緩存",
+        "to": [
+          "快取"
+        ],
+        "domain": "IT",
+        "type": "cross_strait",
+        "context": "@domain IT。快取有「快速存取」的意涵。詞源是法裔北美獵人的俚語「儲存物品的秘密場所」。簡體「緩存」(高速緩衝存儲器的簡稱) 混淆 cache 與 buffer 的概念，「高速」和「緩存」更是語意衝突",
+        "english": "cache"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "快取"
+      ],
+      "category": "memory-storage",
+      "rationale": "Uses Taiwan's established 「快取」 for cache and keeps it distinct from a general-purpose buffer."
+    },
+    {
+      "source": {
+        "from": "線程",
+        "to": [
+          "執行緒"
+        ],
+        "domain": "程式設計",
+        "type": "cross_strait",
+        "context": "@domain 程式設計",
+        "english": "thread"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "執行緒"
+      ],
+      "category": "concurrency",
+      "rationale": "Uses 「執行緒」 for a thread of execution, matching Taiwan operating-system and programming terminology."
+    },
+    {
+      "source": {
+        "from": "隊列",
+        "to": [
+          "佇列"
+        ],
+        "domain": "資料結構",
+        "type": "cross_strait",
+        "context": "@domain 資料結構",
+        "english": "queue"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "佇列"
+      ],
+      "category": "data-structures",
+      "rationale": "Uses 「佇列」 for the FIFO queue data structure used in Taiwan computer-science materials."
+    },
+    {
+      "source": {
+        "from": "哈希",
+        "to": [
+          "雜湊"
+        ],
+        "domain": "IT",
+        "type": "cross_strait",
+        "context": "@domain IT。意指將資料打散混雜再映射，採意譯「雜湊」描述其機制，非音譯",
+        "english": "hash"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "雜湊"
+      ],
+      "category": "programming",
+      "rationale": "Uses the mechanism-descriptive Taiwan term 「雜湊」 for hash operations instead of a phonetic rendering."
+    },
+    {
+      "source": {
+        "from": "依賴",
+        "to": [
+          "相依性"
+        ],
+        "domain": "IT",
+        "type": "cross_strait",
+        "context": "@domain IT。dependency",
+        "english": "dependency"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "相依性"
+      ],
+      "category": "programming",
+      "rationale": "Uses 「相依性」 for software dependency relationships so package and module documentation reads naturally in Taiwan."
+    },
+    {
+      "source": {
+        "from": "數據庫",
+        "to": [
+          "資料庫"
+        ],
+        "domain": null,
+        "type": "cross_strait",
+        "context": "「數據」僅指數值資料，database 涵蓋所有形式的資料 (@seealso 數據)",
+        "english": "database"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "資料庫"
+      ],
+      "category": "data-management",
+      "rationale": "Uses 「資料庫」 for database because the stored content is not limited to numeric data."
+    },
+    {
+      "source": {
+        "from": "代碼",
+        "to": [
+          "程式碼"
+        ],
+        "domain": "程式設計",
+        "type": "cross_strait",
+        "context": "@domain 程式設計。source code 常被簡寫為 code，因此要翻譯為程式碼。非 IT 語境則該有對應的翻譯",
+        "english": "code"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "程式碼"
+      ],
+      "category": "programming",
+      "rationale": "Uses 「程式碼」 for code in a programming context and avoids the broader non-software meaning of code."
+    },
+    {
+      "source": {
+        "from": "調用",
+        "to": [
+          "呼叫"
+        ],
+        "domain": "通訊",
+        "type": "cross_strait",
+        "context": "@domain 通訊。cn 調用 = call/invoke；tw 用「呼叫」(程式)、「調閱」(法律)、「調派」(行政)",
+        "english": "call/invoke"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "呼叫"
+      ],
+      "category": "programming",
+      "rationale": "Uses 「呼叫」 for function or API invocation, the conventional Taiwan programming usage."
+    },
+    {
+      "source": {
+        "from": "默認",
+        "to": [
+          "預設"
+        ],
+        "domain": "程式設計",
+        "type": "cross_strait",
+        "context": "@domain 程式設計。「默認」意指「默許/默示承認」(tacitly approve)，與 default (預設值) 語意不同",
+        "english": "default"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "預設"
+      ],
+      "category": "programming",
+      "rationale": "Uses 「預設」 for default values and behavior, avoiding the unrelated sense of tacit approval."
+    },
+    {
+      "source": {
+        "from": "字節",
+        "to": [
+          "位元組"
+        ],
+        "domain": "IT",
+        "type": "cross_strait",
+        "context": "@domain IT",
+        "english": "byte"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "位元組"
+      ],
+      "category": "memory-storage",
+      "rationale": "Uses 「位元組」 for byte so storage sizes remain unambiguous relative to individual bits."
+    },
+    {
+      "source": {
+        "from": "布爾",
+        "to": [
+          "布林"
+        ],
+        "domain": "IT",
+        "type": "cross_strait",
+        "context": "@domain IT",
+        "english": "Boolean"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "布林"
+      ],
+      "category": "programming",
+      "rationale": "Uses 「布林」 for the Boolean type, matching common Taiwan language and API documentation."
+    },
+    {
+      "source": {
+        "from": "數組",
+        "to": [
+          "陣列"
+        ],
+        "domain": "資料結構",
+        "type": "cross_strait",
+        "context": "@domain 資料結構",
+        "english": "array"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "陣列"
+      ],
+      "category": "data-structures",
+      "rationale": "Uses 「陣列」 for an indexed array, the standard Taiwan data-structure term."
+    },
+    {
+      "source": {
+        "from": "字符串",
+        "to": [
+          "字串"
+        ],
+        "domain": "IT",
+        "type": "cross_strait",
+        "context": "@domain IT",
+        "english": "string"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "字串"
+      ],
+      "category": "programming",
+      "rationale": "Uses 「字串」 for a string value, matching Taiwan programming-language documentation."
+    },
+    {
+      "source": {
+        "from": "異步",
+        "to": [
+          "非同步"
+        ],
+        "domain": "程式設計",
+        "type": "cross_strait",
+        "context": "@domain 程式設計。「非」明確表達「不」，而「異」指「不同/特別/不尋常」(如《史記》:「皆異能之士也」的「異」是「特別」)，用「異」會造成歧義並與其他科學術語 (如立體異構物 stereoisomers) 衝突",
+        "english": "asynchronous"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "非同步"
+      ],
+      "category": "concurrency",
+      "rationale": "Uses 「非同步」 to state explicitly that execution is not synchronous and avoids an ambiguous variant."
+    },
+    {
+      "source": {
+        "from": "回調",
+        "to": [
+          "回呼"
+        ],
+        "domain": "程式設計",
+        "type": "cross_strait",
+        "context": "@domain 程式設計。有時翻譯為「回呼」",
+        "english": "callback"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "回呼"
+      ],
+      "category": "concurrency",
+      "rationale": "Uses 「回呼」 for a callback invoked after or during another operation in Taiwan API documentation."
+    },
+    {
+      "source": {
+        "from": "對象",
+        "to": [
+          "物件"
+        ],
+        "domain": "程式設計",
+        "type": "cross_strait",
+        "context": "@domain 程式設計",
+        "english": "object"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "物件"
+      ],
+      "category": "programming",
+      "rationale": "Uses 「物件」 for an object instance, distinguishing the programming construct from a generic target."
+    },
+    {
+      "source": {
+        "from": "接口",
+        "to": [
+          "介面"
+        ],
+        "domain": "程式設計",
+        "type": "cross_strait",
+        "context": "@domain 程式設計。硬體 connector/port = 接頭/連接埠",
+        "english": "interface"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "介面"
+      ],
+      "category": "programming",
+      "rationale": "Uses 「介面」 for a software interface while leaving hardware connectors and ports to their own terms."
+    },
+    {
+      "source": {
+        "from": "算法",
+        "to": [
+          "演算法"
+        ],
+        "domain": "程式設計",
+        "type": "cross_strait",
+        "context": "@domain 程式設計",
+        "english": "algorithm"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "演算法"
+      ],
+      "category": "programming",
+      "rationale": "Uses 「演算法」 for algorithm, the conventional term in Taiwan computer-science education."
+    },
+    {
+      "source": {
+        "from": "遞歸",
+        "to": [
+          "遞迴"
+        ],
+        "domain": "程式設計",
+        "type": "cross_strait",
+        "context": "@domain 程式設計",
+        "english": "recursion"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "遞迴"
+      ],
+      "category": "programming",
+      "rationale": "Uses 「遞迴」 for recursion to describe a routine applying itself to a smaller problem."
+    },
+    {
+      "source": {
+        "from": "棧",
+        "to": [
+          "堆疊"
+        ],
+        "domain": "程式設計",
+        "type": "cross_strait",
+        "context": "@domain 程式設計。單字「棧」在非 CS 語境意為客棧、貨棧",
+        "english": "stack"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "堆疊"
+      ],
+      "category": "data-structures",
+      "rationale": "Uses 「堆疊」 for the LIFO stack data structure and avoids the non-CS meanings of the source variant."
+    },
+    {
+      "source": {
+        "from": "鏈表",
+        "to": [
+          "鏈結串列"
+        ],
+        "domain": null,
+        "type": "cross_strait",
+        "context": "教育部重編國語辭典「表」指「分格或分項以列記事物的件」，linked list 作為資料結構，不具備任何「表」的意涵 (@seealso 鏈結)",
+        "english": "linked list"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "鏈結串列"
+      ],
+      "category": "data-structures",
+      "rationale": "Uses 「鏈結串列」 for linked list because it describes nodes connected in sequence rather than a tabular list."
+    },
+    {
+      "source": {
+        "from": "軟件",
+        "to": [
+          "軟體"
+        ],
+        "domain": "IT",
+        "type": "cross_strait",
+        "context": "@domain IT",
+        "english": "software"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "軟體"
+      ],
+      "category": "software-platform",
+      "rationale": "Uses 「軟體」 for software, the established Taiwan counterpart to hardware."
+    },
+    {
+      "source": {
+        "from": "硬盤",
+        "to": [
+          "硬碟"
+        ],
+        "domain": "硬體",
+        "type": "cross_strait",
+        "context": "@domain 硬體",
+        "english": "hard disk"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "硬碟"
+      ],
+      "category": "hardware",
+      "rationale": "Uses 「硬碟」 for a hard disk device in Taiwan hardware terminology."
+    },
+    {
+      "source": {
+        "from": "服務器",
+        "to": [
+          "伺服器"
+        ],
+        "domain": "IT",
+        "type": "cross_strait",
+        "context": "@domain IT",
+        "english": "server"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "伺服器"
+      ],
+      "category": "networking",
+      "rationale": "Uses 「伺服器」 for a server that provides network or application services."
+    },
+    {
+      "source": {
+        "from": "客戶端",
+        "to": [
+          "用戶端"
+        ],
+        "domain": "網路",
+        "type": "cross_strait",
+        "context": "@domain 網路",
+        "english": "client"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "用戶端"
+      ],
+      "category": "networking",
+      "rationale": "Uses 「用戶端」 for the client side of a network or client-server application."
+    },
+    {
+      "source": {
+        "from": "文件夾",
+        "to": [
+          "資料夾"
+        ],
+        "domain": null,
+        "type": "cross_strait",
+        "context": "針對 Windows 環境 (@seealso 資源管理器)",
+        "english": "folder"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "資料夾"
+      ],
+      "category": "software-platform",
+      "rationale": "Uses 「資料夾」 for a filesystem folder in Taiwan desktop and operating-system interfaces."
+    },
+    {
+      "source": {
+        "from": "源碼",
+        "to": [
+          "原始程式碼"
+        ],
+        "domain": "程式設計",
+        "type": "cross_strait",
+        "context": "@domain 程式設計",
+        "english": "source code"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "原始程式碼"
+      ],
+      "category": "programming",
+      "rationale": "Uses 「原始程式碼」 for source code to distinguish editable program text from generated binaries."
+    },
+    {
+      "source": {
+        "from": "命令行",
+        "to": [
+          "命令列"
+        ],
+        "domain": "作業系統",
+        "type": "cross_strait",
+        "context": "@domain 作業系統",
+        "english": "command line"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "命令列"
+      ],
+      "category": "software-platform",
+      "rationale": "Uses 「命令列」 for a command-line interface in Taiwan operating-system documentation."
+    },
+    {
+      "source": {
+        "from": "人工智能",
+        "to": [
+          "人工智慧"
+        ],
+        "domain": "程式設計",
+        "type": "cross_strait",
+        "context": "@domain 程式設計",
+        "english": "artificial intelligence (AI)"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "人工智慧"
+      ],
+      "category": "artificial-intelligence",
+      "rationale": "Uses 「人工智慧」 for artificial intelligence, the standard Taiwan technical and academic term."
+    },
+    {
+      "source": {
+        "from": "二叉樹",
+        "to": [
+          "二元樹"
+        ],
+        "domain": "資料結構",
+        "type": "cross_strait",
+        "context": "@domain 資料結構",
+        "english": "binary tree"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "二元樹"
+      ],
+      "category": "data-structures",
+      "rationale": "Uses 「二元樹」 for a binary tree because each node has at most two child branches."
+    },
+    {
+      "source": {
+        "from": "互聯網",
+        "to": [
+          "網際網路"
+        ],
+        "domain": "網路",
+        "type": "cross_strait",
+        "context": "@domain 網路",
+        "english": "Internet"
+      },
+      "decision": "accept",
+      "selectedTerms": [
+        "網際網路"
+      ],
+      "category": "networking",
+      "rationale": "Uses 「網際網路」 for the Internet, matching established Taiwan networking terminology."
+    },
+    {
+      "source": {
+        "from": "CPU核心",
+        "to": [
+          "CPU 核"
+        ],
+        "domain": "硬體",
+        "type": "cross_strait",
+        "context": "@domain 硬體。區分 core (核) 和 kernel (核心)；processor core 譯為「核」",
+        "english": "CPU core"
+      },
+      "decision": "reject",
+      "selectedTerms": [],
+      "category": "hardware",
+      "rationale": "Rejects 「CPU 核」 because its whitespace makes it a phrase rather than one safe Jieba dictionary token."
+    },
+    {
+      "source": {
+        "from": "SQL注入",
+        "to": [
+          "SQL 隱碼攻擊"
+        ],
+        "domain": "程式設計",
+        "type": "cross_strait",
+        "context": "@domain 程式設計",
+        "english": "SQL injection"
+      },
+      "decision": "reject",
+      "selectedTerms": [],
+      "category": "programming",
+      "rationale": "Rejects 「SQL 隱碼攻擊」 because its whitespace makes it a phrase rather than one safe Jieba dictionary token."
+    }
+  ]
+}
