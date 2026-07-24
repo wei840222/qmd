@@ -3030,7 +3030,7 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       displayPath: "doc1.md",
     });
 
-    const embedding = Array(1024).fill(0).map(() => Math.random());
+    const embedding = Array(768).fill(0).map(() => Math.random());
     publishVectorFixtures(store, "embeddinggemma", [
       { hash, embedding: new Float32Array(embedding) },
     ]);
@@ -3064,8 +3064,8 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       body: "Content in collection two",
     });
 
-    const embedding1 = Array(1024).fill(0).map(() => Math.random());
-    const embedding2 = Array(1024).fill(0).map(() => Math.random());
+    const embedding1 = Array(768).fill(0).map(() => Math.random());
+    const embedding2 = Array(768).fill(0).map(() => Math.random());
     publishVectorFixtures(store, "embeddinggemma", [
       { hash: hash1, embedding: new Float32Array(embedding1) },
       { hash: hash2, embedding: new Float32Array(embedding2) },
@@ -3099,7 +3099,7 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       displayPath: "regression.md",
     });
 
-    const embedding = Array(1024).fill(0).map(() => Math.random());
+    const embedding = Array(768).fill(0).map(() => Math.random());
     publishVectorFixtures(store, "embeddinggemma", [
       { hash, embedding: new Float32Array(embedding) },
     ]);

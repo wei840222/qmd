@@ -2088,7 +2088,11 @@ async function vectorIndex(
       }
       console.log(JSON.stringify(createRemoteEmbeddingPreflight(
         db,
-        new UnavailableOpenAIEmbeddingProvider(),
+        new UnavailableOpenAIEmbeddingProvider({
+          model: embedding.canonical.model,
+          dimension: embedding.canonical.dimension ?? undefined,
+          baseUrl: embedding.canonical.baseUrl,
+        }),
         { chunkStrategy: batchOptions.chunkStrategy },
       ), null, 2));
     } finally {
@@ -4727,7 +4731,7 @@ if (isMain) {
         const embedValidatedCollections = resolveCollectionFilter(cli.opts.collection, false);
         const embedCollection = embedValidatedCollections[0];
         await vectorIndex(
-          remotePreflight ? DEFAULT_EMBED_MODEL : resolveEmbedModelForCli(),
+          resolveEmbedModelForCli(),
           !!cli.values.force,
           {
           maxDocsPerBatch,
