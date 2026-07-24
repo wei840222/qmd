@@ -67,3 +67,11 @@
 - [x] OQ3：採版本化靜態價格＋UTF-8 byte conservative upper bound＋API usage 事後校對
 - [x] OQ4：固定 zhtw-mcp commit、blob SHA、SHA-256 與 MIT attribution
 - [x] OQ5：採 CLI／SDK two-phase consent service；MCP 只讀 status/preflight，不能授權
+
+## 後續優化與待辦事項 (Future Enhancements & TODO)
+
+- [ ] **遠端 LLM 擴充與重排支援**：除了目前本機執行的 LLM Query Expansion 與 Reranking 之外，後續升級為可設定由遠端 LLM / API 執行。
+- [ ] **簡化 `models.embed` 設定語法**：除了 `embedding: { provider: openai, model: text-embedding-3-small, dimension: 1536 }` 外，同時支援 `models: { embed: openai:text-embedding-3-small }` 簡寫形式自動映射。
+- [ ] **`embedding` 區塊支援自訂 `baseUrl`**：在 `embedding` 設定中新增 `baseUrl` 欄位（如 `https://bifrost.home-infra.weii.cloud/v1`），方便對接代理伺服器或自建 OpenAI 相容 Endpoint。
+- [ ] **`OPENAI_API_KEY` 改為可選 (Optional)**：對於無需 API Key 的自建/代理相容伺服器，允許不設定 Key 亦可使用。
+
