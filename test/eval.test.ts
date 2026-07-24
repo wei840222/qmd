@@ -14,7 +14,6 @@ import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { mkdtempSync, rmSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { openDatabase } from "../src/db.js";
 import type { Database } from "../src/db.js";
 import { createHash } from "crypto";
 import { fileURLToPath } from "url";
@@ -27,16 +26,13 @@ process.env.INDEX_PATH = join(tempDir, "eval.sqlite");
 import {
   createStore,
   searchFTS,
-  searchVec,
   insertDocument,
   insertContent,
-  insertEmbedding,
-  chunkDocumentByTokens,
+  generateEmbeddings,
   reciprocalRankFusion,
-  DEFAULT_EMBED_MODEL,
   type RankedResult,
 } from "../src/store";
-import { getDefaultLlamaCpp, formatDocForEmbedding, disposeDefaultLlamaCpp } from "../src/llm";
+import { disposeDefaultLlamaCpp } from "../src/llm.js";
 
 // Eval queries with expected documents
 const evalQueries: {
@@ -160,52 +156,16 @@ describe.skipIf(!!process.env.CI)("Vector Search", () => {
   let store: ReturnType<typeof createStore>;
   let db: Database;
   let hasEmbeddings = false;
+  let activeModel: string;
 
   beforeAll(async () => {
     store = createStore();
     db = store.db;
-
-    // Check if embeddings already exist (from previous test run)
-    const vecTable = db.prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`
-    ).get();
-
-    if (vecTable) {
-      const count = db.prepare(`SELECT COUNT(*) as cnt FROM vectors_vec`).get() as { cnt: number };
-      if (count.cnt > 0) {
-        hasEmbeddings = true;
-        return;
-      }
-    }
-
-    // Generate embeddings for test documents
-    const llm = getDefaultLlamaCpp();
-    store.ensureVecTable(768); // embeddinggemma uses 768 dimensions
-
-    const evalDocsDir = join(dirname(fileURLToPath(import.meta.url)), "eval-docs");
-    const files = readdirSync(evalDocsDir).filter(f => f.endsWith(".md"));
-
-    for (const file of files) {
-      const content = readFileSync(join(evalDocsDir, file), "utf-8");
-      const hash = createHash("sha256").update(content).digest("hex").slice(0, 12);
-      const title = content.split("\n")[0]?.replace(/^#\s*/, "") || file;
-
-      // Chunk and embed
-      const chunks = await chunkDocumentByTokens(content);
-      for (let seq = 0; seq < chunks.length; seq++) {
-        const chunk = chunks[seq];
-        if (!chunk) continue;
-        const formatted = formatDocForEmbedding(chunk.text, title);
-        const result = await llm.embed(formatted, { model: DEFAULT_EMBED_MODEL, isQuery: false });
-        if (result?.embedding) {
-          // Convert to Float32Array for sqlite-vec
-          const embedding = new Float32Array(result.embedding);
-          const now = new Date().toISOString();
-          insertEmbedding(db, hash, seq, chunk.pos, embedding, DEFAULT_EMBED_MODEL, now);
-        }
-      }
-    }
-    hasEmbeddings = true;
+    await generateEmbeddings(store);
+    const count = db.prepare(`SELECT COUNT(*) as cnt FROM vectors_vec`).get() as { cnt: number };
+    const state = db.prepare(`SELECT model FROM embedding_index_state WHERE singleton = 1`).get() as { model: string };
+    hasEmbeddings = count.cnt > 0;
+    activeModel = state.model;
   }, 120000); // 2 minute timeout for embedding generation
 
   afterAll(() => {
@@ -221,7 +181,7 @@ describe.skipIf(!!process.env.CI)("Vector Search", () => {
     const easyQueries = evalQueries.filter(q => q.difficulty === "easy");
     let hits = 0;
     for (const { query, expectedDoc } of easyQueries) {
-      const results = await searchVec(db, query, DEFAULT_EMBED_MODEL, 5);
+      const results = await store.searchVec(query, activeModel, 5);
       if (results.slice(0, 3).some(r => matchesExpected(r.filepath, expectedDoc))) hits++;
     }
     expect(hits / easyQueries.length).toBeGreaterThanOrEqual(0.6);
@@ -233,7 +193,7 @@ describe.skipIf(!!process.env.CI)("Vector Search", () => {
     const mediumQueries = evalQueries.filter(q => q.difficulty === "medium");
     let hits = 0;
     for (const { query, expectedDoc } of mediumQueries) {
-      const results = await searchVec(db, query, DEFAULT_EMBED_MODEL, 5);
+      const results = await store.searchVec(query, activeModel, 5);
       if (results.slice(0, 3).some(r => matchesExpected(r.filepath, expectedDoc))) hits++;
     }
     // Vector search should do better on semantic queries than BM25
@@ -246,7 +206,7 @@ describe.skipIf(!!process.env.CI)("Vector Search", () => {
     const hardQueries = evalQueries.filter(q => q.difficulty === "hard");
     let hits = 0;
     for (const { query, expectedDoc } of hardQueries) {
-      const results = await searchVec(db, query, DEFAULT_EMBED_MODEL, 5);
+      const results = await store.searchVec(query, activeModel, 5);
       if (results.some(r => matchesExpected(r.filepath, expectedDoc))) hits++;
     }
     expect(hits / hardQueries.length).toBeGreaterThanOrEqual(0.3);
@@ -257,7 +217,7 @@ describe.skipIf(!!process.env.CI)("Vector Search", () => {
 
     let hits = 0;
     for (const { query, expectedDoc } of evalQueries) {
-      const results = await searchVec(db, query, DEFAULT_EMBED_MODEL, 5);
+      const results = await store.searchVec(query, activeModel, 5);
       if (results.slice(0, 3).some(r => matchesExpected(r.filepath, expectedDoc))) hits++;
     }
     expect(hits / evalQueries.length).toBeGreaterThanOrEqual(0.5);
@@ -272,6 +232,7 @@ describe.skipIf(!!process.env.CI)("Hybrid Search (RRF)", () => {
   let store: ReturnType<typeof createStore>;
   let db: Database;
   let hasVectors = false;
+  let activeModel: string;
 
   beforeAll(() => {
     store = createStore();
@@ -284,6 +245,8 @@ describe.skipIf(!!process.env.CI)("Hybrid Search (RRF)", () => {
       const count = db.prepare(`SELECT COUNT(*) as cnt FROM vectors_vec`).get() as { cnt: number };
       hasVectors = count.cnt > 0;
     }
+    const state = db.prepare(`SELECT model FROM embedding_index_state WHERE singleton = 1`).get() as { model: string };
+    activeModel = state.model;
   });
 
   afterAll(() => {
@@ -307,7 +270,7 @@ describe.skipIf(!!process.env.CI)("Hybrid Search (RRF)", () => {
     }
 
     // Vector results
-    const vecResults = await searchVec(db, query, DEFAULT_EMBED_MODEL, 20);
+    const vecResults = await store.searchVec(query, activeModel, 20);
     if (vecResults.length > 0) {
       rankedLists.push(vecResults.map(r => ({
         file: r.filepath,
@@ -377,7 +340,7 @@ describe.skipIf(!!process.env.CI)("Hybrid Search (RRF)", () => {
       if (bm25Results.slice(0, 3).some(r => matchesExpected(r.filepath, expectedDoc))) bm25Hits++;
 
       // Vector results for comparison
-      const vecResults = await searchVec(db, query, DEFAULT_EMBED_MODEL, 5);
+      const vecResults = await store.searchVec(query, activeModel, 5);
       if (vecResults.slice(0, 3).some(r => matchesExpected(r.filepath, expectedDoc))) vecHits++;
     }
 

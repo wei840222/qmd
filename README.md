@@ -8,7 +8,7 @@ QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking�
 
 You can read more about QMD's progress in the [CHANGELOG](CHANGELOG.md).
 
-## Quick Start
+## Quick Start (Local Embedding Default)
 
 ```sh
 # Install globally (Node or Bun)
@@ -78,6 +78,7 @@ Although the tool works perfectly fine when you just tell your agent to use it o
 - `get` — Retrieve a document by path or docid (with fuzzy matching suggestions)
 - `multi_get` — Batch retrieve by glob pattern, comma-separated list, or docids
 - `status` — Index health and collection info
+- `remote_embedding_preflight` — Read-only remote embedding disclosure and conservative cost upper bound
 
 **Claude Desktop configuration** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
@@ -144,13 +145,16 @@ Point any MCP client at `http://localhost:8181/mcp` to connect.
 
 | Tool | Parameter | Type | Notes |
 |------|-----------|------|-------|
-| `query` | `searches` | array | Typed sub-queries (`lex`/`vec`/`hyde`), 1–10. **Required.** First gets 2x weight. |
+| `query` | `query` | string | Plain query evaluated by the shared expansion policy. Mutually exclusive with `searches`; exactly one is required. |
+| `query` | `searches` | array | Typed sub-queries (`lex`/`vec`/`hyde`), 1–10. Mutually exclusive with `query`; exactly one is required. First gets 2x weight. |
+| `query` | `expansion` | string | Plain-query policy: `auto` (default), `force`, or `skip`. Ignored when `searches` is used. |
 | `query` | `collections` | string[] | Filter by collection names (OR). **Array only** — singular `collection` is silently ignored. |
 | `query` | `intent` | string | Disambiguation context (does not search on its own) |
 | `query` | `limit` | number | Max results (default 10) |
 | `query` | `minScore` | number | Minimum relevance 0–1 (default 0) |
 | `query` | `candidateLimit` | number | Max candidates to rerank (default 40) |
 | `query` | `rerank` | boolean | Run LLM reranking (default **true**); set false for RRF-only |
+| `query` | `explain` | boolean | Include retrieval traces and the expansion decision or typed-query error (default **false**) |
 | `get` | `file` | string | Path, docid (`#abc123`), or `path:from:count` (e.g. `#abc123:120:40`) |
 | `get` | `fromLine` | number | Start line (1-indexed); overrides the `:from` suffix |
 | `get` | `maxLines` | number | Limit returned lines |
@@ -227,7 +231,7 @@ const store3 = await createStore({ dbPath: './index.sqlite' })
 The unified `search()` method handles both simple queries and pre-expanded structured queries:
 
 ```typescript
-// Simple query — auto-expanded via LLM, then BM25 + vector + reranking
+// Simple query — evaluated by the shared auto policy, then retrieved and reranked
 const results = await store.search({ query: "authentication flow" })
 
 // With options
@@ -238,9 +242,10 @@ const results2 = await store.search({
   limit: 5,
   minScore: 0.3,
   explain: true,
+  expansion: "auto", // "auto" | "force" | "skip"
 })
 
-// Pre-expanded queries — skip auto-expansion, control each sub-query
+// Pre-expanded queries — bypass the policy and control each sub-query
 const results3 = await store.search({
   queries: [
     { type: 'lex', query: '"connection pool" timeout -redis' },
@@ -252,6 +257,10 @@ const results3 = await store.search({
 // Skip reranking for faster results
 const fast = await store.search({ query: "auth", rerank: false })
 ```
+
+For simple queries, explicit `force` or `skip` overrides `auto`. Under `auto`, CJK
+queries and strong lexical matches skip model expansion; other queries expand.
+Supplying `queries` bypasses expansion policy evaluation entirely.
 
 For direct backend access:
 
@@ -412,37 +421,34 @@ The SDK requires explicit `dbPath` — no defaults are assumed. This makes it sa
                               │   User Query    │
                               └────────┬────────┘
                                        │
-                        ┌──────────────┴──────────────┐
-                        ▼                             ▼
-               ┌────────────────┐            ┌────────────────┐
-               │ Query Expansion│            │  Original Query│
-               │  (fine-tuned)  │            │   (×2 weight)  │
-               └───────┬────────┘            └───────┬────────┘
-                       │                             │
-                       │ 2 alternative queries       │
-                       └──────────────┬──────────────┘
-                                      │
-              ┌───────────────────────┼───────────────────────┐
-              ▼                       ▼                       ▼
-     ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-     │ Original Query  │     │ Expanded Query 1│     │ Expanded Query 2│
-     └────────┬────────┘     └────────┬────────┘     └────────┬────────┘
-              │                       │                       │
-      ┌───────┴───────┐       ┌───────┴───────┐       ┌───────┴───────┐
-      ▼               ▼       ▼               ▼       ▼               ▼
-  ┌───────┐       ┌───────┐ ┌───────┐     ┌───────┐ ┌───────┐     ┌───────┐
-  │ BM25  │       │Vector │ │ BM25  │     │Vector │ │ BM25  │     │Vector │
-  │(FTS5) │       │Search │ │(FTS5) │     │Search │ │(FTS5) │     │Search │
-  └───┬───┘       └───┬───┘ └───┬───┘     └───┬───┘ └───┬───┘     └───┬───┘
-      │               │         │             │         │             │
-      └───────┬───────┘         └──────┬──────┘         └──────┬──────┘
-              │                        │                       │
-              └────────────────────────┼───────────────────────┘
+                              ┌────────▼────────┐
+                              │ Expansion Policy│
+                              │ auto|force|skip │
+                              └────────┬────────┘
+                                       │
+                         ┌─────────────┴─────────────┐
+                         ▼                           ▼
+                ┌─────────────────┐        ┌─────────────────┐
+                │ Original Query  │        │ Typed Expansions│
+                │      (×2)       │        │ lex / vec / HyDE│
+                └────────┬────────┘        └────────┬────────┘
+                         │                           │
+                 ┌───────┴───────┐           ┌───────┴───────┐
+                 ▼               ▼           ▼               ▼
+             ┌───────┐       ┌───────┐   ┌───────┐       ┌───────┐
+             │ BM25  │       │Vector │   │  lex  │       │vec/HyDE│
+             │(FTS5) │       │Search │   └───┬───┘       └───┬───┘
+             └───┬───┘       └───┬───┘       ▼               ▼
+                 │               │         ┌───────┐       ┌───────┐
+                 │               │         │ BM25  │       │Vector │
+                 │               │         │(FTS5) │       │Search │
+                 └───────┬───────┘         └───┬───┘       └───┬───┘
+                         └─────────────┬─────────┴───────────────┘
                                        │
                                        ▼
                           ┌───────────────────────┐
                           │   RRF Fusion + Bonus  │
-                          │  Original query: ×2   │
+                          │ Original paths ×2     │
                           │  Top-rank bonus: +0.05│
                           │     Top 30 Kept       │
                           └───────────┬───────────┘
@@ -477,8 +483,8 @@ The SDK requires explicit `dbPath` — no defaults are assumed. This makes it sa
 
 The `query` command uses **Reciprocal Rank Fusion (RRF)** with position-aware blending:
 
-1. **Query Expansion**: Original query (×2 for weighting) + 1 LLM variation
-2. **Parallel Retrieval**: Each query searches both FTS and vector indexes
+1. **Query Expansion Policy**: `auto` expands eligible queries with a local generator but skips remote generation; `force` runs the configured generator; `skip` uses only the original query. Original FTS and vector retrieval paths have ×2 RRF weight in every mode. When expansion runs, QMD adds zero or more typed LLM variants at ×1: `lex` variants use FTS, while `vec` and `hyde` variants use vector search.
+2. **Parallel Retrieval**: The original query searches both indexes; `lex` variants search FTS, while `vec` and `hyde` variants search the vector index
 3. **RRF Fusion**: Combine all result lists using `score = Σ(1/(k+rank+1))` where k=60
 4. **Top-Rank Bonus**: Documents ranking #1 in any list get +0.05, #2-3 get +0.02
 5. **Top-K Selection**: Take top 30 candidates for reranking
@@ -524,25 +530,95 @@ Models are downloaded from HuggingFace and cached in `~/.cache/qmd/models/`.
 
 ### Custom Embedding Model
 
-Override the default embedding model via the `QMD_EMBED_MODEL` environment variable.
-This is useful for multilingual corpora (e.g. Chinese, Japanese, Korean) where
-`embeddinggemma-300M` has limited coverage.
+Override the default local embedding model via the `QMD_EMBED_MODEL` environment variable.
 
 ```sh
-# Use Qwen3-Embedding-0.6B for better multilingual (CJK) support
-export QMD_EMBED_MODEL="hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf"
+# Use another local GGUF embedding model
+export QMD_EMBED_MODEL="hf:org/model/repo-file.gguf"
 
 # After changing the model, re-embed all collections:
 qmd embed -f
 ```
 
 Supported model families:
-- **embeddinggemma** (default) — English-optimized, small footprint
-- **Qwen3-Embedding** — Multilingual (119 languages including CJK), MTEB top-ranked
+- **embeddinggemma** (default) — Smaller local model
+- **Qwen3-Embedding** — Multilingual, including CJK
 
 > **Note:** When switching embedding models, you must re-index with `qmd embed -f`
 > since vectors are not cross-compatible between models. The prompt format is
 > automatically adjusted for each model family.
+
+### Remote Embedding & Models Configuration (Explicit Opt-in)
+
+QMD stays local by default. To use remote embeddings or remote LLM models, configure them in `index.yml` under the unified `models:` section.
+
+```yaml
+models:
+  embed: openai:text-embedding-3-small        # or openai:text-embedding-3-large
+  embed_base_url: https://api.example.com/v1  # Optional proxy / self-hosted endpoint
+  embed_dimension: 1536                       # Optional: explicit vector dimension override
+
+  # Optional: Remote LLM Query Expansion (supports generate_url / generate_base_url / generate_api_url)
+  generate_url: https://api.example.com/v1    # Base URL or full endpoint
+  generate_api_model: qwen3-7b-instruct
+
+  # Optional: Remote Reranking (supports rerank_url / rerank_base_url / rerank_api_url)
+  rerank_url: https://api.example.com/v1      # Supports both /v1/rerank and /v1/chat/completions LLM endpoints
+  rerank_api_model: bge-reranker-v2-m3
+
+# Optional: Custom User Dictionary for CJK segmentation
+dictionary: ~/.config/qmd/dictionary.txt
+```
+
+> **Smart URL Resolution & Reranker Endpoints:** Remote LLM URLs support `_url`, `_base_url`, and `_api_url` aliases. When given a Base URL (e.g. `https://.../v1`), QMD automatically appends `/chat/completions` or `/rerank`. If a full endpoint URL is provided, it is used directly. For reranking, QMD supports both dedicated Cross-Encoder endpoints (`/v1/rerank`) and general LLM endpoints (`/v1/chat/completions`).
+
+`qmd init` writes local defaults only; it does not prompt for or generate a remote embedding configuration. To use a remote endpoint, edit `index.yml` manually, set credentials (if required), and complete preflight below.
+
+> **API Key Note:** When using official OpenAI (`api.openai.com`), set `OPENAI_API_KEY="..."`. For self-hosted proxies or keyless local servers configured via `embed_base_url` / `baseUrl`, `OPENAI_API_KEY` is optional. QMD never writes keys to SQLite, diagnostics, logs, or error messages.
+
+```sh
+export OPENAI_API_KEY="..." # Required for api.openai.com; optional for self-hosted proxies
+
+# 1. Print the exact disclosure and conservative token/cost upper bound.
+#    This is side-effect free and sends no remote request.
+qmd embed --remote-preflight
+
+# 2. Accept the exact values printed above.
+qmd embed \
+  --remote-accept '<preflightId>' \
+  --remote-fingerprint '<fingerprint>' \
+  --remote-policy '<policyVersion>'
+
+# 3. Optional: verify provider capability/dimension with one versioned sentinel.
+qmd embed --remote-probe
+
+# 4. Send pending document chunks and build the vector index.
+qmd embed
+```
+
+`embed_base_url` (or `OPENAI_BASE_URL` env) changes the destination for the OpenAI embedding provider; QMD sends OpenAI-compatible `POST /embeddings` requests. Leave it unset to use `https://api.openai.com/v1`. Changing the endpoint changes the remote embedding identity, so QMD requires a new preflight and consent before sending document content to that destination.
+
+The acknowledgement is bound to the policy version, embedding identity, and current document generation. If documents, provider, model, dimension, chunk profile, or policy change, QMD stops and requires a new preflight. A dimension or identity change also requires separate destructive authorization because `vectors_vec` can store only one dimension:
+
+```sh
+qmd embed --force --allow-remote
+```
+
+Remote document chunks use deterministic UTF-8 byte windows. Query embedding is allowed only when the same identity is `ready` and compatible vectors exist; a vector or hybrid query then sends the formatted query text to the configured remote provider. After an authorized identity reset deletes the old vectors, there is no vector rollback; lexical search remains available while rebuilding. `qmd status` and `qmd doctor` report provider/model/dimension, short fingerprint, key presence as a boolean, acknowledgement, pending/inconsistent chunks, CJK channel readiness, and actionable repair commands. See `docs/architecture-cjk-openai.md` for the state machines and data-disclosure boundary.
+
+### CJK Lexical Search and Expansion
+
+CJK lexical search combines independent character, word, and bigram channels by
+rank. If Jieba or the published word/bigram index is unavailable, stale, or
+incompatible, QMD omits both analyzed channels and falls back to character-only
+search instead of failing the query or issuing an empty FTS match. `qmd status`
+reports the reason and remediation.
+
+Query expansion uses one shared `auto | force | skip` policy across CLI, SDK, and
+MCP. Precedence is: explicit skip or `lex:` skips expansion; explicit force,
+`expand:`, or `--expand` forces it; under `auto`, CJK queries skip local model expansion (0ms bypass) but automatically expand when a remote LLM (`generate_api_url`) is configured; strong lexical
+signals skip expansion, and remaining queries expand. Explicit force fails if the expansion
+model is unavailable rather than silently changing behavior.
 
 ## Installation
 
@@ -557,8 +633,8 @@ bun install -g @tobilu/qmd
 ```sh
 git clone https://github.com/tobi/qmd
 cd qmd
-npm install
-npm link
+bun install
+bun link
 ```
 
 ## Usage
@@ -821,9 +897,9 @@ With no `-c` flag, all default-included collections are searched. Collections
 marked excluded (`qmd collection exclude <name>`) are skipped unless named
 explicitly with `-c`.
 
-> **Note:** With multiple `-c` flags, results come from a global top-K pool and are
-> then filtered. If one collection dominates the rankings, matches from smaller
-> collections may not appear at the default limit — raise `-n` or use `--all`.
+> **Note:** Multiple `-c` flags are combined with OR and applied before each
+> lexical and vector candidate cutoff. Matching candidates from the selected
+> collections are then ranked together.
 
 ### Output Format
 
@@ -1151,39 +1227,38 @@ Supported for `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.go`, and `.rs` files. Enabl
 ### Query Flow (Hybrid)
 
 ```
-Query ──► LLM Expansion ──► [Original, Variant 1, Variant 2]
-                │
-      ┌─────────┴─────────┐
-      ▼                   ▼
-   For each query:     FTS (BM25)
-      │                   │
-      ▼                   ▼
-   Vector Search      Ranked List
-      │
-      ▼
-   Ranked List
-      │
-      └─────────┬─────────┘
-                ▼
-         RRF Fusion (k=60)
-         Original query ×2 weight
-         Top-rank bonus: +0.05/#1, +0.02/#2-3
+Query ──► Expansion policy (`auto` | `force` | `skip`)
                 │
                 ▼
-         Top 30 candidates
-                │
-                ▼
-         LLM Re-ranking
-         (yes/no + logprob confidence)
-                │
-                ▼
-         Position-Aware Blend
-         Rank 1-3:  75% RRF / 25% reranker
-         Rank 4-10: 60% RRF / 40% reranker
-         Rank 11+:  40% RRF / 60% reranker
-                │
-                ▼
-         Final Results
+  ┌──────────────────────┴──────────────────────┐
+  ▼                                             ▼
+Original query (×2)                 Zero or more typed variants (×1)
+  │                                             │
+  ├──► FTS (BM25) ──► Ranked List               ├──► lex ──────► FTS ────► Ranked List
+  └──► Vector Search ─► Ranked List             └──► vec/hyde ─► Vector ─► Ranked List
+                        │                                             │
+                        └──────────────────┬──────────────────────────┘
+                                           │
+                                           ▼
+                                  RRF Fusion (k=60)
+                                  Original retrieval paths ×2
+                                  Top-rank bonus: +0.05/#1, +0.02/#2-3
+                                           │
+                                           ▼
+                                  Top 30 candidates
+                                           │
+                                           ▼
+                                  LLM Re-ranking
+                                  (yes/no + logprob confidence)
+                                           │
+                                           ▼
+                                  Position-Aware Blend
+                                  Rank 1-3:  75% RRF / 25% reranker
+                                  Rank 4-10: 60% RRF / 40% reranker
+                                  Rank 11+:  40% RRF / 60% reranker
+                                           │
+                                           ▼
+                                  Final Results
 ```
 
 ## Model Configuration

@@ -1,8 +1,40 @@
 import { describe, expect, test } from "vitest";
-import { finishSuccessfulCliCommand } from "../src/cli/qmd.ts";
+import { createCliResourceCloser, finishSuccessfulCliCommand } from "../src/cli/qmd.ts";
 import { LlamaCpp, isDarwinMetalMitigationActive } from "../src/llm.ts";
 
 describe("CLI successful-exit lifecycle", () => {
+  test("shares one provider-to-database cleanup across concurrent callers", async () => {
+    const calls: string[] = [];
+    let releaseOwner!: () => void;
+    const ownerSettled = new Promise<void>(resolve => {
+      releaseOwner = resolve;
+    });
+    const owner = {
+      provider: {} as never,
+      close: async () => {
+        calls.push("owner:start");
+        await ownerSettled;
+        calls.push("owner:end");
+      },
+    };
+    const cleanup = createCliResourceCloser({
+      getOwner: () => owner,
+      clearOwner: () => calls.push("owner:clear"),
+      disposeFallback: async () => { calls.push("fallback"); },
+      closeStore: () => calls.push("store"),
+    });
+
+    const first = cleanup();
+    const second = cleanup();
+    expect(second).toBe(first);
+    await Promise.resolve();
+    expect(calls).toEqual(["owner:start"]);
+
+    releaseOwner();
+    await Promise.all([first, second]);
+    expect(calls).toEqual(["owner:start", "owner:end", "owner:clear", "store"]);
+  });
+
   test("exits 0 after successful output when post-output LLM cleanup fails", async () => {
     const exitCodes: number[] = [];
     const stderr: string[] = [];

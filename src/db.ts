@@ -16,7 +16,12 @@ export const isBun = "Bun" in globalThis;
 export type SQLiteValue = string | number | bigint | Buffer | Uint8Array | Float32Array | null;
 export type SQLiteParams = readonly SQLiteValue[];
 
-type DatabaseConstructor = new (path: string) => Database;
+type DatabaseOpenOptions = {
+  readonly?: boolean;
+  create?: boolean;
+  fileMustExist?: boolean;
+};
+type DatabaseConstructor = new (path: string, options?: DatabaseOpenOptions) => Database;
 type LoadableSqliteDatabase = Pick<Database, "loadExtension">;
 
 let _Database: DatabaseConstructor;
@@ -119,6 +124,19 @@ export function openDatabase(path: string): Database {
   const busyTimeoutMs = Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 120_000;
   db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
   enableWal(db, busyTimeoutMs);
+  return db;
+}
+
+/** Open an existing database without changing journal mode, schema, or user data. */
+export function openReadOnlyDatabase(path: string): Database {
+  const options: DatabaseOpenOptions = isBun
+    ? { readonly: true, create: false }
+    : { readonly: true, fileMustExist: true };
+  const db = new _Database(path, options) as Database;
+  const raw = process.env.QMD_SQLITE_BUSY_TIMEOUT;
+  const parsed = raw !== undefined && raw !== "" ? Number(raw) : Number.NaN;
+  const busyTimeoutMs = Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 120_000;
+  db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
   return db;
 }
 

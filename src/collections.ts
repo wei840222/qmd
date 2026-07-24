@@ -5,10 +5,22 @@
  * Collections define which directories to index and their associated contexts.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join, dirname, resolve } from "path";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "fs";
+import { randomUUID } from "node:crypto";
+import { basename, join, dirname, resolve } from "path";
 import { qmdHomedir } from "./paths.js";
 import YAML from "yaml";
+import type { EmbeddingConfig } from "./embedding/config.js";
 
 // ============================================================================
 // Types
@@ -38,8 +50,20 @@ export interface Collection {
  */
 export interface ModelsConfig {
   embed?: string;
+  embed_base_url?: string;
+  embed_dimension?: number;
   rerank?: string;
   generate?: string;
+  generate_url?: string;
+  generate_base_url?: string;
+  generate_api_url?: string;
+  generate_api_model?: string;
+  generate_api_key?: string;
+  rerank_url?: string;
+  rerank_base_url?: string;
+  rerank_api_url?: string;
+  rerank_api_model?: string;
+  rerank_api_key?: string;
 }
 
 /**
@@ -51,6 +75,7 @@ export interface CollectionConfig {
   editor_uri_template?: string;               // Alias for editor_uri
   collections: Record<string, Collection>;    // Collection name -> config
   models?: ModelsConfig;
+  dictionary?: string;                        // Optional path to user dictionary file
 }
 
 /**
@@ -68,7 +93,31 @@ export interface NamedCollection extends Collection {
 let currentIndexName: string = "index";
 
 // SDK mode: optional in-memory config or custom config path
-let configSource: { type: 'file'; path?: string } | { type: 'inline'; config: CollectionConfig } = { type: 'file' };
+export type CollectionConfigSource =
+  | { type: "file"; path?: string }
+  | { type: "inline"; config: CollectionConfig };
+
+export function createCollectionConfigSource(
+  source?: { configPath?: string; config?: CollectionConfig },
+): CollectionConfigSource {
+  if (source?.config) {
+    source.config.collections ??= {};
+    return { type: "inline", config: source.config };
+  }
+  return { type: "file", path: source?.configPath };
+}
+
+let configSource: CollectionConfigSource = createCollectionConfigSource();
+
+export type ConfigWriteStage = "before-temp-write" | "before-rename";
+let configWriteFaultInjector: ((stage: ConfigWriteStage) => void) | undefined;
+
+/** @internal Test-only fault injection for crash-safety verification. */
+export function setConfigWriteFaultInjectorForTests(
+  injector?: (stage: ConfigWriteStage) => void,
+): void {
+  configWriteFaultInjector = injector;
+}
 
 /**
  * Set the config source for SDK mode.
@@ -77,21 +126,7 @@ let configSource: { type: 'file'; path?: string } | { type: 'inline'; config: Co
  * - undefined: reset to default file-based config
  */
 export function setConfigSource(source?: { configPath?: string; config?: CollectionConfig }): void {
-  if (!source) {
-    configSource = { type: 'file' };
-    return;
-  }
-  if (source.config) {
-    // Ensure collections object exists
-    if (!source.config.collections) {
-      source.config.collections = {};
-    }
-    configSource = { type: 'inline', config: source.config };
-  } else if (source.configPath) {
-    configSource = { type: 'file', path: source.configPath };
-  } else {
-    configSource = { type: 'file' };
-  }
+  configSource = createCollectionConfigSource(source);
 }
 
 /**
@@ -173,14 +208,14 @@ function ensureConfigDir(): void {
  * - File-based: reads from YAML file (default ~/.config/qmd/index.yml)
  * Returns empty config if file doesn't exist
  */
-export function loadConfig(): CollectionConfig {
+export function loadConfig(source: CollectionConfigSource = configSource): CollectionConfig {
   // SDK inline config mode
-  if (configSource.type === 'inline') {
-    return configSource.config;
+  if (source.type === 'inline') {
+    return source.config;
   }
 
   // File-based config (SDK custom path or default)
-  const configPath = configSource.path || getConfigFilePath();
+  const configPath = source.path || getConfigFilePath();
   if (!existsSync(configPath)) {
     return { collections: {} };
   }
@@ -206,14 +241,17 @@ export function loadConfig(): CollectionConfig {
  * - Inline config: updates the in-memory object (no file I/O)
  * - File-based: writes to YAML file (default ~/.config/qmd/index.yml)
  */
-export function saveConfig(config: CollectionConfig): void {
+export function saveConfig(
+  config: CollectionConfig,
+  source: CollectionConfigSource = configSource,
+): void {
   // SDK inline config mode: update in place, no file I/O
-  if (configSource.type === 'inline') {
-    configSource.config = config;
+  if (source.type === 'inline') {
+    source.config = config;
     return;
   }
 
-  const configPath = configSource.path || getConfigFilePath();
+  const configPath = source.path || getConfigFilePath();
   const configDir = dirname(configPath);
   if (!existsSync(configDir)) {
     mkdirSync(configDir, { recursive: true });
@@ -224,7 +262,34 @@ export function saveConfig(config: CollectionConfig): void {
       indent: 2,
       lineWidth: 0,  // Don't wrap lines
     });
-    writeFileSync(configPath, yaml, "utf-8");
+    const temporaryPath = join(
+      configDir,
+      `.${basename(configPath)}.${process.pid}.${randomUUID()}.tmp`,
+    );
+    let temporaryFd: number | undefined;
+    let renamed = false;
+    try {
+      temporaryFd = openSync(temporaryPath, "wx", 0o600);
+      configWriteFaultInjector?.("before-temp-write");
+      writeFileSync(temporaryFd, yaml, "utf8");
+      fsyncSync(temporaryFd);
+      closeSync(temporaryFd);
+      temporaryFd = undefined;
+
+      configWriteFaultInjector?.("before-rename");
+      renameSync(temporaryPath, configPath);
+      renamed = true;
+
+      const directoryFd = openSync(configDir, "r");
+      try {
+        fsyncSync(directoryFd);
+      } finally {
+        closeSync(directoryFd);
+      }
+    } finally {
+      if (temporaryFd !== undefined) closeSync(temporaryFd);
+      if (!renamed && existsSync(temporaryPath)) unlinkSync(temporaryPath);
+    }
   } catch (error) {
     throw new Error(`Failed to write ${configPath}: ${error}`);
   }
@@ -308,39 +373,49 @@ export function updateCollectionSettings(
 export function addCollection(
   name: string,
   path: string,
-  pattern: string = "**/*.md"
+  pattern: string = "**/*.md",
+  ignore?: string[],
+  source: CollectionConfigSource = configSource,
 ): void {
-  const config = loadConfig();
+  const config = loadConfig(source);
 
   config.collections[name] = {
     path,
     pattern,
+    ignore: ignore ?? config.collections[name]?.ignore,
     context: config.collections[name]?.context, // Preserve existing context
   };
 
-  saveConfig(config);
+  saveConfig(config, source);
 }
 
 /**
  * Remove a collection
  */
-export function removeCollection(name: string): boolean {
-  const config = loadConfig();
+export function removeCollection(
+  name: string,
+  source: CollectionConfigSource = configSource,
+): boolean {
+  const config = loadConfig(source);
 
   if (!config.collections[name]) {
     return false;
   }
 
   delete config.collections[name];
-  saveConfig(config);
+  saveConfig(config, source);
   return true;
 }
 
 /**
  * Rename a collection
  */
-export function renameCollection(oldName: string, newName: string): boolean {
-  const config = loadConfig();
+export function renameCollection(
+  oldName: string,
+  newName: string,
+  source: CollectionConfigSource = configSource,
+): boolean {
+  const config = loadConfig(source);
 
   if (!config.collections[oldName]) {
     return false;
@@ -352,7 +427,7 @@ export function renameCollection(oldName: string, newName: string): boolean {
 
   config.collections[newName] = config.collections[oldName];
   delete config.collections[oldName];
-  saveConfig(config);
+  saveConfig(config, source);
   return true;
 }
 
@@ -371,10 +446,13 @@ export function getGlobalContext(): string | undefined {
 /**
  * Set global context
  */
-export function setGlobalContext(context: string | undefined): void {
-  const config = loadConfig();
+export function setGlobalContext(
+  context: string | undefined,
+  source: CollectionConfigSource = configSource,
+): void {
+  const config = loadConfig(source);
   config.global_context = context;
-  saveConfig(config);
+  saveConfig(config, source);
 }
 
 /**
@@ -391,9 +469,10 @@ export function getContexts(collectionName: string): ContextMap | undefined {
 export function addContext(
   collectionName: string,
   pathPrefix: string,
-  contextText: string
+  contextText: string,
+  source: CollectionConfigSource = configSource,
 ): boolean {
-  const config = loadConfig();
+  const config = loadConfig(source);
   const collection = config.collections[collectionName];
 
   if (!collection) {
@@ -405,7 +484,7 @@ export function addContext(
   }
 
   collection.context[pathPrefix] = contextText;
-  saveConfig(config);
+  saveConfig(config, source);
   return true;
 }
 
@@ -414,9 +493,10 @@ export function addContext(
  */
 export function removeContext(
   collectionName: string,
-  pathPrefix: string
+  pathPrefix: string,
+  source: CollectionConfigSource = configSource,
 ): boolean {
-  const config = loadConfig();
+  const config = loadConfig(source);
   const collection = config.collections[collectionName];
 
   if (!collection?.context?.[pathPrefix]) {
@@ -430,7 +510,7 @@ export function removeContext(
     delete collection.context;
   }
 
-  saveConfig(config);
+  saveConfig(config, source);
   return true;
 }
 

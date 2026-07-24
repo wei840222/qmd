@@ -7,6 +7,7 @@ const pkg = JSON.parse(readFileSync(new URL("package.json", root), "utf8"));
 
 describe("package test task", () => {
   test("runs typecheck, unit tests, and package smoke checks", () => {
+    expect(pkg.packageManager).toBe("pnpm@11.15.1");
     expect(pkg.scripts.test).toContain("scripts/test-all.mjs");
 
     expect(pkg.scripts["test:types"]).toContain("tsconfig.build.json --noEmit");
@@ -28,6 +29,12 @@ describe("package test task", () => {
     expect(packageSmokeScript).toContain("compiled CLI under Node");
     expect(packageSmokeScript).toContain("compiled CLI under Bun");
     expect(packageSmokeScript).toContain("package wrapper");
+
+    const ciWorkflow = readFileSync(new URL(".github/workflows/ci.yml", root), "utf8");
+    expect(ciWorkflow).toContain("pnpm install --frozen-lockfile");
+    expect(ciWorkflow).toContain("bun install --frozen-lockfile");
+    expect(ciWorkflow).toContain("pnpm audit --audit-level high");
+    expect(ciWorkflow).not.toMatch(/^\s*run:\s+npm install(?:\s|$)/m);
   });
 });
 

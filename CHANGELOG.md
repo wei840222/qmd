@@ -2,6 +2,96 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added CJK-aware lexical retrieval with independent character, Jieba word, and
+  bigram FTS5 channels, versioned rank fusion and explain traces. The bundled
+  reviewed Traditional Chinese technical dictionary records its pinned source
+  and MIT attribution in `THIRD_PARTY_NOTICES.md`.
+- Added typed local/OpenAI embedding providers, provider-qualified vector
+  identities, resumable chunk persistence, build leases, remote preflight and
+  acknowledgement, request-purpose guards, safe OpenAI errors, and additive
+  diagnostics in CLI, SDK, and MCP. Local embedding remains the default.
+- Added `OPENAI_BASE_URL` for routing OpenAI-compatible embedding requests
+  through a self-hosted proxy while retaining the existing remote-consent flow.
+- Added the native `@node-rs/jieba` dependency and package smoke coverage for its
+  Node/Bun runtime loading and packaged dictionary data.
+
+### Changed
+
+- Provider failures no longer retain native error causes, preventing nested
+  runtime errors from exposing document content, headers, credentials, or stacks.
+- CLI and SDK local embedding now share the same provider-qualified identity.
+  CLI and SDK shutdown now drain active scoped local/OpenAI embedding, expansion,
+  and reranking work before disposing llama.cpp; CLI database closure is ordered
+  last and concurrent cleanup requests share one idempotent operation. An
+  instance-local atomic acquisition barrier also prevents scoped session leases
+  from racing inactivity unload while it disposes contexts. Full llama.cpp
+  disposal now closes session admission synchronously, drains default and
+  per-instance sessions, and shares one completion promise; failed inactivity
+  unloads no longer prevent best-effort full cleanup.
+- CJK search now omits both analyzed lexical channels (word and bigram) when the
+  Jieba capability is unavailable, preserving character-only fallback even when
+  a persisted analyzed index exists.
+- OpenAI embedding requests now preserve single-request ordering while allowing
+  queued aborts and deadlines, enforce per-attempt fetch/body timeouts, validate
+  UTF-8 budgets and usage metadata, and return usage with each operation result.
+- Destructive remote embedding rebuilds now verify provider capability with a
+  fixed sentinel before clearing vectors, then atomically revalidate consent,
+  document generation, embedding identity, and build authorization before reset.
+- Opening or updating an index now creates versioned CJK shadow tables, mutation
+  journal/build state, and embedding identity state. Document and collection
+  mutations keep all lexical channels synchronized; raw SQLite writes mark the
+  analyzed channels dirty and force character-only fallback until rebuilt.
+- CJK queries skip automatic expansion by default. CLI, SDK, and MCP now share
+  the `auto | force | skip` expansion policy and explicit override semantics;
+  forced empty expansions are reported separately from provider failures.
+- Structured typed queries now apply the documented double weight to every
+  result list from the first supplied sub-query, regardless of lexical/vector
+  execution order. CLI query help also documents standalone `lex:` policy input.
+- Collection and full embedding-fingerprint filters now apply before lexical and
+  vector candidate truncation, including vector indexes larger than SQLite Vec's
+  4,096-result KNN cap. CLI, SDK, and MCP queries honor every requested
+  collection, and query embedding is skipped unless a matching vector identity
+  is published as ready.
+- Embedding identity state now keeps published vectors searchable during
+  same-identity incremental work, fences every vector write with the active
+  unexpired generation lease, requires that lease for destructive vector clears,
+  persists unverifiable legacy identities as incompatible across schema upgrades, and
+  rejects collection-scoped identity changes before any global reset. Local
+  embeddings now publish the same canonical formatter/chunk identity contract
+  as provider-backed builds; missing identity state fails closed, and orphan or
+  collection cleanup rolls back atomically if either vector table update fails.
+- `qmd status`, `qmd doctor`, and MCP startup, status, and remote preflight now use read-only
+  index composition. Invalid configuration is diagnosed without creating or
+  mutating the SQLite index. Legacy vector schemas are reported conservatively
+  without lazy migration, persisted database embedding configuration is restored
+  when YAML is absent, and read-only search skips optional cache and CJK repair writes.
+- Every remote provider request and build transition now fails closed without a
+  Store authorization hook. SDK and MCP still permit lexical-only fallback when
+  no matching ready vector identity exists. Remote no-op checks include the
+  requested chunking strategy, SDK preflight uses the canonical collection config
+  resolver, and the physical OpenAI request boundary requires the complete active
+  identity fingerprint instead of falling back to provider-only identity. Remote
+  acknowledgement diagnostics now consume the canonical consent schema and full
+  build identity rather than duplicating stale consent columns, and remote
+  authorization rejects local identity fingerprints before transport.
+- Config-first collection and context mutations reconcile SQLite through one
+  atomic path, persist diagnostics for `qmd doctor`, recover YAML/SQLite drift on
+  reopen, keep CLI update/include settings synchronized, and use atomic durable
+  YAML replacement.
+
+### Compatibility
+
+- `vectors_vec` still supports one embedding dimension at a time. Switching
+  provider, model, dimension, formatter, or chunk profile requires a full vector
+  rebuild; remote rebuilds additionally require exact consent and
+  `qmd embed --force --allow-remote`.
+- Back up an index before opening it with this version if it must later be used by
+  an older QMD release. Schema migration has no in-place downgrade, and once an
+  authorized vector reset starts there is no rollback to the deleted vectors;
+  lexical search remains available while embeddings are rebuilt.
+
 ## [2.6.3] - 2026-06-24
 
 ### Added
@@ -57,6 +147,8 @@
 
 ### Fixed
 
+- `qmd update` now rebuilds and publishes the CJK word and bigram indexes after
+  re-indexing collections instead of leaving both analyzed channels stale.
 - MCP server instructions now tell agents to scope with the plural `collections`
   parameter (matching the schema). The previous singular `collection` hint led
   agents to pass a parameter that Zod silently strips, producing unscoped results.

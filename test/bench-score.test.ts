@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "vitest";
-import { normalizePath, pathsMatch, scoreResults } from "../src/bench/score.js";
+import { normalizePath, pathsMatch, percentile, scoreResults } from "../src/bench/score.js";
 
 describe("normalizePath", () => {
   test("lowercases path", () => {
@@ -48,6 +48,25 @@ describe("pathsMatch", () => {
 
   test("different files don't match", () => {
     expect(pathsMatch("docs/readme.md", "docs/other.md")).toBe(false);
+  });
+
+  test("suffix matching requires a path-segment boundary", () => {
+    expect(pathsMatch("docs/myfoo.md", "foo.md")).toBe(false);
+    expect(pathsMatch("foo.md", "docs/myfoo.md")).toBe(false);
+  });
+});
+
+describe("percentile", () => {
+  test("uses the nearest-rank method without mutating input", () => {
+    const values = [40, 10, 30, 20];
+
+    expect(percentile(values, 0.5)).toBe(20);
+    expect(percentile(values, 0.95)).toBe(40);
+    expect(values).toEqual([40, 10, 30, 20]);
+  });
+
+  test("returns zero for an empty sample", () => {
+    expect(percentile([], 0.95)).toBe(0);
   });
 });
 
@@ -97,6 +116,64 @@ describe("scoreResults", () => {
       3,
     );
     expect(result.mrr).toBeCloseTo(0.5); // 1/2
+  });
+
+  test("reports recall@10 and keeps legacy recall over all returned results", () => {
+    const result = scoreResults(
+      [
+        "noise-1.md",
+        "relevant-a.md",
+        "noise-3.md",
+        "noise-4.md",
+        "noise-5.md",
+        "noise-6.md",
+        "noise-7.md",
+        "noise-8.md",
+        "noise-9.md",
+        "noise-10.md",
+        "relevant-b.md",
+      ],
+      ["relevant-a.md", "relevant-b.md"],
+      10,
+    );
+
+    expect(result.recall).toBe(1);
+    expect(result.recall_at_10).toBe(0.5);
+  });
+
+  test("reports mrr@10 without changing legacy MRR", () => {
+    const result = scoreResults(
+      [
+        "noise-1.md",
+        "noise-2.md",
+        "noise-3.md",
+        "noise-4.md",
+        "noise-5.md",
+        "noise-6.md",
+        "noise-7.md",
+        "noise-8.md",
+        "noise-9.md",
+        "noise-10.md",
+        "relevant.md",
+      ],
+      ["relevant.md"],
+      10,
+    );
+
+    expect(result.mrr).toBeCloseTo(1 / 11);
+    expect(result.mrr_at_10).toBe(0);
+  });
+
+  test("counts must-not-match documents in the top 10", () => {
+    const result = scoreResults(
+      ["forbidden-a.md", "relevant.md", "forbidden-b.md", "allowed.md"],
+      ["relevant.md"],
+      10,
+      ["forbidden-a.md", "forbidden-b.md", "outside-results.md"],
+    );
+
+    expect(result.false_positive_count).toBe(2);
+    expect(result.false_positive_files).toEqual(["forbidden-a.md", "forbidden-b.md"]);
   });
 
   test("reports recall@1/3/5 and matched documents", () => {

@@ -5,9 +5,9 @@ QMD queries are structured documents with typed sub-queries. Each line specifies
 ## Grammar
 
 ```ebnf
-query          = expand_query | query_document ;
-expand_query   = text | explicit_expand ;
-explicit_expand= "expand:" text ;
+query          = policy_query | query_document ;
+policy_query   = [ policy_prefix ] text ;
+policy_prefix  = "lex:" | "expand:" ;
 query_document = [ intent_line ] { typed_line } ;
 intent_line    = "intent:" text newline ;
 typed_line     = type ":" text newline ;
@@ -28,13 +28,25 @@ newline        = "\n" ;
 
 ## Default Behavior
 
-A QMD query is either a single expand query or a multi-line query document. Any single-line query with no prefix is treated as an expand query and passed to the expansion model, which emits lex, vec, and hyde variants automatically.
+A QMD query is either a single policy query or a multi-line query document. A
+single unprefixed query uses the shared `auto` policy: CJK queries and strong
+lexical matches skip model expansion; other queries expand into lex, vec, and
+hyde variants. Original lexical and vector retrieval is retained in every mode.
 
 ```
-# These are equivalent and cannot be combined with typed lines:
+# Automatic policy:
 how does authentication work
+
+# Force expansion:
 expand: how does authentication work
+
+# Explicitly skip expansion:
+lex: authentication
 ```
+
+`expand:` and CLI `--expand` select `force`; standalone `lex:` selects `skip`.
+Combining `lex:` with `--expand` is an error. In a multi-line query document,
+`lex:` remains a typed lexical sub-query rather than a policy prefix.
 
 ## Lex Query Syntax
 
@@ -92,15 +104,18 @@ hyde: The API implements rate limiting using a token bucket algorithm...
 
 ## Expand Queries
 
-An expand query stands alone; it's not mixed with typed lines. You can either rely on the default untyped form or add the explicit `expand:` prefix:
+An expand query stands alone; it is not mixed with typed lines. Use `expand:` or
+CLI `--expand` to force expansion. An untyped query uses `auto`, so it may bypass
+expansion for CJK text or a strong lexical match.
 
 ```
 expand: error handling best practices
-# equivalent
+# auto policy (not necessarily equivalent when bypass conditions apply)
 error handling best practices
 ```
 
-Both forms call the local query expansion model, which generates lex, vec, and hyde variations automatically.
+Forced expansion fails explicitly if the expansion model cannot produce usable
+variants; it does not silently continue as an unexpanded query.
 
 ## Intent
 
@@ -120,7 +135,7 @@ Without intent, "performance" is ambiguous (web-perf? team health? fitness?). Wi
 
 ## Constraints
 
-- Top-level query must be either a standalone expand query or a multi-line document
+- Top-level query must be either a standalone policy query or a multi-line document
 - Query documents allow only `lex`, `vec`, `hyde`, and `intent` typed lines (no `expand:` inside)
 - `lex` syntax (`-term`, `"phrase"`) only works in lex queries
 - At most one `intent:` line per query document; cannot appear alone
@@ -151,8 +166,9 @@ array — a singular `collection` is silently ignored.
 
 ## MCP/HTTP API
 
-The `query` tool (and the REST `/query` endpoint) accept a structured query with a
-`searches` array. There is no `q` string parameter — `searches` is required:
+The `query` tool accepts exactly one of a plain `query` string or a typed
+`searches` array. Plain queries support the shared `auto | force | skip`
+`expansion` policy and optional `explain`; typed searches bypass expansion:
 
 ```json
 {
@@ -162,6 +178,17 @@ The `query` tool (and the REST `/query` endpoint) accept a structured query with
   ],
   "collections": ["docs"],
   "limit": 10
+}
+```
+
+Plain query with a policy prefix and explain output:
+
+```json
+{
+  "query": "lex: CAP theorem",
+  "expansion": "auto",
+  "explain": true,
+  "collections": ["docs"]
 }
 ```
 
@@ -179,8 +206,14 @@ With intent:
 ## CLI
 
 ```bash
-# Single line (implicit expand)
+# Single line (automatic policy)
 qmd query "how does auth work"
+
+# Force expansion even for CJK or a strong lexical match
+qmd query --expand "資料庫同步"
+
+# Explicitly skip expansion (cannot be combined with --expand)
+qmd query "lex: authentication"
 
 # Multi-line with types
 qmd query $'lex: auth token\nvec: how does authentication work'

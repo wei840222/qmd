@@ -13,10 +13,16 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
 import { setTimeout as sleep } from "timers/promises";
-import { buildEditorUri, termLink, resolveEmbedModelForCli } from "../src/cli/qmd.ts";
+import { buildEditorUri, termLink, resolveEmbedModelForCli, parseStructuredQuery } from "../src/cli/qmd.ts";
 import { openDatabase } from "../src/db.ts";
 import { DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI } from "../src/llm.ts";
 import { setConfigSource } from "../src/collections.ts";
+import {
+  OPENAI_EMBEDDING_DIMENSION,
+  OPENAI_EMBEDDING_MODEL,
+  readCanonicalEmbeddingConfig,
+  writeCanonicalEmbeddingConfig,
+} from "../src/embedding/config.js";
 
 // Test fixtures directory and database path
 let testDir: string;
@@ -48,10 +54,16 @@ async function runQmd(
   const dbPath = options.dbPath || testDbPath;
   const configDir = options.configDir || testConfigDir;
   const runner = qmdRunnerArgs(args);
+  const {
+    QMD_EMBED_MODEL: _embedModel,
+    QMD_GENERATE_MODEL: _generateModel,
+    QMD_RERANK_MODEL: _rerankModel,
+    ...baseEnv
+  } = process.env;
   const proc = spawn(runner.command, runner.args, {
     cwd: workingDir,
     env: {
-      ...process.env,
+      ...baseEnv,
       INDEX_PATH: dbPath,
       QMD_CONFIG_DIR: configDir, // Use test config directory
       PWD: workingDir, // Must explicitly set PWD since getPwd() checks this
@@ -231,6 +243,20 @@ beforeEach(async () => {
   );
 });
 
+describe("CLI query policy routing", () => {
+  test("routes standalone expansion policy prefixes through shared hybrid policy", () => {
+    expect(parseStructuredQuery("lex: 玉山備份")).toBeNull();
+    expect(parseStructuredQuery("expand: 玉山備份")).toBeNull();
+    expect(parseStructuredQuery("lex: 玉山備份\nvec: 資料同步")).toEqual({
+      searches: [
+        { type: "lex", query: "玉山備份", line: 1 },
+        { type: "vec", query: "資料同步", line: 2 },
+      ],
+      intent: undefined,
+    });
+  });
+});
+
 describe("CLI Help", () => {
   test("shows help with --help flag", async () => {
     const { stdout, exitCode } = await runQmd(["--help"]);
@@ -246,6 +272,12 @@ describe("CLI Help", () => {
     const { stdout, exitCode } = await runQmd([]);
     expect(exitCode).toBe(1);
     expect(stdout).toContain("Usage:");
+  });
+
+  test("query help documents the standalone lex policy prefix", async () => {
+    const { stdout, exitCode } = await runQmd(["query", "--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain('policy_query   = [ "lex:" ] text | explicit_expand ;');
   });
 });
 
@@ -523,7 +555,7 @@ describe("CLI Status Command", () => {
     expect(stdout).toContain("embedding freshness");
     expect(stdout).toContain("embedding fingerprints");
     expect(stdout).toContain("embedding vector sample");
-    expect(stdout).toContain("please run qmd embed again");
+    expect(stdout).toContain("skipped until the local embedding dimension is known");
 
     const configText = readFileSync(join(testConfigDir, "index.yml"), "utf-8");
     expect(configText).toContain("models:");
@@ -544,6 +576,7 @@ describe("CLI Status Command", () => {
   test("qmd doctor reports invalid index.yml without crashing", async () => {
     const env = await createIsolatedTestEnv("doctor-invalid-config");
     await writeFile(join(env.configDir, "index.yml"), "collections:\n  bad: [unterminated\n");
+    expect(existsSync(env.dbPath)).toBe(false);
 
     const { stdout, exitCode } = await runQmd(["doctor"], { dbPath: env.dbPath, configDir: env.configDir });
     expect(exitCode).toBe(0);
@@ -551,6 +584,25 @@ describe("CLI Status Command", () => {
     expect(stdout).toContain("invalid index.yml at");
     expect(stdout).toContain(join(env.configDir, "index.yml"));
     expect(stdout).toContain("fix the YAML");
+    expect(existsSync(env.dbPath)).toBe(false);
+  }, 20000);
+
+  test("qmd doctor reports store collection drift reconciled at startup", async () => {
+    const env = await createIsolatedTestEnv("doctor-config-drift");
+    await writeFile(join(env.configDir, "index.yml"), `collections:\n  alpha:\n    path: ${fixturesDir}\n    pattern: "**/*.md"\n`);
+    expect((await runQmd(["collection", "list"], {
+      dbPath: env.dbPath,
+      configDir: env.configDir,
+    })).exitCode).toBe(0);
+
+    const db = openDatabase(env.dbPath);
+    db.prepare(`DELETE FROM store_collections WHERE name = ?`).run("alpha");
+    db.close();
+
+    const { stdout, exitCode } = await runQmd(["doctor"], { dbPath: env.dbPath, configDir: env.configDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("config reconciliation");
+    expect(stdout).toContain("added alpha");
   }, 20000);
 
   test("qmd doctor warns when configured models differ from code defaults", async () => {
@@ -723,6 +775,104 @@ describe("CLI Status Command", () => {
     expect(exitCode).toBe(0);
     // Should show collection info
     expect(stdout).toContain("Collection");
+  });
+
+  test("status does not write configuration or index state", async () => {
+    const db = openDatabase(testDbPath);
+    db.exec(`
+      CREATE TRIGGER reject_status_config_insert
+      BEFORE INSERT ON store_config
+      BEGIN
+        SELECT RAISE(ABORT, 'status attempted a configuration write');
+      END;
+      CREATE TRIGGER reject_status_config_update
+      BEFORE UPDATE ON store_config
+      BEGIN
+        SELECT RAISE(ABORT, 'status attempted a configuration write');
+      END;
+    `);
+    db.close();
+
+    try {
+      const { stdout, stderr, exitCode } = await runQmd(["status"]);
+
+      expect(exitCode, stderr).toBe(0);
+      expect(stdout).toContain("QMD Status");
+    } finally {
+      const cleanup = openDatabase(testDbPath);
+      cleanup.exec(`
+        DROP TRIGGER IF EXISTS reject_status_config_insert;
+        DROP TRIGGER IF EXISTS reject_status_config_update;
+      `);
+      cleanup.close();
+    }
+  });
+
+  test("status reports a legacy content-vector schema without migrating it", async () => {
+    const env = await createIsolatedTestEnv("status-legacy-vectors");
+    expect((await runQmd(["collection", "list"], {
+      dbPath: env.dbPath,
+      configDir: env.configDir,
+    })).exitCode).toBe(0);
+
+    const db = openDatabase(env.dbPath);
+    db.exec(`
+      DROP TABLE content_vectors;
+      CREATE TABLE content_vectors (
+        hash TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        pos INTEGER NOT NULL,
+        model TEXT NOT NULL,
+        vector BLOB,
+        PRIMARY KEY (hash, seq, model)
+      );
+    `);
+    db.close();
+
+    const { stdout, stderr, exitCode } = await runQmd(["status"], {
+      dbPath: env.dbPath,
+      configDir: env.configDir,
+    });
+
+    expect(exitCode, stderr).toBe(0);
+    expect(stdout).toContain("QMD Status");
+    const inspected = openDatabase(env.dbPath);
+    const columns = inspected.prepare(`PRAGMA table_info(content_vectors)`).all() as { name: string }[];
+    inspected.close();
+    expect(columns.map(column => column.name)).not.toContain("embed_fingerprint");
+  });
+
+  test("status and normal store startup restore canonical embedding config when YAML is missing", async () => {
+    const env = await createIsolatedTestEnv("status-canonical-db-config");
+    const initialized = await runQmd(["collection", "list"], env);
+    expect(initialized.exitCode, initialized.stderr).toBe(0);
+
+    const db = openDatabase(env.dbPath);
+    writeCanonicalEmbeddingConfig(db, {
+      provider: "openai",
+      model: OPENAI_EMBEDDING_MODEL,
+      dimension: OPENAI_EMBEDDING_DIMENSION,
+    });
+    db.close();
+    unlinkSync(join(env.configDir, "index.yml"));
+
+    const status = await runQmd(["status"], env);
+    expect(status.exitCode, status.stderr).toBe(0);
+    expect(status.stdout).toContain("Provider: openai");
+    expect(status.stdout).toContain(`Model:    ${OPENAI_EMBEDDING_MODEL}`);
+    expect(status.stdout).toContain(`Dimension: ${OPENAI_EMBEDDING_DIMENSION}`);
+    expect(existsSync(join(env.configDir, "index.yml"))).toBe(false);
+
+    const list = await runQmd(["ls"], env);
+    expect(list.exitCode, list.stderr).toBe(0);
+
+    const inspected = openDatabase(env.dbPath);
+    expect(readCanonicalEmbeddingConfig(inspected)).toEqual({
+      provider: "openai",
+      model: OPENAI_EMBEDDING_MODEL,
+      dimension: OPENAI_EMBEDDING_DIMENSION,
+    });
+    inspected.close();
   });
 
   test("status omits device probing details; doctor owns GPU diagnostics", async () => {
@@ -1236,6 +1386,10 @@ describe("CLI Context Management", () => {
     ], { dbPath: localDbPath });
     expect(exitCode).toBe(0);
     expect(stdout).toContain("✓ Removed context for: qmd://fixtures/notes");
+    const db = openDatabase(localDbPath);
+    const row = db.prepare(`SELECT context FROM store_collections WHERE name = ?`).get("fixtures") as { context: string | null };
+    db.close();
+    expect(row.context ?? "").not.toContain("Context to remove");
   });
 
   test("fails to remove non-existent context", async () => {
@@ -1431,6 +1585,112 @@ describe("CLI Collection Commands", () => {
     const { stdout: listAfter } = await runQmd(["collection", "list"], { dbPath: localDbPath });
     expect(listAfter).toContain("qmd://my-fixtures/");
     expect(listAfter).not.toContain("qmd://fixtures/"); // Old collection should not appear
+  });
+
+  test("reconciles collection update commands into SQLite", async () => {
+    const isolated = await createIsolatedTestEnv("collection-update-command-sync");
+    const added = await runQmd(["collection", "add", ".", "--name", "sync-me"], {
+      dbPath: isolated.dbPath,
+      configDir: isolated.configDir,
+    });
+    expect(added.exitCode).toBe(0);
+
+    const updated = await runQmd(["collection", "update-cmd", "sync-me", "git", "pull"], {
+      dbPath: isolated.dbPath,
+      configDir: isolated.configDir,
+    });
+    expect(updated.exitCode).toBe(0);
+
+    const db = openDatabase(isolated.dbPath);
+    try {
+      expect(db.prepare(`SELECT update_command FROM store_collections WHERE name = ?`).get("sync-me")).toEqual({
+        update_command: "git pull",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  test("reconciles collection include and exclude settings into SQLite", async () => {
+    const isolated = await createIsolatedTestEnv("collection-default-query-sync");
+    const added = await runQmd(["collection", "add", ".", "--name", "sync-me"], {
+      dbPath: isolated.dbPath,
+      configDir: isolated.configDir,
+    });
+    expect(added.exitCode).toBe(0);
+
+    const excluded = await runQmd(["collection", "exclude", "sync-me"], {
+      dbPath: isolated.dbPath,
+      configDir: isolated.configDir,
+    });
+    expect(excluded.exitCode).toBe(0);
+
+    const excludedDb = openDatabase(isolated.dbPath);
+    try {
+      expect(excludedDb.prepare(`SELECT include_by_default FROM store_collections WHERE name = ?`).get("sync-me")).toEqual({
+        include_by_default: 0,
+      });
+    } finally {
+      excludedDb.close();
+    }
+
+    const included = await runQmd(["collection", "include", "sync-me"], {
+      dbPath: isolated.dbPath,
+      configDir: isolated.configDir,
+    });
+    expect(included.exitCode).toBe(0);
+
+    const includedDb = openDatabase(isolated.dbPath);
+    try {
+      expect(includedDb.prepare(`SELECT include_by_default FROM store_collections WHERE name = ?`).get("sync-me")).toEqual({
+        include_by_default: 1,
+      });
+    } finally {
+      includedDb.close();
+    }
+  });
+
+  test("recovers a config-first rename after SQLite reconciliation fails", async () => {
+    const isolated = await createIsolatedTestEnv("rename-recovery");
+    const added = await runQmd(["collection", "add", ".", "--name", "recover-me"], {
+      dbPath: isolated.dbPath,
+      configDir: isolated.configDir,
+    });
+    expect(added.exitCode).toBe(0);
+
+    const injectedFailure = openDatabase(isolated.dbPath);
+    injectedFailure.exec(`
+      CREATE TRIGGER fail_cli_collection_rename
+      BEFORE UPDATE OF collection ON documents
+      BEGIN
+        SELECT RAISE(ABORT, 'injected CLI reconciliation failure');
+      END;
+    `);
+    injectedFailure.close();
+
+    const failed = await runQmd(["collection", "rename", "recover-me", "recovered"], {
+      dbPath: isolated.dbPath,
+      configDir: isolated.configDir,
+    });
+    expect(failed.exitCode).toBe(1);
+    expect(readFileSync(join(isolated.configDir, "index.yml"), "utf8")).toContain("recovered:");
+
+    const afterFailure = openDatabase(isolated.dbPath);
+    expect(afterFailure.prepare(`SELECT 1 FROM documents WHERE collection = 'recover-me' LIMIT 1`).get()).toBeDefined();
+    expect(afterFailure.prepare(`SELECT 1 FROM documents WHERE collection = 'recovered' LIMIT 1`).get() == null).toBe(true);
+    afterFailure.exec(`DROP TRIGGER fail_cli_collection_rename`);
+    afterFailure.close();
+
+    const reopened = await runQmd(["collection", "list"], {
+      dbPath: isolated.dbPath,
+      configDir: isolated.configDir,
+    });
+    expect(reopened.exitCode).toBe(0);
+
+    const recoveredDb = openDatabase(isolated.dbPath);
+    expect(recoveredDb.prepare(`SELECT 1 FROM documents WHERE collection = 'recover-me' LIMIT 1`).get() == null).toBe(true);
+    expect(recoveredDb.prepare(`SELECT 1 FROM documents WHERE collection = 'recovered' LIMIT 1`).get()).toBeDefined();
+    recoveredDb.close();
   });
 
   test("handles renaming non-existent collection", async () => {
@@ -2339,8 +2599,12 @@ describe("mcp http daemon", () => {
     spawnedPids.push(pid);
 
     // Server should be reachable
-    const ready = await waitForServer(port);
-    expect(ready).toBe(true);
+    const ready = await waitForServer(port, 15000);
+    if (!ready) {
+      const logPath = join(daemonCacheDir, "qmd", "mcp.log");
+      const daemonLog = existsSync(logPath) ? readFileSync(logPath, "utf-8") : "<missing>";
+      throw new Error(`daemon did not become ready on port ${port}; log:\n${daemonLog}`);
+    }
 
     // Clean up
     process.kill(pid, "SIGTERM");

@@ -11,6 +11,7 @@ import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
 import {
   LlamaCpp,
   getDefaultLlamaCpp,
+  setDefaultLlamaCpp,
   disposeDefaultLlamaCpp,
   resolveLlamaGpuMode,
   setNodeLlamaCppModuleForTest,
@@ -22,11 +23,235 @@ import {
   resolveRerankModel,
   resolveModels,
   withLLMSession,
+  withLLMSessionForLlm,
   canUnloadLLM,
   SessionReleasedError,
   type RerankDocument,
   type ILLMSession,
 } from "../src/llm.js";
+
+test("tracks idle-unload eligibility per Llama instance", async () => {
+  const first = {} as LlamaCpp;
+  const second = {} as LlamaCpp;
+  let release!: () => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>(resolve => { markStarted = resolve; });
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const active = withLLMSessionForLlm(first, async () => {
+    markStarted();
+    await pending;
+  });
+  await started;
+
+  expect(canUnloadLLM(first)).toBe(false);
+  expect(canUnloadLLM(second)).toBe(true);
+
+  release();
+  await active;
+  expect(canUnloadLLM(first)).toBe(true);
+});
+
+test("blocks new per-Llama sessions until an in-progress idle unload completes", async () => {
+  const llm = new LlamaCpp({ inactivityTimeoutMs: 0 });
+  let markDisposeStarted!: () => void;
+  let releaseDispose!: () => void;
+  const disposeStarted = new Promise<void>(resolve => { markDisposeStarted = resolve; });
+  const disposeRelease = new Promise<void>(resolve => { releaseDispose = resolve; });
+  (llm as unknown as { embedContexts: Array<{ dispose(): Promise<void> }> }).embedContexts = [{
+    dispose: async () => {
+      markDisposeStarted();
+      await disposeRelease;
+    },
+  }];
+
+  const unload = llm.unloadIdleResources();
+  await disposeStarted;
+
+  let sessionEntered = false;
+  const session = withLLMSessionForLlm(llm, async () => {
+    sessionEntered = true;
+  });
+  await Promise.resolve();
+
+  try {
+    expect(sessionEntered).toBe(false);
+  } finally {
+    releaseDispose();
+    await unload;
+    await session;
+  }
+  expect(sessionEntered).toBe(true);
+});
+
+test.each([
+  {
+    name: "per-Llama",
+    runSession: (llm: LlamaCpp, enter: () => Promise<void>) =>
+      withLLMSessionForLlm(llm, enter),
+  },
+  {
+    name: "default",
+    runSession: async (llm: LlamaCpp, enter: () => Promise<void>) => {
+      setDefaultLlamaCpp(llm);
+      try {
+        await withLLMSession(enter);
+      } finally {
+        setDefaultLlamaCpp(null);
+      }
+    },
+  },
+])("$name session acquisition cannot race an idle unload", async ({ runSession }) => {
+  const llm = new LlamaCpp({ inactivityTimeoutMs: 0 });
+  let releaseDispose!: () => void;
+  const disposeRelease = new Promise<void>(resolve => { releaseDispose = resolve; });
+  let disposeInProgress = false;
+  (llm as unknown as { embedContexts: Array<{ dispose(): Promise<void> }> }).embedContexts = [{
+    dispose: async () => {
+      disposeInProgress = true;
+      await disposeRelease;
+      disposeInProgress = false;
+    },
+  }];
+
+  let releaseSession!: () => void;
+  const sessionRelease = new Promise<void>(resolve => { releaseSession = resolve; });
+  let sessionEntered = false;
+  const session = runSession(llm, async () => {
+    sessionEntered = true;
+    await sessionRelease;
+  });
+  const unload = llm.unloadIdleResources();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  try {
+    expect(sessionEntered && disposeInProgress).toBe(false);
+    expect(sessionEntered || disposeInProgress).toBe(true);
+  } finally {
+    releaseSession();
+    releaseDispose();
+    await Promise.allSettled([session, unload]);
+    await llm.dispose();
+  }
+});
+
+test("full disposal retries resources after an in-progress idle unload fails", async () => {
+  const llm = new LlamaCpp({ inactivityTimeoutMs: 0 });
+  let markIdleDisposeStarted!: () => void;
+  let releaseIdleDispose!: () => void;
+  const idleDisposeStarted = new Promise<void>(resolve => { markIdleDisposeStarted = resolve; });
+  const idleDisposeGate = new Promise<void>(resolve => { releaseIdleDispose = resolve; });
+  const events: string[] = [];
+  let contextDisposeCalls = 0;
+  const context = {
+    dispose: vi.fn(async () => {
+      contextDisposeCalls++;
+      events.push(`context:${contextDisposeCalls}`);
+      if (contextDisposeCalls === 1) {
+        markIdleDisposeStarted();
+        await idleDisposeGate;
+        throw new Error("idle context disposal failed");
+      }
+    }),
+  };
+  const model = {
+    dispose: vi.fn(async () => { events.push("model"); }),
+  };
+  const runtime = {
+    dispose: vi.fn(async () => { events.push("runtime"); }),
+  };
+  const resources = llm as unknown as {
+    embedContexts: Array<{ dispose(): Promise<void> }>;
+    embedModel: { dispose(): Promise<void> } | null;
+    llama: { dispose(): Promise<void> } | null;
+  };
+  resources.embedContexts = [context];
+  resources.embedModel = model;
+  resources.llama = runtime;
+
+  const idleUnload = llm.unloadIdleResources();
+  const idleFailure = idleUnload.then(
+    () => undefined,
+    error => error,
+  );
+  await idleDisposeStarted;
+  const fullDispose = llm.dispose();
+  releaseIdleDispose();
+
+  const idleError = await idleFailure;
+  expect(idleError).toBeInstanceOf(Error);
+  expect((idleError as Error).message).toBe("idle context disposal failed");
+  await fullDispose;
+  expect(context.dispose).toHaveBeenCalledTimes(2);
+  expect(model.dispose).toHaveBeenCalledTimes(1);
+  expect(runtime.dispose).toHaveBeenCalledTimes(1);
+  expect(events).toEqual(["context:1", "context:2", "model", "runtime"]);
+});
+
+test("default disposal drains an active default session before disposing resources", async () => {
+  const llm = new LlamaCpp({ inactivityTimeoutMs: 0 });
+  let resourcesDisposed = false;
+  (llm as unknown as { embedContexts: Array<{ dispose(): Promise<void> }> }).embedContexts = [{
+    dispose: async () => { resourcesDisposed = true; },
+  }];
+  setDefaultLlamaCpp(llm);
+
+  let markSessionEntered!: () => void;
+  let releaseSession!: () => void;
+  const sessionEntered = new Promise<void>(resolve => { markSessionEntered = resolve; });
+  const sessionRelease = new Promise<void>(resolve => { releaseSession = resolve; });
+  const activeSession = withLLMSession(async () => {
+    markSessionEntered();
+    await sessionRelease;
+  });
+  await sessionEntered;
+
+  const disposal = disposeDefaultLlamaCpp();
+  await Promise.resolve();
+  try {
+    expect(resourcesDisposed).toBe(false);
+    await expect(withLLMSession(async () => undefined)).rejects.toThrow("LlamaCpp instance is disposing");
+  } finally {
+    releaseSession();
+    await Promise.allSettled([activeSession, disposal]);
+    setDefaultLlamaCpp(null);
+  }
+  expect(resourcesDisposed).toBe(true);
+});
+
+test("direct disposal shares one promise and drains per-Llama sessions", async () => {
+  const llm = new LlamaCpp({ inactivityTimeoutMs: 0 });
+  const disposeContext = vi.fn(async () => undefined);
+  (llm as unknown as { embedContexts: Array<{ dispose(): Promise<void> }> }).embedContexts = [{
+    dispose: disposeContext,
+  }];
+
+  let markSessionEntered!: () => void;
+  let releaseSession!: () => void;
+  const sessionEntered = new Promise<void>(resolve => { markSessionEntered = resolve; });
+  const sessionRelease = new Promise<void>(resolve => { releaseSession = resolve; });
+  const activeSession = withLLMSessionForLlm(llm, async () => {
+    markSessionEntered();
+    await sessionRelease;
+  });
+  await sessionEntered;
+
+  const firstDisposal = llm.dispose();
+  const secondDisposal = llm.dispose();
+  expect(secondDisposal).toBe(firstDisposal);
+  expect(disposeContext).not.toHaveBeenCalled();
+  await expect(withLLMSessionForLlm(llm, async () => undefined)).rejects.toThrow(
+    "LlamaCpp instance is disposing",
+  );
+
+  releaseSession();
+  await expect(Promise.all([activeSession, firstDisposal, secondDisposal])).resolves.toEqual([
+    undefined,
+    undefined,
+    undefined,
+  ]);
+  expect(disposeContext).toHaveBeenCalledTimes(1);
+});
 
 describe("model name resolution", () => {
   function withModelEnv(env: Record<string, string | undefined>, fn: () => void): void {
@@ -581,8 +806,8 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       expect(result).not.toBeNull();
       expect(result!.embedding).toBeInstanceOf(Array);
       expect(result!.embedding.length).toBeGreaterThan(0);
-      // embeddinggemma outputs 768 dimensions
-      expect(result!.embedding.length).toBe(768);
+      // embeddinggemma outputs 1024 dimensions
+      expect(result!.embedding.length).toBe(1024);
     });
 
     test("returns consistent embeddings for same input", async () => {
@@ -630,7 +855,7 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       expect(results).toHaveLength(3);
       for (const result of results) {
         expect(result).not.toBeNull();
-        expect(result!.embedding.length).toBe(768);
+        expect(result!.embedding.length).toBe(1024);
       }
     });
 
@@ -975,7 +1200,7 @@ describe.skipIf(!!process.env.CI)("LLM Session Management", () => {
         expect(session.isValid).toBe(true);
         const embedding = await session.embed("test text");
         expect(embedding).not.toBeNull();
-        expect(embedding!.embedding.length).toBe(768);
+        expect(embedding!.embedding.length).toBe(1024);
         return "success";
       });
       expect(result).toBe("success");
@@ -1037,7 +1262,7 @@ describe.skipIf(!!process.env.CI)("LLM Session Management", () => {
         expect(results).toHaveLength(3);
         for (const result of results) {
           expect(result).not.toBeNull();
-          expect(result!.embedding.length).toBe(768);
+          expect(result!.embedding.length).toBe(1024);
         }
       });
     });

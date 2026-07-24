@@ -210,6 +210,8 @@ export type LLMSessionOptions = {
  * Session interface for scoped LLM access with lifecycle guarantees
  */
 export interface ILLMSession {
+  /** Embedding model actually loaded by the session owner. */
+  readonly embeddingModel: string;
   embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null>;
   embedBatch(texts: string[], options?: EmbedOptions): Promise<(EmbeddingResult | null)[]>;
   expandQuery(query: string, options?: { context?: string; includeLexical?: boolean }): Promise<Queryable[]>;
@@ -717,11 +719,15 @@ export class LlamaCpp implements LLM {
 
   // Inactivity timer for auto-unloading models
   private inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+  private idleUnloadPromise: Promise<void> | null = null;
   private inactivityTimeoutMs: number;
   private disposeModelsOnInactivity: boolean;
 
-  // Track disposal state to prevent double-dispose
+  // Full disposal closes session admission synchronously, drains accepted
+  // work, and shares one completion promise across concurrent callers.
+  private closing = false;
   private disposed = false;
+  private disposePromise: Promise<void> | null = null;
 
 
   constructor(config: LlamaCppConfig = {}) {
@@ -769,7 +775,7 @@ export class LlamaCpp implements LLM {
         // Check if session manager allows unloading
         // canUnloadLLM is defined later in this file - it checks the session manager
         // We use dynamic import pattern to avoid circular dependency issues
-        if (typeof canUnloadLLM === 'function' && !canUnloadLLM()) {
+        if (typeof canUnloadLLM === 'function' && !canUnloadLLM(this)) {
           // Active sessions/operations - reschedule timer
           this.touchActivity();
           return;
@@ -796,7 +802,39 @@ export class LlamaCpp implements LLM {
    * By default, this disposes contexts (and their dependent sequences), while keeping models loaded.
    * This matches the intended lifecycle: model → context → sequence, where contexts are per-session.
    */
-  async unloadIdleResources(): Promise<void> {
+  unloadIdleResources(): Promise<void> {
+    if (this.idleUnloadPromise) return this.idleUnloadPromise;
+    if (this.closing || this.disposed) return Promise.resolve();
+    if (!canUnloadLLM(this)) return Promise.resolve();
+
+    const unload = this.disposeIdleResources();
+    const tracked = unload.finally(() => {
+      if (this.idleUnloadPromise === tracked) this.idleUnloadPromise = null;
+    });
+    this.idleUnloadPromise = tracked;
+    return tracked;
+  }
+
+  /** Wait for an inactivity unload that already owns this instance's resources. */
+  async waitForIdleUnload(): Promise<void> {
+    while (this.idleUnloadPromise) await this.idleUnloadPromise;
+  }
+
+  /**
+   * Acquire a lease without yielding between the idle-unload check and the
+   * caller's synchronous lease registration.
+   */
+  async acquireAfterIdleUnload<T>(acquire: () => T): Promise<T> {
+    while (true) {
+      if (this.closing || this.disposed) {
+        throw new Error("LlamaCpp instance is disposing");
+      }
+      if (!this.idleUnloadPromise) return acquire();
+      await this.idleUnloadPromise;
+    }
+  }
+
+  private async disposeIdleResources(): Promise<void> {
     // Don't unload if already disposed
     if (this.disposed) {
       return;
@@ -1311,7 +1349,7 @@ export class LlamaCpp implements LLM {
 
       return {
         embedding: Array.from(embedding.vector),
-        model: options.model ?? this.embedModelUri,
+        model: this.embedModelUri,
       };
     } catch (error) {
       console.error("Embedding error:", error);
@@ -1346,7 +1384,7 @@ export class LlamaCpp implements LLM {
             }
             const embedding = await context.getEmbeddingFor(safeText);
             this.touchActivity();
-            embeddings.push({ embedding: Array.from(embedding.vector), model: options.model ?? this.embedModelUri });
+            embeddings.push({ embedding: Array.from(embedding.vector), model: this.embedModelUri });
           } catch (err) {
             console.error("Embedding error for text:", err);
             embeddings.push(null);
@@ -1373,7 +1411,7 @@ export class LlamaCpp implements LLM {
               }
               const embedding = await ctx.getEmbeddingFor(safeText);
               this.touchActivity();
-              results.push({ embedding: Array.from(embedding.vector), model: options.model ?? this.embedModelUri });
+              results.push({ embedding: Array.from(embedding.vector), model: this.embedModelUri });
             } catch (err) {
               console.error("Embedding error for text:", err);
               results.push(null);
@@ -1676,17 +1714,29 @@ export class LlamaCpp implements LLM {
     };
   }
 
-  async dispose(): Promise<void> {
-    // Prevent double-dispose
-    if (this.disposed) {
-      return;
+  dispose(): Promise<void> {
+    if (!this.disposePromise) {
+      this.closing = true;
+      this.disposePromise = this.disposeAfterDrain();
     }
+    return this.disposePromise;
+  }
+
+  private async disposeAfterDrain(): Promise<void> {
+    await waitForLLMSessionsToDrain(this);
     this.disposed = true;
 
     // Clear inactivity timer
     if (this.inactivityTimer) {
       clearTimeout(this.inactivityTimer);
       this.inactivityTimer = null;
+    }
+
+    try {
+      await this.waitForIdleUnload();
+    } catch {
+      // Full shutdown must still attempt best-effort disposal after a failed
+      // inactivity unload; disposeWithTimeout below reports individual errors.
     }
 
     // Explicitly dispose in dependency order: contexts first, then models, then llama.
@@ -1742,6 +1792,7 @@ class LLMSessionManager {
   private llm: LlamaCpp;
   private _activeSessionCount = 0;
   private _inFlightOperations = 0;
+  private readonly idleWaiters = new Set<() => void>();
 
   constructor(llm: LlamaCpp) {
     this.llm = llm;
@@ -1769,6 +1820,7 @@ class LLMSessionManager {
 
   release(): void {
     this._activeSessionCount = Math.max(0, this._activeSessionCount - 1);
+    this.resolveIdleWaiters();
   }
 
   operationStart(): void {
@@ -1777,10 +1829,22 @@ class LLMSessionManager {
 
   operationEnd(): void {
     this._inFlightOperations = Math.max(0, this._inFlightOperations - 1);
+    this.resolveIdleWaiters();
+  }
+
+  waitForIdle(): Promise<void> {
+    if (this.canUnload()) return Promise.resolve();
+    return new Promise(resolve => this.idleWaiters.add(resolve));
   }
 
   getLlamaCpp(): LlamaCpp {
     return this.llm;
+  }
+
+  private resolveIdleWaiters(): void {
+    if (!this.canUnload()) return;
+    for (const resolve of this.idleWaiters) resolve();
+    this.idleWaiters.clear();
   }
 }
 
@@ -1836,6 +1900,10 @@ class LLMSession implements ILLMSession {
 
   get isValid(): boolean {
     return !this.released && !this.abortController.signal.aborted;
+  }
+
+  get embeddingModel(): string {
+    return this.manager.getLlamaCpp().embedModelName;
   }
 
   get signal(): AbortSignal {
@@ -1907,6 +1975,7 @@ class LLMSession implements ILLMSession {
 
 // Session manager for the default LlamaCpp instance
 let defaultSessionManager: LLMSessionManager | null = null;
+const specificSessionManagers = new WeakMap<LlamaCpp, LLMSessionManager>();
 
 /**
  * Get the session manager for the default LlamaCpp instance.
@@ -1938,7 +2007,10 @@ export async function withLLMSession<T>(
   options?: LLMSessionOptions
 ): Promise<T> {
   const manager = getSessionManager();
-  const session = new LLMSession(manager, options);
+  const llm = manager.getLlamaCpp();
+  const session = typeof llm.acquireAfterIdleUnload === "function"
+    ? await llm.acquireAfterIdleUnload(() => new LLMSession(manager, options))
+    : new LLMSession(manager, options);
 
   try {
     return await fn(session);
@@ -1956,8 +2028,14 @@ export async function withLLMSessionForLlm<T>(
   fn: (session: ILLMSession) => Promise<T>,
   options?: LLMSessionOptions
 ): Promise<T> {
-  const manager = new LLMSessionManager(llm);
-  const session = new LLMSession(manager, options);
+  let manager = specificSessionManagers.get(llm);
+  if (!manager) {
+    manager = new LLMSessionManager(llm);
+    specificSessionManagers.set(llm, manager);
+  }
+  const session = typeof llm.acquireAfterIdleUnload === "function"
+    ? await llm.acquireAfterIdleUnload(() => new LLMSession(manager, options))
+    : new LLMSession(manager, options);
 
   try {
     return await fn(session);
@@ -1966,13 +2044,29 @@ export async function withLLMSessionForLlm<T>(
   }
 }
 
+/** Wait until all scoped sessions using a specific LlamaCpp instance have settled. */
+export async function waitForLLMSessionsToDrain(llm: LlamaCpp): Promise<void> {
+  const waits: Promise<void>[] = [];
+  const specific = specificSessionManagers.get(llm);
+  if (specific) waits.push(specific.waitForIdle());
+  if (defaultSessionManager?.getLlamaCpp() === llm) {
+    waits.push(defaultSessionManager.waitForIdle());
+  }
+  await Promise.all(waits);
+}
+
 /**
  * Check if idle unload is safe (no active sessions or operations).
  * Used internally by LlamaCpp idle timer.
  */
-export function canUnloadLLM(): boolean {
-  if (!defaultSessionManager) return true;
-  return defaultSessionManager.canUnload();
+export function canUnloadLLM(llm?: LlamaCpp): boolean {
+  if (!llm) return defaultSessionManager?.canUnload() ?? true;
+  const specific = specificSessionManagers.get(llm);
+  if (specific && !specific.canUnload()) return false;
+  if (defaultSessionManager?.getLlamaCpp() === llm && !defaultSessionManager.canUnload()) {
+    return false;
+  }
+  return true;
 }
 
 // =============================================================================

@@ -52,6 +52,7 @@ import {
   STRONG_SIGNAL_MIN_GAP,
   insertContent,
   insertDocument,
+  insertEmbedding,
   generateEmbeddings,
   getHybridRrfWeights,
   _resetProductionModeForTesting,
@@ -64,6 +65,11 @@ import {
   type RankedResult,
   type RankedListMeta,
 } from "../src/store.js";
+import {
+  beginEmbeddingBuild,
+  completeEmbeddingBuild,
+  createEmbeddingIdentity,
+} from "../src/embedding/identity.js";
 import type { CollectionConfig } from "../src/collections.js";
 
 // =============================================================================
@@ -102,6 +108,86 @@ async function createTestStore(): Promise<Store> {
   const store = createStore(testDbPath);
   currentTestStore = store;
   return store;
+}
+
+function publishSearchableFixture(store: Store, model: string): void {
+  const { identity, lease } = beginEmbeddingFixture(store, model, 3);
+  const now = new Date(0).toISOString();
+  insertContent(store.db, "query-fixture-hash", "query fixture", now);
+  insertDocument(store.db, "query-fixture", "fixture.md", "Fixture", "query-fixture-hash", now, now);
+  insertEmbedding(
+    store.db,
+    "query-fixture-hash",
+    0,
+    0,
+    new Float32Array([1, 0, 0]),
+    model,
+    now,
+    1,
+    identity.fingerprint,
+    lease,
+  );
+  completeEmbeddingBuild(store.db, lease);
+}
+
+function beginEmbeddingFixture(store: Store, model: string, dimension: number) {
+  const identity = createEmbeddingIdentity({
+    providerId: "local-test",
+    model,
+    dimension,
+    remote: false,
+    canonicalMaterial: JSON.stringify({ provider: "local-test", model, dimension }),
+  });
+  const lease = beginEmbeddingBuild(store.db, identity, {
+    ownerId: "query-fixture",
+    now: Date.now(),
+    leaseMs: 60_000,
+    allowDestructiveRebuild: true,
+  });
+  return { identity, lease };
+}
+
+function insertCorruptEmbeddingFixture(
+  store: Store,
+  hash: string,
+  embedding: Float32Array,
+  model: string,
+  fingerprint: string,
+  embeddedAt: string,
+): void {
+  store.ensureVecTable(embedding.length);
+  store.db.prepare(`
+    INSERT INTO content_vectors
+      (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
+    VALUES (?, 0, 0, ?, ?, 1, ?)
+  `).run(hash, model, fingerprint, embeddedAt);
+  store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`)
+    .run(`${hash}_0`, embedding);
+}
+
+function publishVectorFixtures(
+  store: Store,
+  model: string,
+  entries: Array<{ hash: string; embedding: Float32Array }>,
+): void {
+  if (entries.length === 0) return;
+  const { identity, lease } = beginEmbeddingFixture(store, model, entries[0]!.embedding.length);
+  const now = new Date(0).toISOString();
+  for (const { hash, embedding } of entries) {
+    insertEmbedding(
+      store.db,
+      hash,
+      0,
+      0,
+      embedding,
+      model,
+      now,
+      1,
+      identity.fingerprint,
+      lease,
+    );
+  }
+  completeEmbeddingBuild(store.db, lease);
 }
 
 async function cleanupTestDb(store: Store): Promise<void> {
@@ -418,8 +504,19 @@ describe("Store Creation", () => {
     expect(columns.map(col => col.name)).not.toContain("seq");
     expect(columns.map(col => col.name)).not.toContain("pos");
 
-    store.ensureVecTable(3);
-    store.insertEmbedding("hash1", 1, 42, new Float32Array([1, 2, 3]), model, new Date().toISOString(), 2);
+    const { identity, lease } = beginEmbeddingFixture(store, model, 3);
+    insertEmbedding(
+      store.db,
+      "hash1",
+      1,
+      42,
+      new Float32Array([1, 2, 3]),
+      model,
+      new Date().toISOString(),
+      2,
+      identity.fingerprint,
+      lease,
+    );
 
     columns = store.db.prepare(`PRAGMA table_info(content_vectors)`).all() as { name: string }[];
     const columnNames = columns.map(col => col.name);
@@ -536,17 +633,25 @@ describe("Document Helpers", () => {
 
 describe("Embedding Formatting", () => {
   test("formatQueryForEmbedding adds search task prefix", () => {
-    const formatted = formatQueryForEmbedding("how to deploy");
+    const formatted = formatQueryForEmbedding("how to deploy", llmModule.DEFAULT_EMBED_MODEL_URI);
     expect(formatted).toBe("task: search result | query: how to deploy");
   });
 
   test("formatDocForEmbedding adds title and text prefix", () => {
-    const formatted = formatDocForEmbedding("Some content", "My Title");
+    const formatted = formatDocForEmbedding(
+      "Some content",
+      "My Title",
+      llmModule.DEFAULT_EMBED_MODEL_URI,
+    );
     expect(formatted).toBe("title: My Title | text: Some content");
   });
 
   test("formatDocForEmbedding handles missing title", () => {
-    const formatted = formatDocForEmbedding("Some content");
+    const formatted = formatDocForEmbedding(
+      "Some content",
+      undefined,
+      llmModule.DEFAULT_EMBED_MODEL_URI,
+    );
     expect(formatted).toBe("title: none | text: Some content");
   });
 });
@@ -2498,9 +2603,21 @@ describe("Index Status", () => {
     const now = new Date().toISOString();
 
     store.llm = { embedModelName: activeModel } as any;
-    store.ensureVecTable(3);
     await insertTestDocument(store.db, collectionName, { name: "doc1", hash: "hash1" });
-    store.insertEmbedding("hash1", 0, 0, new Float32Array([1, 2, 3]), staleModel, now, 1);
+    const { identity, lease } = beginEmbeddingFixture(store, staleModel, 3);
+    insertEmbedding(
+      store.db,
+      "hash1",
+      0,
+      0,
+      new Float32Array([1, 2, 3]),
+      staleModel,
+      now,
+      1,
+      identity.fingerprint,
+      lease,
+    );
+    completeEmbeddingBuild(store.db, lease);
 
     expect(store.getHashesNeedingEmbedding()).toBe(1);
     expect(store.getStatus().needsEmbedding).toBe(1);
@@ -2517,9 +2634,8 @@ describe("Index Status", () => {
     const now = new Date().toISOString();
 
     store.llm = { embedModelName: model } as any;
-    store.ensureVecTable(3);
     await insertTestDocument(store.db, collectionName, { name: "doc1", hash: "hash1" });
-    store.insertEmbedding("hash1", 0, 0, new Float32Array([1, 2, 3]), model, now, 1, "stale1");
+    insertCorruptEmbeddingFixture(store, "hash1", new Float32Array([1, 2, 3]), model, "stale1", now);
 
     expect(getEmbeddingFingerprint(model)).toMatch(/^[a-f0-9]{6}$/);
     expect(store.getHashesNeedingEmbedding()).toBe(1);
@@ -2710,6 +2826,7 @@ describe("Vector Table", () => {
     const first = new Float32Array([0.1, 0.2]);
     const second = new Float32Array([0.3, 0.4]);
     const now = new Date().toISOString();
+    const { identity, lease } = beginEmbeddingFixture(store, "test-model", 2);
 
     store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, first);
 
@@ -2719,7 +2836,18 @@ describe("Vector Table", () => {
     }).toThrow(/UNIQUE constraint failed/i);
 
     // QMD must therefore use DELETE + INSERT when upserting the vector row.
-    expect(() => store.insertEmbedding(hash, 0, 0, second, "test-model", now)).not.toThrow();
+    expect(() => insertEmbedding(
+      store.db,
+      hash,
+      0,
+      0,
+      second,
+      "test-model",
+      now,
+      1,
+      identity.fingerprint,
+      lease,
+    )).not.toThrow();
 
     const vectorCount = store.db.prepare(`SELECT COUNT(*) AS count FROM vectors_vec WHERE hash_seq = ?`).get(`${hash}_0`) as { count: number };
     const metadataCount = store.db.prepare(`SELECT COUNT(*) AS count FROM content_vectors WHERE hash = ? AND seq = 0`).get(hash) as { count: number };
@@ -2902,11 +3030,10 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       displayPath: "doc1.md",
     });
 
-    // Create vector table and insert a vector
-    store.ensureVecTable(768);
     const embedding = Array(768).fill(0).map(() => Math.random());
-    store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash, new Date().toISOString());
-    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, new Float32Array(embedding));
+    publishVectorFixtures(store, "embeddinggemma", [
+      { hash, embedding: new Float32Array(embedding) },
+    ]);
 
     const results = await store.searchVec("test query", "embeddinggemma", 10);
     expect(results).toHaveLength(1);
@@ -2937,14 +3064,12 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       body: "Content in collection two",
     });
 
-    // Create vectors_vec table with correct dimensions (768 for embeddinggemma)
-    store.ensureVecTable(768);
     const embedding1 = Array(768).fill(0).map(() => Math.random());
     const embedding2 = Array(768).fill(0).map(() => Math.random());
-    store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash1, new Date().toISOString());
-    store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash2, new Date().toISOString());
-    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash1}_0`, new Float32Array(embedding1));
-    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash2}_0`, new Float32Array(embedding2));
+    publishVectorFixtures(store, "embeddinggemma", [
+      { hash: hash1, embedding: new Float32Array(embedding1) },
+      { hash: hash2, embedding: new Float32Array(embedding2) },
+    ]);
 
     // Search without filter - should return both
     const allResults = await store.searchVec("content", "embeddinggemma", 10);
@@ -2974,11 +3099,10 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       displayPath: "regression.md",
     });
 
-    // Create vector table and insert a test vector
-    store.ensureVecTable(768);
     const embedding = Array(768).fill(0).map(() => Math.random());
-    store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash, new Date().toISOString());
-    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, new Float32Array(embedding));
+    publishVectorFixtures(store, "embeddinggemma", [
+      { hash, embedding: new Float32Array(embedding) },
+    ]);
 
     // This should complete quickly (not hang) due to the two-step fix
     // The old code with JOINs in the sqlite-vec query would hang indefinitely
@@ -3409,8 +3533,8 @@ describe("Embedding batching", () => {
 
       expect(result.errors).toBeGreaterThan(0);
       expect(result.failures?.[0]?.attempts).toBe(3);
-      expect(db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get()).toEqual({ count: 0 });
-      expect(db.prepare(`SELECT COUNT(*) as count FROM vectors_vec`).get()).toEqual({ count: 0 });
+      expect(db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get()).toEqual({ count: 1 });
+      expect(db.prepare(`SELECT COUNT(*) as count FROM vectors_vec`).get()).toEqual({ count: 1 });
       expect(store.getHashesNeedingEmbedding()).toBe(1);
       expect(store.getStatus().needsEmbedding).toBe(1);
     } finally {
@@ -3485,18 +3609,23 @@ describe("Embedding batching", () => {
     const model = "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
     const searchVecSpy = vi.fn(async () => [] as SearchResult[]) as any;
 
-    store.db.exec(`CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding BLOB)`);
+    publishSearchableFixture(store, model);
     store.llm = { embedModelName: model } as any;
     store.searchVec = searchVecSpy as any;
     store.expandQuery = vi.fn(async () => []) as any;
 
     try {
-      await vectorSearchQuery(store, "custom query", { limit: 7, minScore: 0 });
+      await vectorSearchQuery(store, "custom query", {
+        collection: ["first", "second"],
+        limit: 7,
+        minScore: 0,
+      });
 
       expect(searchVecSpy).toHaveBeenCalledTimes(1);
       expect(searchVecSpy.mock.calls[0]?.[0]).toBe("custom query");
       expect(searchVecSpy.mock.calls[0]?.[1]).toBe(model);
       expect(searchVecSpy.mock.calls[0]?.[2]).toBe(7);
+      expect(searchVecSpy.mock.calls[0]?.[3]).toEqual(["first", "second"]);
     } finally {
       await cleanupTestDb(store);
     }
@@ -3511,7 +3640,7 @@ describe("Embedding batching", () => {
     })));
     const searchVecSpy = vi.fn(async () => [] as SearchResult[]) as any;
 
-    store.db.exec(`CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding BLOB)`);
+    publishSearchableFixture(store, model);
     store.llm = {
       embedModelName: model,
       embedBatch: embedBatchSpy,
@@ -3542,7 +3671,7 @@ describe("Embedding batching", () => {
     })));
     const searchVecSpy = vi.fn(async () => [] as SearchResult[]) as any;
 
-    store.db.exec(`CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding BLOB)`);
+    publishSearchableFixture(store, model);
     store.llm = {
       embedModelName: model,
       embedBatch: embedBatchSpy,
@@ -3561,6 +3690,62 @@ describe("Embedding batching", () => {
       expect(searchVecSpy.mock.calls[0]?.[0]).toBe("structured query");
       expect(searchVecSpy.mock.calls[0]?.[1]).toBe(model);
       expect(searchVecSpy.mock.calls[0]?.[5]).toEqual([1, 2, 3]);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("structuredSearch gives 2x weight to the first supplied typed query", async () => {
+    const store = await createTestStore();
+    const model = "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
+    const makeSearchResult = (
+      filepath: string,
+      source: "fts" | "vec",
+    ): SearchResult => ({
+      filepath,
+      displayPath: filepath,
+      title: filepath,
+      context: null,
+      hash: filepath,
+      docid: filepath,
+      collectionName: "test",
+      modifiedAt: new Date(0).toISOString(),
+      bodyLength: 12,
+      body: "search body",
+      score: 1,
+      source,
+    });
+    const vectorResult = makeSearchResult("qmd://test/vector.md", "vec");
+    const lexicalResult = makeSearchResult("qmd://test/lexical.md", "fts");
+
+    publishSearchableFixture(store, model);
+    store.llm = {
+      embedModelName: model,
+      embedBatch: vi.fn(async () => [{ embedding: [1, 2, 3], model }]),
+    } as any;
+    store.searchFTS = vi.fn(() => [lexicalResult]) as any;
+    store.searchVec = vi.fn(async () => [vectorResult]) as any;
+
+    try {
+      const results = await structuredSearch(store, [
+        { type: "vec", query: "vector first" },
+        { type: "lex", query: "lexical second" },
+      ], {
+        limit: 5,
+        minScore: 0,
+        skipRerank: true,
+        explain: true,
+      });
+
+      const vectorContribution = results
+        .find(result => result.file === vectorResult.filepath)
+        ?.explain?.rrf.contributions.find(contribution => contribution.query === "vector first");
+      const lexicalContribution = results
+        .find(result => result.file === lexicalResult.filepath)
+        ?.explain?.rrf.contributions.find(contribution => contribution.query === "lexical second");
+
+      expect(vectorContribution?.weight).toBe(2);
+      expect(lexicalContribution?.weight).toBe(1);
     } finally {
       await cleanupTestDb(store);
     }

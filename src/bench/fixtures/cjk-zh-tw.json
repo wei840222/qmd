@@ -1,0 +1,577 @@
+{
+  "description": "Traditional Chinese lexical retrieval benchmark with stable document IDs and explicit negative qrels.",
+  "version": 2,
+  "collection": "eval-cjk",
+  "documents": [
+    {
+      "id": "cache-invalidation",
+      "file": "cache-invalidation.md"
+    },
+    {
+      "id": "authentication-failure",
+      "file": "authentication-failure.md"
+    },
+    {
+      "id": "memory-management",
+      "file": "memory-management.md"
+    },
+    {
+      "id": "storage-planning",
+      "file": "storage-planning.md"
+    },
+    {
+      "id": "database-replication",
+      "file": "database-replication.md"
+    },
+    {
+      "id": "network-latency",
+      "file": "network-latency.md"
+    },
+    {
+      "id": "server-observability",
+      "file": "server-observability.md"
+    },
+    {
+      "id": "cloud-deployment",
+      "file": "cloud-deployment.md"
+    },
+    {
+      "id": "information-security",
+      "file": "information-security.md"
+    },
+    {
+      "id": "software-testing",
+      "file": "software-testing.md"
+    },
+    {
+      "id": "typescript-narrowing",
+      "file": "typescript-narrowing.md"
+    },
+    {
+      "id": "kubernetes-cluster",
+      "file": "kubernetes-cluster.md"
+    },
+    {
+      "id": "api-rate-limiting",
+      "file": "api-rate-limiting.md"
+    },
+    {
+      "id": "cicd-deployment",
+      "file": "cicd-deployment.md"
+    },
+    {
+      "id": "sqlite-full-text-search",
+      "file": "sqlite-full-text-search.md"
+    },
+    {
+      "id": "blue-magpie-protocol",
+      "file": "blue-magpie-protocol.md"
+    },
+    {
+      "id": "starlight-queue",
+      "file": "starlight-queue.md"
+    },
+    {
+      "id": "yushan-synchronizer",
+      "file": "yushan-synchronizer.md"
+    },
+    {
+      "id": "wufeng-gateway",
+      "file": "wufeng-gateway.md"
+    },
+    {
+      "id": "api-versioning",
+      "file": "api-versioning.md"
+    },
+    {
+      "id": "cap-theorem",
+      "file": "cap-theorem.md"
+    },
+    {
+      "id": "remote-work",
+      "file": "remote-work.md"
+    }
+  ],
+  "queries": [
+    {
+      "id": "zh-tw-term-01",
+      "query": "快取更新機制",
+      "type": "exact",
+      "description": "快取更新機制",
+      "relevant_doc_ids": [
+        "cache-invalidation"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "taiwan-terminology"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-term-02",
+      "query": "身分驗證失敗",
+      "type": "exact",
+      "description": "身分驗證失敗",
+      "relevant_doc_ids": [
+        "authentication-failure"
+      ],
+      "must_not_match_doc_ids": [
+        "cache-invalidation"
+      ],
+      "scenario_tags": [
+        "taiwan-terminology",
+        "shared-character"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-term-03",
+      "query": "記憶體配置",
+      "type": "exact",
+      "description": "記憶體配置",
+      "relevant_doc_ids": [
+        "memory-management"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "taiwan-terminology"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-term-04",
+      "query": "硬碟儲存空間",
+      "type": "exact",
+      "description": "硬碟儲存空間",
+      "relevant_doc_ids": [
+        "storage-planning"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "taiwan-terminology"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-term-05",
+      "query": "資料庫複寫",
+      "type": "exact",
+      "description": "資料庫複寫",
+      "relevant_doc_ids": [
+        "database-replication"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "taiwan-terminology"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-term-06",
+      "query": "網路延遲",
+      "type": "exact",
+      "description": "網路延遲",
+      "relevant_doc_ids": [
+        "network-latency"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "taiwan-terminology"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-term-07",
+      "query": "伺服器監控",
+      "type": "exact",
+      "description": "伺服器監控",
+      "relevant_doc_ids": [
+        "server-observability"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "taiwan-terminology"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-term-08",
+      "query": "雲端部署",
+      "type": "exact",
+      "description": "雲端部署",
+      "relevant_doc_ids": [
+        "cloud-deployment"
+      ],
+      "must_not_match_doc_ids": [
+        "cicd-deployment"
+      ],
+      "scenario_tags": [
+        "taiwan-terminology",
+        "shared-character"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-term-09",
+      "query": "資訊安全基線",
+      "type": "exact",
+      "description": "資訊安全基線",
+      "relevant_doc_ids": [
+        "information-security"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "taiwan-terminology"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-term-10",
+      "query": "軟體測試策略",
+      "type": "exact",
+      "description": "軟體測試策略",
+      "relevant_doc_ids": [
+        "software-testing"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "taiwan-terminology"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-shared-01",
+      "query": "快取失效",
+      "type": "exact",
+      "description": "快取失效",
+      "relevant_doc_ids": [
+        "cache-invalidation"
+      ],
+      "must_not_match_doc_ids": [
+        "authentication-failure"
+      ],
+      "scenario_tags": [
+        "shared-character"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-shared-02",
+      "query": "驗證失效",
+      "type": "exact",
+      "description": "驗證失效",
+      "relevant_doc_ids": [
+        "authentication-failure"
+      ],
+      "must_not_match_doc_ids": [
+        "cache-invalidation"
+      ],
+      "scenario_tags": [
+        "shared-character"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-shared-03",
+      "query": "資料庫同步",
+      "type": "exact",
+      "description": "資料庫同步",
+      "relevant_doc_ids": [
+        "database-replication"
+      ],
+      "must_not_match_doc_ids": [
+        "yushan-synchronizer"
+      ],
+      "scenario_tags": [
+        "shared-character"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-shared-04",
+      "query": "同步器衝突",
+      "type": "exact",
+      "description": "同步器衝突",
+      "relevant_doc_ids": [
+        "yushan-synchronizer"
+      ],
+      "must_not_match_doc_ids": [
+        "database-replication"
+      ],
+      "scenario_tags": [
+        "shared-character"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-shared-05",
+      "query": "CI 部署失敗",
+      "type": "exact",
+      "description": "CI 部署失敗",
+      "relevant_doc_ids": [
+        "cicd-deployment"
+      ],
+      "must_not_match_doc_ids": [
+        "cloud-deployment"
+      ],
+      "scenario_tags": [
+        "shared-character",
+        "mixed-script"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-shared-06",
+      "query": "雲端區域",
+      "type": "exact",
+      "description": "雲端區域",
+      "relevant_doc_ids": [
+        "cloud-deployment"
+      ],
+      "must_not_match_doc_ids": [
+        "cicd-deployment"
+      ],
+      "scenario_tags": [
+        "shared-character"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-shared-07",
+      "query": "API 速率限制",
+      "type": "exact",
+      "description": "API 速率限制",
+      "relevant_doc_ids": [
+        "api-rate-limiting"
+      ],
+      "must_not_match_doc_ids": [
+        "api-versioning"
+      ],
+      "scenario_tags": [
+        "shared-character",
+        "mixed-script"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-shared-08",
+      "query": "API 版本相容",
+      "type": "exact",
+      "description": "API 版本相容",
+      "relevant_doc_ids": [
+        "api-versioning"
+      ],
+      "must_not_match_doc_ids": [
+        "api-rate-limiting"
+      ],
+      "scenario_tags": [
+        "shared-character",
+        "mixed-script"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-mixed-01",
+      "query": "TypeScript 型別窄化",
+      "type": "exact",
+      "description": "TypeScript 型別窄化",
+      "relevant_doc_ids": [
+        "typescript-narrowing"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "mixed-script"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-mixed-02",
+      "query": "Kubernetes 叢集升級",
+      "type": "exact",
+      "description": "Kubernetes 叢集升級",
+      "relevant_doc_ids": [
+        "kubernetes-cluster"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "mixed-script"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-mixed-03",
+      "query": "API rate limit 退避",
+      "type": "exact",
+      "description": "API rate limit 退避",
+      "relevant_doc_ids": [
+        "api-rate-limiting"
+      ],
+      "must_not_match_doc_ids": [
+        "api-versioning"
+      ],
+      "scenario_tags": [
+        "mixed-script"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-mixed-04",
+      "query": "CI/CD pipeline 部署",
+      "type": "exact",
+      "description": "CI/CD pipeline 部署",
+      "relevant_doc_ids": [
+        "cicd-deployment"
+      ],
+      "must_not_match_doc_ids": [
+        "cloud-deployment"
+      ],
+      "scenario_tags": [
+        "mixed-script"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-mixed-05",
+      "query": "SQLite FTS5 全文檢索",
+      "type": "exact",
+      "description": "SQLite FTS5 全文檢索",
+      "relevant_doc_ids": [
+        "sqlite-full-text-search"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "mixed-script"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-mixed-06",
+      "query": "CAP theorem consistency",
+      "type": "semantic",
+      "description": "CAP theorem consistency",
+      "relevant_doc_ids": [
+        "cap-theorem"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "mixed-script",
+        "non-cjk-regression"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-unknown-01",
+      "query": "藍鵲協定重試",
+      "type": "exact",
+      "description": "藍鵲協定重試",
+      "relevant_doc_ids": [
+        "blue-magpie-protocol"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "unknown-name"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-unknown-02",
+      "query": "星河佇列優先權",
+      "type": "exact",
+      "description": "星河佇列優先權",
+      "relevant_doc_ids": [
+        "starlight-queue"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "unknown-name"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-unknown-03",
+      "query": "玉山同步器衝突",
+      "type": "exact",
+      "description": "玉山同步器衝突",
+      "relevant_doc_ids": [
+        "yushan-synchronizer"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "unknown-name"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-unknown-04",
+      "query": "霧峰閘道熔斷",
+      "type": "alias",
+      "description": "霧峰閘道熔斷",
+      "relevant_doc_ids": [
+        "wufeng-gateway"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "unknown-name"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-english-01",
+      "query": "API versioning strategy",
+      "type": "exact",
+      "description": "API versioning strategy",
+      "relevant_doc_ids": [
+        "api-versioning"
+      ],
+      "must_not_match_doc_ids": [
+        "api-rate-limiting"
+      ],
+      "scenario_tags": [
+        "non-cjk-regression"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-english-02",
+      "query": "CAP theorem trade-off",
+      "type": "semantic",
+      "description": "CAP theorem trade-off",
+      "relevant_doc_ids": [
+        "cap-theorem"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "non-cjk-regression"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-english-03",
+      "query": "remote work VPN",
+      "type": "exact",
+      "description": "remote work VPN",
+      "relevant_doc_ids": [
+        "remote-work"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "non-cjk-regression"
+      ],
+      "expected_in_top_k": 10
+    },
+    {
+      "id": "zh-tw-english-04",
+      "query": "software testing pyramid",
+      "type": "exact",
+      "description": "software testing pyramid",
+      "relevant_doc_ids": [
+        "software-testing"
+      ],
+      "must_not_match_doc_ids": [],
+      "scenario_tags": [
+        "non-cjk-regression"
+      ],
+      "expected_in_top_k": 10
+    }
+  ]
+}

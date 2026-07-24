@@ -17,6 +17,8 @@
  *   await store.close()
  */
 
+import { existsSync } from "node:fs";
+import { openReadOnlyDatabase } from "./db.js";
 import {
   createStore as createStoreInternal,
   hybridQuery,
@@ -33,8 +35,8 @@ import {
   getStoreGlobalContext,
   getStoreContexts,
   upsertStoreCollection,
-  deleteStoreCollection,
-  renameStoreCollection,
+  removeCollection as removeCollectionWithDocuments,
+  renameCollection as renameCollectionWithDocuments,
   updateStoreContext,
   removeStoreContext,
   setStoreGlobalContext,
@@ -44,6 +46,9 @@ import {
   deleteLLMCache,
   deleteInactiveDocuments,
   clearAllEmbeddings,
+  getPendingEmbeddingDocsReadOnly,
+  getIndexHealthReadOnly,
+  getStatusReadOnly,
   type Store as InternalStore,
   type DocumentResult,
   type DocumentNotFound,
@@ -66,10 +71,39 @@ import {
   type ChunkStrategy,
 } from "./store.js";
 import {
+  DEFAULT_EMBED_MODEL_URI,
   LlamaCpp,
+  waitForLLMSessionsToDrain,
 } from "./llm.js";
+import { LocalEmbeddingProviderOwner } from "./embedding/local.js";
 import {
-  setConfigSource,
+  OpenAIEmbeddingProvider,
+  UnavailableOpenAIEmbeddingProvider,
+} from "./embedding/openai.js";
+import {
+  acceptRemoteEmbeddingPreflight as acceptRemotePreflight,
+  authorizeRemoteEmbeddingPurpose,
+  createRemoteEmbeddingPreflight,
+  probeRemoteEmbeddingDimension,
+  remoteEmbeddingIdentity,
+  type RemoteConsentSurface,
+  type RemoteEmbeddingPreflight,
+  type RemoteEmbeddingProbeResult,
+} from "./embedding/remote-consent.js";
+import { readStoredEmbeddingIdentity } from "./embedding/identity.js";
+import { inspectIndexDiagnostics } from "./diagnostics.js";
+import {
+  EmbeddingConfigError,
+  readCanonicalEmbeddingConfig,
+  resolveEmbeddingConfig,
+  writeCanonicalEmbeddingConfig,
+} from "./embedding/config.js";
+import { rebuildCjkLexicalIndex } from "./search/cjk-index.js";
+import { RemoteLLM } from "./remote-llm.js";
+import { HybridLLM } from "./hybrid-llm.js";
+import type { ExpansionMode } from "./search/query-expansion.js";
+import {
+  createCollectionConfigSource,
   loadConfig,
   addCollection as collectionsAddCollection,
   removeCollection as collectionsRemoveCollection,
@@ -79,6 +113,7 @@ import {
   setGlobalContext as collectionsSetGlobalContext,
   type Collection,
   type CollectionConfig,
+  type CollectionConfigSource,
   type NamedCollection,
   type ContextMap,
 } from "./collections.js";
@@ -111,6 +146,7 @@ export type {
 
 // Re-export the internal Store type for advanced consumers
 export type { InternalStore };
+export type { ExpansionMode } from "./search/query-expansion.js";
 
 // Re-export utility functions and types used by frontends
 export { extractSnippet, addLineNumbers, DEFAULT_MULTI_GET_MAX_BYTES };
@@ -148,9 +184,9 @@ export type UpdateResult = {
  * Options for the unified search() method.
  */
 export interface SearchOptions {
-  /** Simple query string — will be auto-expanded via LLM */
+  /** Simple query string — evaluated by the shared expansion policy */
   query?: string;
-  /** Pre-expanded queries (from expandQuery) — skips auto-expansion */
+  /** Pre-expanded queries (from expandQuery) — bypasses expansion policy evaluation */
   queries?: ExpandedQuery[];
   /** Domain intent hint — steers expansion and reranking */
   intent?: string;
@@ -168,6 +204,10 @@ export interface SearchOptions {
   minScore?: number;
   /** Include explain traces */
   explain?: boolean;
+  /** Query expansion policy (default: auto) */
+  expansion?: ExpansionMode;
+  /** Optional progress/decision hooks for search orchestration */
+  hooks?: SearchHooks;
   /** Chunk strategy: "auto" (default, uses AST for code files) or "regex" (legacy) */
   chunkStrategy?: ChunkStrategy;
 }
@@ -209,6 +249,8 @@ export interface StoreOptions {
   configPath?: string;
   /** Inline collection config (mutually exclusive with `configPath`) */
   config?: CollectionConfig;
+  /** Open an existing index without persistent schema, config, or data writes. */
+  readOnly?: boolean;
 }
 
 /**
@@ -226,7 +268,7 @@ export interface QMDStore {
 
   // ── Search ──────────────────────────────────────────────────────────
 
-  /** Full search: query expansion + multi-signal retrieval + LLM reranking */
+  /** Full search: shared expansion policy + multi-signal retrieval + LLM reranking */
   search(options: SearchOptions): Promise<HybridQueryResult[]>;
 
   /** BM25 keyword search (fast, no LLM) */
@@ -300,8 +342,24 @@ export interface QMDStore {
     maxDocsPerBatch?: number;
     maxBatchBytes?: number;
     chunkStrategy?: ChunkStrategy;
+    /** Required separately from force when a remote identity rebuild is destructive. */
+    allowDestructiveRebuild?: boolean;
     onProgress?: (info: EmbedProgress) => void;
   }): Promise<EmbedResult>;
+
+  /** Compute a side-effect-free remote document embedding preflight. */
+  preflightRemoteEmbedding(options?: { chunkStrategy?: ChunkStrategy }): Promise<RemoteEmbeddingPreflight>;
+
+  /** Probe remote capability with one fixed sentinel and no persistent writes. */
+  probeRemoteEmbedding(options?: { chunkStrategy?: ChunkStrategy }): Promise<RemoteEmbeddingProbeResult>;
+
+  /** Accept the exact current remote embedding preflight. */
+  acceptRemoteEmbeddingPreflight(input: {
+    preflightId: string;
+    fingerprint: string;
+    policyVersion: string;
+    surface?: RemoteConsentSurface;
+  }): Promise<void>;
 
   // ── Index Health ────────────────────────────────────────────────────
 
@@ -342,6 +400,49 @@ export interface QMDStore {
  * await store.close()
  * ```
  */
+/**
+ * Compute remote disclosure/consent data without creating or mutating the target index.
+ * Use this entry point when no QMDStore has been opened yet.
+ */
+export async function preflightRemoteEmbedding(
+  options: StoreOptions,
+): Promise<RemoteEmbeddingPreflight> {
+  if (!options.dbPath) throw new Error("dbPath is required");
+  if (options.configPath && options.config) {
+    throw new Error("Provide either configPath or config, not both");
+  }
+  const externalConfigSource: CollectionConfigSource | undefined = options.configPath
+    ? createCollectionConfigSource({ configPath: options.configPath })
+    : options.config
+      ? createCollectionConfigSource({ config: options.config })
+      : undefined;
+  const config = externalConfigSource ? loadConfig(externalConfigSource) : undefined;
+
+  const temporaryStore = existsSync(options.dbPath)
+    ? undefined
+    : createStoreInternal(":memory:");
+  const db = temporaryStore?.db ?? openReadOnlyDatabase(options.dbPath);
+  try {
+    const hasStoreConfig = db.prepare(`
+      SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'store_config'
+    `).get() != null;
+    const embedding = resolveEmbeddingConfig({
+      config,
+      dbConfig: hasStoreConfig ? readCanonicalEmbeddingConfig(db) : undefined,
+      defaultLocalModel: DEFAULT_EMBED_MODEL_URI,
+    });
+    if (embedding.canonical.provider !== "openai") {
+      throw new EmbeddingConfigError(
+        "Remote embedding preflight requires an OpenAI embedding configuration.",
+      );
+    }
+    return createRemoteEmbeddingPreflight(db, new UnavailableOpenAIEmbeddingProvider());
+  } finally {
+    temporaryStore?.close();
+    if (!temporaryStore) db.close();
+  }
+}
+
 export async function createStore(options: StoreOptions): Promise<QMDStore> {
   if (!options.dbPath) {
     throw new Error("dbPath is required");
@@ -350,38 +451,152 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     throw new Error("Provide either configPath or config, not both");
   }
 
-  // Create the internal store (opens DB, creates tables)
-  const internal = createStoreInternal(options.dbPath);
+  // A missing read-only index uses an initialized in-memory store so status and
+  // preflight remain available without creating the requested on-disk file.
+  const useTemporaryStore = options.readOnly === true && !existsSync(options.dbPath);
+  const internal = createStoreInternal(
+    useTemporaryStore ? ":memory:" : options.dbPath,
+    { readOnly: options.readOnly === true && !useTemporaryStore },
+  );
   const db = internal.db;
 
-  // Track whether we have a YAML config path for write-through
-  const hasYamlConfig = !!options.configPath;
+  const externalConfigSource: CollectionConfigSource | undefined = options.configPath
+    ? createCollectionConfigSource({ configPath: options.configPath })
+    : options.config
+      ? createCollectionConfigSource({ config: options.config })
+      : undefined;
 
   // Sync config into SQLite store_collections
   let config: CollectionConfig | undefined;
-  if (options.configPath) {
-    // YAML mode: inject config source for write-through, sync to DB
-    setConfigSource({ configPath: options.configPath });
-    config = loadConfig();
-    syncConfigToDb(db, config);
-  } else if (options.config) {
-    // Inline config mode: inject config source for mutations, sync to DB
-    setConfigSource({ config: options.config });
-    config = options.config;
-    syncConfigToDb(db, config);
+  if (externalConfigSource) {
+    config = loadConfig(externalConfigSource);
+    if (!options.readOnly || useTemporaryStore) syncConfigToDb(db, config);
   }
   // else: DB-only mode — no external config, use existing store_collections
 
+  const embedding = resolveEmbeddingConfig({
+    config,
+    dbConfig: readCanonicalEmbeddingConfig(db),
+    defaultLocalModel: DEFAULT_EMBED_MODEL_URI,
+  });
+  if (!options.readOnly || useTemporaryStore) {
+    writeCanonicalEmbeddingConfig(db, embedding.canonical);
+  }
   // Create a per-store LlamaCpp instance — lazy-loads models on first use,
   // auto-unloads after 5 min inactivity to free VRAM.
-  const llm = new LlamaCpp({
-    embedModel: config?.models?.embed,
+  const localLlm = new LlamaCpp({
+    embedModel: embedding.canonical.provider === "local"
+      ? embedding.canonical.model
+      : DEFAULT_EMBED_MODEL_URI,
     generateModel: config?.models?.generate,
     rerankModel: config?.models?.rerank,
     inactivityTimeoutMs: 5 * 60 * 1000,
     disposeModelsOnInactivity: true,
   });
+
+  const rawGenerateUrl = config?.models?.generate_url ?? config?.models?.generate_base_url ?? config?.models?.generate_api_url;
+  const rawRerankUrl = config?.models?.rerank_url ?? config?.models?.rerank_base_url ?? config?.models?.rerank_api_url;
+  const hasRemoteLLM = Boolean(rawGenerateUrl || rawRerankUrl);
+
+  const remoteLlm = hasRemoteLLM
+    ? new RemoteLLM({
+        generateUrl: config?.models?.generate_url,
+        generateBaseUrl: config?.models?.generate_base_url,
+        generateApiUrl: config?.models?.generate_api_url,
+        generateApiModel: config?.models?.generate_api_model,
+        generateApiKey: config?.models?.generate_api_key,
+        rerankUrl: config?.models?.rerank_url,
+        rerankBaseUrl: config?.models?.rerank_base_url,
+        rerankApiUrl: config?.models?.rerank_api_url,
+        rerankApiModel: config?.models?.rerank_api_model,
+        rerankApiKey: config?.models?.rerank_api_key,
+      })
+    : undefined;
+
+  const llm = remoteLlm ? new HybridLLM(localLlm, remoteLlm) : localLlm;
   internal.llm = llm;
+  let closeEmbeddingResources: () => Promise<void>;
+  let remoteKeyConfigured = false;
+  if (embedding.canonical.provider === "local") {
+    const embeddingOwner = new LocalEmbeddingProviderOwner(localLlm, {
+      model: embedding.canonical.model,
+      dimension: embedding.canonical.dimension ?? undefined,
+    });
+    internal.embeddingProvider = embeddingOwner.provider;
+    closeEmbeddingResources = () => embeddingOwner.close();
+  } else {
+    const apiKey = process.env.OPENAI_API_KEY?.trim();
+    remoteKeyConfigured = apiKey != null && apiKey !== "";
+    const configuredModel = embedding.canonical.model;
+    const configuredDimension = embedding.canonical.dimension;
+    const configuredBaseUrl = embedding.canonical.baseUrl;
+    // For non-default endpoints (self-hosted / proxy), API key is optional
+    const canConstruct = remoteKeyConfigured || embedding.credentialAvailable;
+    const provider = canConstruct
+      ? new OpenAIEmbeddingProvider({
+          apiKey: apiKey || undefined,
+          model: configuredModel,
+          dimension: configuredDimension,
+          baseUrl: configuredBaseUrl,
+          authorizeRequest: request => {
+            const activeProvider = internal.embeddingProvider;
+            if (!activeProvider?.remote) {
+              throw new EmbeddingConfigError("Remote embedding provider is not active.");
+            }
+            const storedIdentity = readStoredEmbeddingIdentity(db);
+            const requestIdentity = [
+              storedIdentity,
+              remoteEmbeddingIdentity(activeProvider, "regex"),
+              remoteEmbeddingIdentity(activeProvider, "auto"),
+            ].find(identity => identity?.fingerprint === request.fingerprint);
+            if (!requestIdentity) {
+              throw new EmbeddingConfigError("Remote request fingerprint does not match an active embedding identity.");
+            }
+            authorizeRemoteEmbeddingPurpose(
+              db,
+              requestIdentity,
+              request.purpose,
+              {
+                lease: request.buildLease,
+                requestFingerprint: request.fingerprint,
+              },
+            );
+          },
+        })
+      : new UnavailableOpenAIEmbeddingProvider({ model: configuredModel, dimension: configuredDimension, baseUrl: configuredBaseUrl });
+    internal.embeddingProvider = provider;
+    closeEmbeddingResources = async () => {
+      try {
+        await provider.close();
+      } finally {
+        try {
+          await waitForLLMSessionsToDrain(localLlm);
+        } finally {
+          await llm.dispose();
+        }
+      }
+    };
+  }
+  internal.authorizeRemoteRequest = (purpose, context) => {
+    const activeProvider = internal.embeddingProvider;
+    if (!activeProvider?.remote) {
+      throw new EmbeddingConfigError("Remote embedding provider is not active.");
+    }
+    authorizeRemoteEmbeddingPurpose(
+      db,
+      context.identity ?? remoteEmbeddingIdentity(activeProvider),
+      purpose,
+      { lease: context.lease },
+    );
+  };
+  internal.authorizeRemoteBuildStart = identity => {
+    const activeProvider = internal.embeddingProvider;
+    if (!activeProvider?.remote) {
+      throw new EmbeddingConfigError("Remote embedding provider is not active.");
+    }
+    authorizeRemoteEmbeddingPurpose(db, identity, "capability-probe");
+  };
+  let closePromise: Promise<void> | undefined;
 
   const store: QMDStore = {
     internal,
@@ -415,18 +630,28 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
 
       // Simple query string — use hybridQuery (expand + search + rerank)
       return hybridQuery(internal, opts.query!, {
-        collection: collections[0],
+        collections,
         limit: opts.limit,
         minScore: opts.minScore,
         explain: opts.explain,
         intent: opts.intent,
+        expansion: opts.expansion,
+        hooks: opts.hooks,
         candidateLimit: opts.candidateLimit,
         skipRerank,
         chunkStrategy: opts.chunkStrategy,
       });
     },
     searchLex: async (q, opts) => internal.searchFTS(q, opts?.limit, opts?.collection),
-    searchVector: async (q, opts) => internal.searchVec(q, llm.embedModelName, opts?.limit, opts?.collection),
+    searchVector: async (q, opts) => {
+      const provider = internal.embeddingProvider;
+      return internal.searchVec(
+        q,
+        provider?.model ?? DEFAULT_EMBED_MODEL_URI,
+        opts?.limit,
+        opts?.collection,
+      );
+    },
     expandQuery: async (q, opts) => internal.expandQuery(q, undefined, opts?.intent),
     get: async (pathOrDocid, opts) => internal.findDocument(pathOrDocid, opts),
     getDocumentBody: async (pathOrDocid, opts) => {
@@ -436,26 +661,34 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     },
     multiGet: async (pattern, opts) => internal.findDocuments(pattern, opts),
 
-    // Collection Management — write to SQLite + write-through to YAML/inline if configured
+    // Collection Management — external config wins when configured; reconciliation mutates SQLite.
     addCollection: async (name, opts) => {
-      upsertStoreCollection(db, name, { path: opts.path, pattern: opts.pattern, ignore: opts.ignore });
-      if (hasYamlConfig || options.config) {
-        collectionsAddCollection(name, opts.path, opts.pattern);
+      if (externalConfigSource) {
+        collectionsAddCollection(name, opts.path, opts.pattern, opts.ignore, externalConfigSource);
+        syncConfigToDb(db, loadConfig(externalConfigSource));
+      } else {
+        upsertStoreCollection(db, name, { path: opts.path, pattern: opts.pattern, ignore: opts.ignore });
       }
     },
     removeCollection: async (name) => {
-      const result = deleteStoreCollection(db, name);
-      if (hasYamlConfig || options.config) {
-        collectionsRemoveCollection(name);
+      if (externalConfigSource) {
+        if (!collectionsRemoveCollection(name, externalConfigSource)) return false;
+        syncConfigToDb(db, loadConfig(externalConfigSource));
+      } else {
+        if (!getStoreCollection(db, name)) return false;
+        removeCollectionWithDocuments(db, name);
       }
-      return result;
+      return true;
     },
     renameCollection: async (oldName, newName) => {
-      const result = renameStoreCollection(db, oldName, newName);
-      if (hasYamlConfig || options.config) {
-        collectionsRenameCollection(oldName, newName);
+      if (externalConfigSource) {
+        if (!collectionsRenameCollection(oldName, newName, externalConfigSource)) return false;
+        syncConfigToDb(db, loadConfig(externalConfigSource));
+      } else {
+        if (!getStoreCollection(db, oldName)) return false;
+        renameCollectionWithDocuments(db, oldName, newName);
       }
-      return result;
+      return true;
     },
     listCollections: async () => storeListCollections(db),
     getDefaultCollectionNames: async () => {
@@ -463,25 +696,29 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
       return collections.filter(c => c.includeByDefault).map(c => c.name);
     },
 
-    // Context Management — write to SQLite + write-through to YAML/inline if configured
+    // Context Management follows the same external-config-first reconciliation contract.
     addContext: async (collectionName, pathPrefix, contextText) => {
-      const result = updateStoreContext(db, collectionName, pathPrefix, contextText);
-      if (hasYamlConfig || options.config) {
-        collectionsAddContext(collectionName, pathPrefix, contextText);
+      if (externalConfigSource) {
+        if (!collectionsAddContext(collectionName, pathPrefix, contextText, externalConfigSource)) return false;
+        syncConfigToDb(db, loadConfig(externalConfigSource));
+        return true;
       }
-      return result;
+      return updateStoreContext(db, collectionName, pathPrefix, contextText);
     },
     removeContext: async (collectionName, pathPrefix) => {
-      const result = removeStoreContext(db, collectionName, pathPrefix);
-      if (hasYamlConfig || options.config) {
-        collectionsRemoveContext(collectionName, pathPrefix);
+      if (externalConfigSource) {
+        if (!collectionsRemoveContext(collectionName, pathPrefix, externalConfigSource)) return false;
+        syncConfigToDb(db, loadConfig(externalConfigSource));
+        return true;
       }
-      return result;
+      return removeStoreContext(db, collectionName, pathPrefix);
     },
     setGlobalContext: async (context) => {
-      setStoreGlobalContext(db, context);
-      if (hasYamlConfig || options.config) {
-        collectionsSetGlobalContext(context);
+      if (externalConfigSource) {
+        collectionsSetGlobalContext(context, externalConfigSource);
+        syncConfigToDb(db, loadConfig(externalConfigSource));
+      } else {
+        setStoreGlobalContext(db, context);
       }
     },
     getGlobalContext: async () => getStoreGlobalContext(db),
@@ -511,6 +748,8 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         totalRemoved += result.removed;
       }
 
+      await rebuildCjkLexicalIndex(options.dbPath);
+
       return {
         collections: filtered.length,
         indexed: totalIndexed,
@@ -522,6 +761,34 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     },
 
     embed: async (embedOpts) => {
+      const provider = internal.embeddingProvider;
+      if (provider?.remote) {
+        if (embedOpts?.force && embedOpts.allowDestructiveRebuild !== true) {
+          throw new EmbeddingConfigError(
+            "Remote --force embedding requires explicit destructive rebuild authorization.",
+          );
+        }
+        if (embedOpts?.force && embedOpts.collection) {
+          throw new EmbeddingConfigError(
+            "Remote destructive embedding rebuilds cannot be collection-scoped.",
+          );
+        }
+        const identity = remoteEmbeddingIdentity(provider, embedOpts?.chunkStrategy);
+        const pending = getPendingEmbeddingDocsReadOnly(
+          db,
+          embedOpts?.collection,
+          identity.model,
+          identity.fingerprint,
+        );
+        if (pending.length === 0 && !embedOpts?.force) {
+          return { docsProcessed: 0, chunksEmbedded: 0, errors: 0, failures: [], durationMs: 0 };
+        }
+        if (!embedding.credentialAvailable) {
+          throw new EmbeddingConfigError(
+            "OpenAI document embedding is authorized, but OPENAI_API_KEY is not configured.",
+          );
+        }
+      }
       return generateEmbeddings(internal, {
         force: embedOpts?.force,
         model: embedOpts?.model,
@@ -529,21 +796,74 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         maxDocsPerBatch: embedOpts?.maxDocsPerBatch,
         maxBatchBytes: embedOpts?.maxBatchBytes,
         chunkStrategy: embedOpts?.chunkStrategy,
+        allowDestructiveRebuild: embedOpts?.allowDestructiveRebuild,
         onProgress: embedOpts?.onProgress,
       });
     },
 
+    preflightRemoteEmbedding: async preflightOptions => {
+      const provider = internal.embeddingProvider;
+      if (!provider?.remote) {
+        throw new EmbeddingConfigError("Remote embedding preflight requires an OpenAI embedding configuration.");
+      }
+      return createRemoteEmbeddingPreflight(db, provider, preflightOptions);
+    },
+
+    probeRemoteEmbedding: async probeOptions => {
+      const provider = internal.embeddingProvider;
+      if (!provider?.remote) {
+        throw new EmbeddingConfigError("Remote embedding probe requires an OpenAI embedding configuration.");
+      }
+      if (!embedding.credentialAvailable) {
+        throw new EmbeddingConfigError("Remote capability probe requires OPENAI_API_KEY.");
+      }
+      return probeRemoteEmbeddingDimension(db, provider, probeOptions);
+    },
+
+    acceptRemoteEmbeddingPreflight: async (input) => {
+      const provider = internal.embeddingProvider;
+      if (!provider?.remote) {
+        throw new EmbeddingConfigError("Remote embedding acknowledgement requires an OpenAI embedding configuration.");
+      }
+      acceptRemotePreflight(db, provider, {
+        ...input,
+        surface: input.surface ?? "sdk",
+      });
+    },
+
     // Index Health
-    getStatus: async () => internal.getStatus(),
-    getIndexHealth: async () => internal.getIndexHealth(),
+    getStatus: async () => {
+      const diagnostics = inspectIndexDiagnostics(db, {
+        fallbackModel: embedding.canonical.model,
+        provider: internal.embeddingProvider,
+        keyConfigured: remoteKeyConfigured,
+      });
+      return {
+        ...getStatusReadOnly(db, diagnostics.embedding.chunks.pendingDocuments),
+        diagnostics,
+      };
+    },
+    getIndexHealth: async () => {
+      const diagnostics = inspectIndexDiagnostics(db, {
+        fallbackModel: embedding.canonical.model,
+        provider: internal.embeddingProvider,
+        keyConfigured: remoteKeyConfigured,
+      });
+      return getIndexHealthReadOnly(db, diagnostics.embedding.chunks.pendingDocuments);
+    },
 
     // Lifecycle
-    close: async () => {
-      await llm.dispose();
-      internal.close();
-      if (hasYamlConfig || options.config) {
-        setConfigSource(undefined); // Reset config source
+    close: () => {
+      if (!closePromise) {
+        closePromise = (async () => {
+          try {
+            await closeEmbeddingResources();
+          } finally {
+            internal.close();
+          }
+        })();
       }
+      return closePromise;
     },
   };
 

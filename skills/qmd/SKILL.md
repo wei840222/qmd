@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires qmd CLI or MCP server. Install via `npm install -g @tobilu/qmd`.
 metadata:
   author: tobi
-  version: "2.2.0"
+  version: "2.6.3"
 allowed-tools: Bash(qmd:*), mcp__qmd__*
 ---
 
@@ -255,6 +255,30 @@ qmd update
 qmd embed
 ```
 
+### Models & Remote Endpoint Configuration
+
+Configure models and custom endpoints in `~/.config/qmd/index.yml` under the `models:` section:
+
+```yaml
+models:
+  embed: openai:text-embedding-3-small        # or openai:text-embedding-3-large
+  embed_base_url: https://api.example.com/v1  # Optional proxy / self-hosted endpoint
+  embed_dimension: 1536                       # Optional: explicit vector dimension override
+
+  # Optional: Remote LLM Query Expansion (supports generate_url / generate_base_url / generate_api_url)
+  generate_url: https://api.example.com/v1    # Base URL or full endpoint
+  generate_api_model: qwen3-7b-instruct
+
+  # Optional: Remote Reranking (supports rerank_url / rerank_base_url / rerank_api_url)
+  rerank_url: https://api.example.com/v1      # Supports both /v1/rerank and /v1/chat/completions LLM endpoints
+  rerank_api_model: bge-reranker-v2-m3        # or gpt-4o-mini / qwen3-7b-instruct
+
+# Optional: Custom User Dictionary for CJK segmentation
+dictionary: ~/.config/qmd/dictionary.txt
+```
+
+> **Smart URL Resolution & Reranker Endpoints:** Remote LLM URLs support `_url`, `_base_url`, and `_api_url` aliases. Given a Base URL (e.g. `https://.../v1`), QMD automatically appends `/chat/completions` or `/rerank`. Explicit endpoint URLs are preserved as-is. For reranking, QMD supports both dedicated Cross-Encoder endpoints (`/v1/rerank`) and general LLM endpoints (`/v1/chat/completions`).
+
 Health and diagnostics:
 
 ```bash
@@ -263,9 +287,7 @@ qmd status
 qmd pull
 ```
 
-`qmd doctor` checks config, model cache, device/GPU setup, vector fingerprints,
-and common environment overrides. If a model-backed command fails, run it before
-changing configuration.
+`qmd doctor` checks config, model cache, device/GPU setup, vector fingerprints, CJK channel readiness, and common environment overrides. If a model-backed command fails, run it before changing configuration.
 
 ## MCP setup
 
