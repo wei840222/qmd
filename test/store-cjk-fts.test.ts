@@ -29,7 +29,10 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { openDatabase } from "../src/db.js";
 import type { Database } from "../src/db.js";
-import { createStore } from "../src/store.js";
+import {
+  createStore,
+  setLegacyFtsMigrationHookForTests,
+} from "../src/store.js";
 import type { CollectionConfig } from "../src/collections.js";
 
 // =============================================================================
@@ -164,14 +167,100 @@ describe("rebuildFTSForCjkNormalization — streaming source scan", () => {
 
     // The source-row scan must stream one row at a time.
     expect(fnBody).toMatch(/\.iterate</);
-    // It must NOT pull the whole result set (every document body) into a JS
-    // array — that is the OOM regression this fix removes.
-    expect(fnBody).not.toMatch(/\.all\(/);
-    // Sanity: it builds into a shadow table and atomically swaps it in via
-    // INSERT INTO … SELECT (not ALTER TABLE … RENAME, which triggers SQLite
-    // 3.25+ re-validation of dependent trigger bodies).
+    // The authoritative body scan must remain streaming. Bounded journal
+    // catch-up may use .all() only with its explicit page limit.
+    expect(fnBody).toContain(").iterate<FtsRow>()");
+    expect(fnBody).toMatch(/FROM cjk_index_mutations[\s\S]*LIMIT 200/);
+    // Sanity: it builds into a shadow table and atomically swaps table names;
+    // copying every row under BEGIN IMMEDIATE would hold the writer lock for
+    // corpus-linear work.
     expect(fnBody).toContain("documents_fts_rebuild");
-    expect(fnBody).toContain("INSERT INTO documents_fts");
+    expect(fnBody).toContain("ALTER TABLE");
+    expect(fnBody).not.toContain("INSERT INTO documents_fts(rowid, filepath, title, body)\n           SELECT");
+  });
+});
+
+describe("rebuildFTSForCjkNormalization — concurrent publication safety", () => {
+  let dbPath: string;
+
+  beforeEach(async () => {
+    await setEmptyConfig();
+    dbPath = freshDbPath();
+  });
+
+  afterEach(async () => {
+    setLegacyFtsMigrationHookForTests();
+    await rm(dbPath, { force: true });
+  });
+
+  test("replays a writer that commits while the source iterator is open", () => {
+    const seed = openDatabase(dbPath);
+    createBaseSchema(seed);
+    seedDocument(seed, { id: 1, collection: "c", path: "base.md", title: "Base", body: "baseline body" });
+    seed.close();
+
+    let writerCommitted = false;
+    setLegacyFtsMigrationHookForTests(stage => {
+      if (stage !== "source-row" || writerCommitted) return;
+      const writer = openDatabase(dbPath);
+      try {
+        seedDocument(writer, {
+          id: 2,
+          collection: "c",
+          path: "late.md",
+          title: "Late",
+          body: "late mutation searchable",
+        });
+        writerCommitted = true;
+      } finally {
+        writer.close();
+      }
+    });
+
+    const store = createStore(dbPath);
+    try {
+      expect(writerCommitted).toBe(true);
+      expect(ftsRowCount(store.db)).toBe(2);
+      expect(store.searchFTS("late mutation searchable", 10).map(hit => hit.displayPath))
+        .toEqual(["c/late.md"]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("rolls back table names, triggers, and version when publish fails after the live rename", () => {
+    const seed = openDatabase(dbPath);
+    createBaseSchema(seed);
+    seedDocument(seed, { id: 1, collection: "c", path: "base.md", title: "Base", body: "baseline body" });
+    seed.prepare(
+      `INSERT INTO documents_fts(rowid, filepath, title, body) VALUES (?, ?, ?, ?)`,
+    ).run(1, "c/base.md", "Base", "baseline body");
+    seed.close();
+
+    setLegacyFtsMigrationHookForTests(stage => {
+      if (stage === "live-renamed") throw new Error("injected legacy FTS publish failure");
+    });
+    expect(() => createStore(dbPath)).toThrow("injected legacy FTS publish failure");
+    setLegacyFtsMigrationHookForTests();
+
+    const check = openDatabase(dbPath);
+    try {
+      expect(ftsRowCount(check)).toBe(1);
+      expect(check.prepare(
+        `SELECT rowid FROM documents_fts WHERE documents_fts MATCH 'baseline'`,
+      ).all()).toHaveLength(1);
+      expect(check.prepare(
+        `SELECT name FROM sqlite_master WHERE type = 'trigger' AND name IN ('documents_ai', 'documents_ad', 'documents_au')`,
+      ).all()).toHaveLength(3);
+      expect(check.prepare(
+        `SELECT value FROM store_config WHERE key = 'fts_cjk_normalized_version'`,
+      ).get() ?? undefined).toBeUndefined();
+      expect(check.prepare(
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND (name LIKE 'documents_fts_rebuild_%' OR name = 'documents_fts_retired')`,
+      ).all()).toHaveLength(0);
+    } finally {
+      check.close();
+    }
   });
 });
 
