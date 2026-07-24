@@ -18,6 +18,14 @@ export class HybridLLM implements LLM {
     private readonly remoteLLM?: RemoteLLM,
   ) {}
 
+  get supportsExpand(): boolean {
+    return Boolean(this.remoteLLM?.supportsExpand);
+  }
+
+  get supportsRerank(): boolean {
+    return Boolean(this.remoteLLM?.supportsRerank);
+  }
+
   async embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null> {
     return this.localLLM.embed(text, options);
   }

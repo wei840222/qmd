@@ -47,6 +47,7 @@ export function resolveExpansionPolicy(options: {
   query: string;
   mode: ExpansionMode;
   strongSignal: boolean;
+  allowCjkExpand?: boolean;
 }): ExpansionDecision {
   const parsed = parseExpansionDirective(options.query);
   if (!parsed.query) throw new Error("query must not be empty");
@@ -64,7 +65,7 @@ export function resolveExpansionPolicy(options: {
   if (options.mode === "force" || parsed.directive === "force") {
     return { action: "expand", reason: "explicit-force", query: parsed.query };
   }
-  if (containsCjk(parsed.query)) {
+  if (containsCjk(parsed.query) && !options.allowCjkExpand) {
     return { action: "skip", reason: "cjk-default", query: parsed.query };
   }
   if (options.strongSignal) {

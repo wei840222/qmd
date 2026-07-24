@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { RemoteLLM, sigmoid } from "../src/remote-llm.js";
 import { HybridLLM } from "../src/hybrid-llm.js";
 import type { LLM, Queryable, RerankDocument, RerankResult } from "../src/llm.js";
+import { resolveExpansionPolicy } from "../src/search/query-expansion.js";
 
 describe("TODO 1: RemoteLLM & HybridLLM Integration", () => {
   let mockServer: Server;
@@ -186,6 +187,28 @@ describe("TODO 1: RemoteLLM & HybridLLM Integration", () => {
       const reranked = await hybrid.rerank("test query", [{ file: "doc1.md", text: "content" }]);
       expect(reranked.model).toBe("local-rerank");
       expect(reranked.results[0]?.score).toBe(0.5);
+    });
+
+    test("allows CJK query expansion when remote LLM generate_api_url is configured", () => {
+      // Without allowCjkExpand: skips CJK
+      const defaultDecision = resolveExpansionPolicy({
+        query: "搜尋關鍵字",
+        mode: "auto",
+        strongSignal: false,
+        allowCjkExpand: false,
+      });
+      expect(defaultDecision.action).toBe("skip");
+      expect(defaultDecision.reason).toBe("cjk-default");
+
+      // With allowCjkExpand (remote LLM active): auto-expands CJK query
+      const remoteDecision = resolveExpansionPolicy({
+        query: "搜尋關鍵字",
+        mode: "auto",
+        strongSignal: false,
+        allowCjkExpand: true,
+      });
+      expect(remoteDecision.action).toBe("expand");
+      expect(remoteDecision.reason).toBe("auto-expand");
     });
   });
 });

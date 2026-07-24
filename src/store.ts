@@ -6294,6 +6294,7 @@ export async function hybridQuery(
       query,
       mode: expansionMode,
       strongSignal: !intent && strongSignal.strong,
+      allowCjkExpand: Boolean((store.llm as any)?.supportsExpand),
     });
   } catch (error) {
     if (error instanceof ExpansionPolicyError) {
