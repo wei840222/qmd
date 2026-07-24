@@ -71,7 +71,6 @@ export interface CollectionConfig {
   editor_uri_template?: string;               // Alias for editor_uri
   collections: Record<string, Collection>;    // Collection name -> config
   models?: ModelsConfig;
-  embedding?: EmbeddingConfig;
   dictionary?: string;                        // Optional path to user dictionary file
 }
 

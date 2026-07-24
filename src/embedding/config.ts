@@ -190,18 +190,6 @@ function resolveSource(
 
   if (options.config !== undefined) {
     const config = requireRecord(options.config, "embedding config source");
-    if (hasOwn(config, "embedding")) {
-      return {
-        canonical: parseEmbeddingBlock(
-          config.embedding,
-          defaultLocalModel,
-          "embedding",
-          false,
-        ),
-        source: "embedding-block",
-      };
-    }
-
     if (hasOwn(config, "models")) {
       const models = requireRecord(config.models, "models");
       const hasEmbed = hasOwn(models, "embed");

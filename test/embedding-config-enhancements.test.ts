@@ -56,12 +56,12 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
     });
   });
 
-  describe("TODO 3: embedding block baseUrl support", () => {
-    test("parses custom baseUrl in embedding block and infers provider/model/dimension if omitted", () => {
+  describe("Unified models block configuration", () => {
+    test("parses custom embed_base_url in models block and infers provider/model/dimension if omitted", () => {
       const resolved = resolveEmbeddingConfig({
         config: {
-          embedding: {
-            baseUrl: "https://bifrost.home-infra.weii.cloud/v1/",
+          models: {
+            embed_base_url: "https://bifrost.home-infra.weii.cloud/v1/",
           },
         },
         defaultLocalModel,
@@ -73,7 +73,7 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
         dimension: 1536,
         baseUrl: "https://bifrost.home-infra.weii.cloud/v1",
       });
-      expect(resolved.source).toBe("embedding-block");
+      expect(resolved.source).toBe("legacy-models");
     });
   });
 
@@ -138,12 +138,11 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
   });
 
   describe("TODO 4: optional OPENAI_API_KEY for custom endpoints", () => {
-    test("allows missing OPENAI_API_KEY when custom baseUrl is specified", () => {
+    test("allows missing OPENAI_API_KEY when custom embed_base_url is specified", () => {
       const resolved = resolveEmbeddingConfig({
         config: {
-          embedding: {
-            provider: "openai",
-            baseUrl: "https://bifrost.home-infra.weii.cloud/v1",
+          models: {
+            embed_base_url: "https://bifrost.home-infra.weii.cloud/v1",
           },
         },
         defaultLocalModel,
@@ -157,8 +156,8 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
     test("requires OPENAI_API_KEY when default OpenAI endpoint is used", () => {
       const resolvedWithoutKey = resolveEmbeddingConfig({
         config: {
-          embedding: {
-            provider: "openai",
+          models: {
+            embed: "openai:text-embedding-3-small",
           },
         },
         defaultLocalModel,
@@ -170,8 +169,8 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
 
       const resolvedWithKey = resolveEmbeddingConfig({
         config: {
-          embedding: {
-            provider: "openai",
+          models: {
+            embed: "openai:text-embedding-3-small",
           },
         },
         defaultLocalModel,

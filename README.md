@@ -550,10 +550,9 @@ Supported model families:
 
 ### Remote Embedding & Models Configuration (Explicit Opt-in)
 
-QMD stays local by default. To use remote embeddings or remote LLM models, configure them in `index.yml` under the unified `models:` section (or `embedding:` block).
+QMD stays local by default. To use remote embeddings or remote LLM models, configure them in `index.yml` under the unified `models:` section.
 
 ```yaml
-# Unified models configuration (Recommended)
 models:
   embed: openai:text-embedding-3-small      # or openai:text-embedding-3-large
   embed_base_url: https://bifrost.home-infra.weii.cloud/v1 # Optional proxy / self-hosted endpoint
@@ -564,16 +563,6 @@ models:
   rerank_api_model: bge-reranker-v2-m3
   expand_api_url: https://bifrost.home-infra.weii.cloud/v1
   expand_api_model: qwen3-7b-instruct
-```
-
-Or using the `embedding:` block syntax:
-
-```yaml
-embedding:
-  provider: openai
-  model: text-embedding-3-small
-  dimension: 1536
-  baseUrl: https://bifrost.home-infra.weii.cloud/v1
 ```
 
 `qmd init` writes local defaults only; it does not prompt for or generate a remote embedding configuration. To use a remote endpoint, edit `index.yml` manually, set credentials (if required), and complete preflight below.
