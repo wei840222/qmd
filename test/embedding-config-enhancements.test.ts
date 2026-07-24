@@ -61,7 +61,7 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
       const resolved = resolveEmbeddingConfig({
         config: {
           models: {
-            embed_base_url: "https://bifrost.home-infra.weii.cloud/v1/",
+            embed_base_url: "https://api.example.com/v1/",
           },
         },
         defaultLocalModel,
@@ -71,7 +71,7 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
         provider: "openai",
         model: "text-embedding-3-small",
         dimension: 1536,
-        baseUrl: "https://bifrost.home-infra.weii.cloud/v1",
+        baseUrl: "https://api.example.com/v1",
       });
       expect(resolved.source).toBe("legacy-models");
     });
@@ -82,7 +82,7 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
       const resolved = resolveEmbeddingConfig({
         config: {
           models: {
-            embed_base_url: "https://bifrost.home-infra.weii.cloud/v1",
+            embed_base_url: "https://api.example.com/v1",
           },
         },
         defaultLocalModel,
@@ -92,7 +92,7 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
         provider: "openai",
         model: "text-embedding-3-small",
         dimension: 1536,
-        baseUrl: "https://bifrost.home-infra.weii.cloud/v1",
+        baseUrl: "https://api.example.com/v1",
       });
       expect(resolved.credentialAvailable).toBe(true);
     });
@@ -102,7 +102,7 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
         config: {
           models: {
             embed: "openai:text-embedding-3-large",
-            embed_base_url: "https://bifrost.home-infra.weii.cloud/v1",
+            embed_base_url: "https://api.example.com/v1",
           },
         },
         defaultLocalModel,
@@ -112,7 +112,7 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
         provider: "openai",
         model: "text-embedding-3-large",
         dimension: 3072,
-        baseUrl: "https://bifrost.home-infra.weii.cloud/v1",
+        baseUrl: "https://api.example.com/v1",
       });
     });
 
@@ -121,7 +121,7 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
         config: {
           models: {
             embed: "openai:text-embedding-3-small",
-            embed_base_url: "https://bifrost.home-infra.weii.cloud/v1",
+            embed_base_url: "https://api.example.com/v1",
             embed_dimension: 512,
           },
         },
@@ -132,7 +132,7 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
         provider: "openai",
         model: "text-embedding-3-small",
         dimension: 512,
-        baseUrl: "https://bifrost.home-infra.weii.cloud/v1",
+        baseUrl: "https://api.example.com/v1",
       });
     });
   });
@@ -142,7 +142,7 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
       const resolved = resolveEmbeddingConfig({
         config: {
           models: {
-            embed_base_url: "https://bifrost.home-infra.weii.cloud/v1",
+            embed_base_url: "https://api.example.com/v1",
           },
         },
         defaultLocalModel,
