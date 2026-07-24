@@ -95,9 +95,7 @@ hyde: hypothetical passage answer (50-100 words)`;
       : `Query: ${query}`;
 
     try {
-      const url = this.generateApiUrl!.endsWith("/chat/completions")
-        ? this.generateApiUrl!
-        : `${this.generateApiUrl}/chat/completions`;
+      const url = this.generateApiUrl!;
 
       const res = await this.fetchImpl(url, {
         method: "POST",
@@ -160,9 +158,7 @@ hyde: hypothetical passage answer (50-100 words)`;
     }
 
     try {
-      const url = this.rerankApiUrl!.endsWith("/rerank")
-        ? this.rerankApiUrl!
-        : `${this.rerankApiUrl}/rerank`;
+      const url = this.rerankApiUrl!;
 
       const docsPayload = documents.map(d => typeof d === "string" ? d : d.text);
 
@@ -232,9 +228,7 @@ Output ONLY a JSON object containing a "results" array. Each item must have:
 
     const userPrompt = `Query: ${query}\n\nCandidate Documents:\n${docItems}`;
 
-    const url = this.rerankApiUrl!.includes("/chat/completions")
-      ? this.rerankApiUrl!
-      : `${this.rerankApiUrl}/chat/completions`;
+    const url = this.rerankApiUrl!;
 
     const res = await this.fetchImpl(url, {
       method: "POST",

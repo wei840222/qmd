@@ -44,9 +44,9 @@ describe("TODO 1: RemoteLLM & HybridLLM Integration", () => {
   describe("RemoteLLM", () => {
     test("supportsExpand and supportsRerank flags work correctly", () => {
       const llm = new RemoteLLM({
-        generateApiUrl: `http://127.0.0.1:${serverPort}`,
+        generateApiUrl: `http://127.0.0.1:${serverPort}/v1/chat/completions`,
         generateApiModel: "gpt-4o-mini",
-        rerankApiUrl: `http://127.0.0.1:${serverPort}`,
+        rerankApiUrl: `http://127.0.0.1:${serverPort}/v1/rerank`,
         rerankApiModel: "bge-reranker-v2-m3",
       });
 
@@ -66,7 +66,7 @@ describe("TODO 1: RemoteLLM & HybridLLM Integration", () => {
       };
 
       const llm = new RemoteLLM({
-        generateApiUrl: `http://127.0.0.1:${serverPort}`,
+        generateApiUrl: `http://127.0.0.1:${serverPort}/v1/chat/completions`,
         generateApiModel: "gpt-4o-mini",
       });
 
@@ -89,7 +89,7 @@ describe("TODO 1: RemoteLLM & HybridLLM Integration", () => {
       };
 
       const llm = new RemoteLLM({
-        rerankApiUrl: `http://127.0.0.1:${serverPort}`,
+        rerankApiUrl: `http://127.0.0.1:${serverPort}/v1/rerank`,
         rerankApiModel: "bge-reranker-v2-m3",
       });
 
@@ -142,7 +142,7 @@ describe("TODO 1: RemoteLLM & HybridLLM Integration", () => {
       mockResponseStatus = 500;
 
       const llm = new RemoteLLM({
-        rerankApiUrl: `http://127.0.0.1:${serverPort}`,
+        rerankApiUrl: `http://127.0.0.1:${serverPort}/v1/rerank`,
         rerankApiModel: "bge-reranker-v2-m3",
       });
 
@@ -172,9 +172,9 @@ describe("TODO 1: RemoteLLM & HybridLLM Integration", () => {
       // Remote that fails immediately (status 500)
       mockResponseStatus = 500;
       const remoteLLM = new RemoteLLM({
-        generateApiUrl: `http://127.0.0.1:${serverPort}`,
+        generateApiUrl: `http://127.0.0.1:${serverPort}/v1/chat/completions`,
         generateApiModel: "gpt-4o-mini",
-        rerankApiUrl: `http://127.0.0.1:${serverPort}`,
+        rerankApiUrl: `http://127.0.0.1:${serverPort}/v1/rerank`,
         rerankApiModel: "bge-reranker",
       });
 
