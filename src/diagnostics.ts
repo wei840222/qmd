@@ -4,6 +4,7 @@ import type { EmbeddingProvider } from "./embedding/provider.js";
 import { createEmbeddingIdentity, type EmbeddingIdentity } from "./embedding/identity.js";
 import { canonicalLocalEmbeddingIdentityMaterial } from "./embedding/local-identity.js";
 import { canonicalOpenAIEmbeddingIdentityMaterial } from "./embedding/openai.js";
+import type { OpenAIEmbeddingModel } from "./embedding/config.js";
 import {
   hasRemoteEmbeddingConsent,
   OPENAI_EMBEDDING_PRICING,
@@ -154,7 +155,7 @@ function resolvedIdentity(
       : providerId === "local-llama-cpp"
         ? canonicalLocalEmbeddingIdentityMaterial(model, dimension)
         : providerId === "openai"
-          ? canonicalOpenAIEmbeddingIdentityMaterial(dimension)
+          ? canonicalOpenAIEmbeddingIdentityMaterial(model as OpenAIEmbeddingModel, dimension)
           : undefined;
     if (providerMaterial == null) return undefined;
     const identities = (["regex", "auto"] as const).map(chunkStrategy =>

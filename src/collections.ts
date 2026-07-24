@@ -52,6 +52,12 @@ export interface ModelsConfig {
   embed?: string;
   rerank?: string;
   generate?: string;
+  expand_api_url?: string;
+  expand_api_model?: string;
+  expand_api_key?: string;
+  rerank_api_url?: string;
+  rerank_api_model?: string;
+  rerank_api_key?: string;
 }
 
 /**
@@ -64,6 +70,7 @@ export interface CollectionConfig {
   collections: Record<string, Collection>;    // Collection name -> config
   models?: ModelsConfig;
   embedding?: EmbeddingConfig;
+  dictionary?: string;                        // Optional path to user dictionary file
 }
 
 /**

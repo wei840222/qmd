@@ -504,9 +504,17 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
   } else {
     const apiKey = process.env.OPENAI_API_KEY?.trim();
     remoteKeyConfigured = apiKey != null && apiKey !== "";
-    const provider = apiKey
+    const configuredModel = embedding.canonical.model;
+    const configuredDimension = embedding.canonical.dimension;
+    const configuredBaseUrl = embedding.canonical.baseUrl;
+    // For non-default endpoints (self-hosted / proxy), API key is optional
+    const canConstruct = remoteKeyConfigured || embedding.credentialAvailable;
+    const provider = canConstruct
       ? new OpenAIEmbeddingProvider({
-          apiKey,
+          apiKey: apiKey || undefined,
+          model: configuredModel,
+          dimension: configuredDimension,
+          baseUrl: configuredBaseUrl,
           authorizeRequest: request => {
             const activeProvider = internal.embeddingProvider;
             if (!activeProvider?.remote) {
@@ -532,7 +540,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
             );
           },
         })
-      : new UnavailableOpenAIEmbeddingProvider();
+      : new UnavailableOpenAIEmbeddingProvider({ model: configuredModel, dimension: configuredDimension, baseUrl: configuredBaseUrl });
     internal.embeddingProvider = provider;
     closeEmbeddingResources = async () => {
       try {

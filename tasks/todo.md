@@ -70,9 +70,8 @@
 
 ## 後續優化與待辦事項 (Future Enhancements & TODO)
 
-- [ ] **遠端 LLM 擴充與重排支援**：除了目前本機執行的 LLM Query Expansion 與 Reranking 之外，後續升級為可設定由遠端 LLM / API 執行。
-  - 考慮參考 https://github.com/tobi/qmd/pull/705 這裡的抽象畫實作方式，可以將 local embedding / remote provider 進行統一
-- [ ] **簡化 `models.embed` 設定語法**：除了 `embedding: { provider: openai, model: text-embedding-3-small, dimension: 1536 }` 外，同時支援 `models: { embed: openai:text-embedding-3-small }` 簡寫形式自動映射。
-- [ ] **`embedding` 區塊支援自訂 `baseUrl`**：在 `embedding` 設定中新增 `baseUrl` 欄位（如 `https://bifrost.home-infra.weii.cloud/v1`），方便對接代理伺服器或自建 OpenAI 相容 Endpoint。
-- [ ] **`OPENAI_API_KEY` 改為可選 (Optional)**：對於無需 API Key 的自建/代理相容伺服器，允許不設定 Key 亦可使用。
-- [ ] 支援自訂義詞庫
+- [x] **遠端 LLM 擴充與重排支援**：除了目前本機執行的 LLM Query Expansion 與 Reranking 之外，已升級為可設定由遠端 LLM / API 執行 (`RemoteLLM` + `HybridLLM` 機制，支援 sigmoid 重排正規化與 circuit breaker)。
+- [x] **簡化 `models.embed` 設定語法**：已支援 `models: { embed: openai:text-embedding-3-small }` 與 `models: { embed: openai:text-embedding-3-large }` 簡寫形式自動映射。
+- [x] **`embedding` 區塊支援自訂 `baseUrl`**：已在 `embedding` 設定中新增 `baseUrl` 欄位（如 `https://bifrost.home-infra.weii.cloud/v1`），可對接代理伺服器或自建 OpenAI 相容 Endpoint。
+- [x] **`OPENAI_API_KEY` 改為可選 (Optional)**：對於無需 API Key 的自建/代理相容伺服器，不設定 Key 亦可使用。
+- [x] **支援自訂義詞庫**：支援傳入自訂詞庫內容（`Uint8Array` / 詞典檔），能精準斷詞並自動將詞庫內涵納入 CJK analyzer fingerprint 進行版本管理。

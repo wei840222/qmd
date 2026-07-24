@@ -48,7 +48,11 @@ export function createJiebaUnavailableCapability(): Extract<JiebaCapability, { a
   });
 }
 
-function initializeCapability(packageModule: unknown, dictionaryModule: unknown): JiebaCapability {
+function initializeCapability(
+  packageModule: unknown,
+  dictionaryModule: unknown,
+  userDictionary?: Uint8Array,
+): JiebaCapability {
   const packageRecord = asRecord(packageModule);
   const dictionaryRecord = asRecord(dictionaryModule);
   const Jieba = asRecord(packageRecord?.Jieba) as unknown as JiebaConstructorLike | null;
@@ -71,6 +75,9 @@ function initializeCapability(packageModule: unknown, dictionaryModule: unknown)
     return createJiebaUnavailableCapability();
   }
   instance.loadDict(ZH_TW_TECH_DICTIONARY_BYTES);
+  if (userDictionary && userDictionary.byteLength > 0) {
+    instance.loadDict(userDictionary);
+  }
 
   return Object.freeze({
     available: true,
@@ -78,13 +85,16 @@ function initializeCapability(packageModule: unknown, dictionaryModule: unknown)
   });
 }
 
-async function loadCapability(importModule: JiebaModuleImporter): Promise<JiebaCapability> {
+async function loadCapability(
+  importModule: JiebaModuleImporter,
+  userDictionary?: Uint8Array,
+): Promise<JiebaCapability> {
   try {
     const [packageModule, dictionaryModule] = await Promise.all([
       importModule("@node-rs/jieba"),
       importModule("@node-rs/jieba/dict.js"),
     ]);
-    return initializeCapability(packageModule, dictionaryModule);
+    return initializeCapability(packageModule, dictionaryModule, userDictionary);
   } catch {
     return createJiebaUnavailableCapability();
   }
@@ -92,9 +102,10 @@ async function loadCapability(importModule: JiebaModuleImporter): Promise<JiebaC
 
 export function createJiebaLoader(
   importModule: JiebaModuleImporter = specifier => import(specifier),
-): () => Promise<JiebaCapability> {
+): (userDictionary?: Uint8Array) => Promise<JiebaCapability> {
   let cached: Promise<JiebaCapability> | undefined;
-  return () => {
+  return (userDictionary?: Uint8Array) => {
+    if (userDictionary) return loadCapability(importModule, userDictionary);
     cached ??= loadCapability(importModule);
     return cached;
   };
@@ -113,15 +124,17 @@ export function setSynchronousJiebaCapabilityForTests(
 }
 
 /** Load the same analyzer and versioned dictionary for synchronous mutation paths. */
-export function loadJiebaCapabilitySync(): JiebaCapability {
-  if (synchronousCapability) return synchronousCapability;
+export function loadJiebaCapabilitySync(userDictionary?: Uint8Array): JiebaCapability {
+  if (synchronousCapability && !userDictionary) return synchronousCapability;
   try {
-    synchronousCapability = initializeCapability(
+    const cap = initializeCapability(
       require("@node-rs/jieba"),
       require("@node-rs/jieba/dict.js"),
+      userDictionary,
     );
+    if (!userDictionary) synchronousCapability = cap;
+    return cap;
   } catch {
-    synchronousCapability = createJiebaUnavailableCapability();
+    return createJiebaUnavailableCapability();
   }
-  return synchronousCapability;
 }

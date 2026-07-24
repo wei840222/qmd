@@ -37,6 +37,7 @@ export interface CjkAnalyzerFingerprintSource {
   jiebaHmm: string;
   dictionaryVersion: string;
   dictionarySha256: string;
+  userDictionarySha256?: string;
 }
 
 function resolveJiebaVersion(): string {
@@ -60,6 +61,7 @@ export const CJK_ANALYZER_FINGERPRINT_SOURCE: Readonly<CjkAnalyzerFingerprintSou
   jiebaHmm: "false",
   dictionaryVersion: ZH_TW_TECH_DICTIONARY_VERSION,
   dictionarySha256: ZH_TW_TECH_DICTIONARY_SHA256,
+  userDictionarySha256: "none",
 });
 
 export function computeCjkAnalyzerFingerprint(source: CjkAnalyzerFingerprintSource): string {
@@ -67,8 +69,15 @@ export function computeCjkAnalyzerFingerprint(source: CjkAnalyzerFingerprintSour
   return createHash("sha256").update(JSON.stringify(canonical), "utf8").digest("hex");
 }
 
-export function getCjkAnalyzerFingerprint(): string {
-  return computeCjkAnalyzerFingerprint(CJK_ANALYZER_FINGERPRINT_SOURCE);
+export function getCjkAnalyzerFingerprint(userDictContent?: Uint8Array | string): string {
+  let userDictionarySha256 = "none";
+  if (userDictContent) {
+    userDictionarySha256 = createHash("sha256").update(userDictContent).digest("hex");
+  }
+  return computeCjkAnalyzerFingerprint({
+    ...CJK_ANALYZER_FINGERPRINT_SOURCE,
+    userDictionarySha256,
+  });
 }
 
 export type CjkLexicalIndexStatus = "empty" | "building" | "ready" | "unavailable" | "dirty";

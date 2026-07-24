@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import {
   OPENAI_EMBEDDING_DIMENSION,
   OPENAI_EMBEDDING_MODEL,
+  OPENAI_EMBEDDING_MODELS,
+  DEFAULT_OPENAI_BASE_URL,
+  type OpenAIEmbeddingModel,
 } from "./config.js";
 import {
   EmbeddingProviderError,
@@ -13,7 +16,6 @@ import {
 } from "./provider.js";
 import { canonicalRemoteChunkProfile } from "./remote-chunking.js";
 
-const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const MAX_INPUTS_PER_REQUEST = 128;
 const MAX_INPUT_TOKEN_UPPER_BOUND = 8_192;
 const MAX_BATCH_TOKEN_UPPER_BOUND = 300_000;
@@ -35,8 +37,10 @@ export interface OpenAIEmbeddingUsage {
 }
 
 export interface OpenAIEmbeddingProviderOptions {
-  apiKey: string;
-  /** Internal test seam. This is deliberately not part of public qmd config. */
+  apiKey?: string;
+  model?: OpenAIEmbeddingModel;
+  dimension?: number;
+  /** Override the base URL. Falls back to OPENAI_BASE_URL env or the official OpenAI endpoint. */
   baseUrl?: string;
   maxAttempts?: number;
   fetch?: typeof globalThis.fetch;
@@ -52,20 +56,23 @@ export interface OpenAIEmbeddingProviderOptions {
 }
 
 export function canonicalOpenAIEmbeddingIdentityMaterial(
-  dimension: number = OPENAI_EMBEDDING_DIMENSION,
+  model: OpenAIEmbeddingModel = OPENAI_EMBEDDING_MODEL,
+  dimension?: number,
   baseUrl: string | undefined = undefined,
 ): string {
-  if (dimension !== OPENAI_EMBEDDING_DIMENSION) {
+  const expectedDimension = OPENAI_EMBEDDING_MODELS.get(model);
+  const effectiveDimension = dimension ?? expectedDimension ?? OPENAI_EMBEDDING_DIMENSION;
+  if (expectedDimension !== undefined && effectiveDimension !== expectedDimension) {
     throw new EmbeddingProviderError(
       "DIMENSION_MISMATCH",
-      `OpenAI embedding dimension must be ${OPENAI_EMBEDDING_DIMENSION}.`,
+      `OpenAI embedding dimension must be ${expectedDimension} for model ${model}.`,
     );
   }
   const endpoint = endpointFingerprint(normalizeOpenAIBaseUrl(baseUrl));
   return JSON.stringify({
     provider: "openai",
-    model: OPENAI_EMBEDDING_MODEL,
-    dimension,
+    model,
+    dimension: effectiveDimension,
     remote: true,
     format: "qmd-openai-embedding-v1",
     chunking: canonicalRemoteChunkProfile(),
@@ -75,12 +82,19 @@ export function canonicalOpenAIEmbeddingIdentityMaterial(
 
 export class UnavailableOpenAIEmbeddingProvider implements EmbeddingProvider {
   readonly providerId = "openai";
-  readonly model = OPENAI_EMBEDDING_MODEL;
-  readonly dimension = OPENAI_EMBEDDING_DIMENSION;
+  readonly model: OpenAIEmbeddingModel;
+  readonly dimension: number;
   readonly remote = true;
+  private readonly configuredBaseUrl: string | undefined;
+
+  constructor(options?: { model?: OpenAIEmbeddingModel; dimension?: number; baseUrl?: string }) {
+    this.model = options?.model ?? OPENAI_EMBEDDING_MODEL;
+    this.dimension = options?.dimension ?? (OPENAI_EMBEDDING_MODELS.get(this.model) ?? OPENAI_EMBEDDING_DIMENSION);
+    this.configuredBaseUrl = options?.baseUrl;
+  }
 
   canonicalIdentityMaterial(): string {
-    return canonicalOpenAIEmbeddingIdentityMaterial(this.dimension, process.env.OPENAI_BASE_URL);
+    return canonicalOpenAIEmbeddingIdentityMaterial(this.model, this.dimension, this.configuredBaseUrl ?? process.env.OPENAI_BASE_URL);
   }
 
   formatQuery(query: string): string {
@@ -96,14 +110,14 @@ export class UnavailableOpenAIEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embed(_text: string, _options: EmbeddingOperationOptions): Promise<EmbeddingVector> {
-    throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI API key is not configured.");
+    throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI embedding provider is not available (missing API key or configuration).");
   }
 
   async embedBatch(
     _texts: string[],
     _options: EmbeddingOperationOptions,
   ): Promise<EmbeddingVector[]> {
-    throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI API key is not configured.");
+    throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI embedding provider is not available (missing API key or configuration).");
   }
 
   async close(): Promise<void> {}
@@ -248,11 +262,11 @@ function parseResponse(
 
 export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   readonly providerId = "openai";
-  readonly model = OPENAI_EMBEDDING_MODEL;
-  readonly dimension = OPENAI_EMBEDDING_DIMENSION;
+  readonly model: OpenAIEmbeddingModel;
+  readonly dimension: number;
   readonly remote = true;
 
-  private readonly apiKey: string;
+  private readonly apiKey: string | undefined;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly maxAttempts: number;
@@ -270,9 +284,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   private closed = false;
 
   constructor(options: OpenAIEmbeddingProviderOptions) {
-    if (typeof options.apiKey !== "string" || options.apiKey.trim() === "") {
-      throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI API key is not configured.");
-    }
+    const apiKey = options.apiKey?.trim() || undefined;
     const maxAttempts = options.maxAttempts ?? 3;
     if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 3) {
       throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI maxAttempts must be between 1 and 3.");
@@ -281,7 +293,9 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) {
       throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI requestTimeoutMs must be positive.");
     }
-    this.apiKey = options.apiKey;
+    this.model = options.model ?? OPENAI_EMBEDDING_MODEL;
+    this.dimension = options.dimension ?? (OPENAI_EMBEDDING_MODELS.get(this.model) ?? OPENAI_EMBEDDING_DIMENSION);
+    this.apiKey = apiKey;
     this.baseUrl = normalizeOpenAIBaseUrl(options.baseUrl ?? process.env.OPENAI_BASE_URL);
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.maxAttempts = maxAttempts;
@@ -302,7 +316,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   }
 
   canonicalIdentityMaterialForDimension(dimension: number): string {
-    return canonicalOpenAIEmbeddingIdentityMaterial(dimension, this.baseUrl);
+    return canonicalOpenAIEmbeddingIdentityMaterial(this.model, dimension, this.baseUrl);
   }
 
   formatQuery(query: string): string {
@@ -503,7 +517,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
             response = await this.fetchImpl(`${this.baseUrl}/embeddings`, {
               method: "POST",
               headers: {
-                authorization: `Bearer ${this.apiKey}`,
+                ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}),
                 "content-type": "application/json",
               },
               body: requestBody,

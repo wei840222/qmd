@@ -3,6 +3,15 @@ import type { Database } from "../db.js";
 export const OPENAI_EMBEDDING_MODEL = "text-embedding-3-small" as const;
 export const OPENAI_EMBEDDING_DIMENSION = 1536 as const;
 export const EMBEDDING_CONFIG_DB_KEY = "embedding_config" as const;
+export const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1" as const;
+
+/** Supported OpenAI embedding models and their native dimensions. */
+export const OPENAI_EMBEDDING_MODELS: ReadonlyMap<string, number> = new Map([
+  ["text-embedding-3-small", 1536],
+  ["text-embedding-3-large", 3072],
+]);
+
+export type OpenAIEmbeddingModel = "text-embedding-3-small" | "text-embedding-3-large";
 
 export type EmbeddingProviderName = "local" | "openai";
 
@@ -14,8 +23,9 @@ export type EmbeddingConfig =
     }
   | {
       provider: "openai";
-      model?: typeof OPENAI_EMBEDDING_MODEL;
-      dimension?: typeof OPENAI_EMBEDDING_DIMENSION;
+      model?: OpenAIEmbeddingModel;
+      dimension?: number;
+      baseUrl?: string;
     };
 
 export type CanonicalEmbeddingConfig = Readonly<
@@ -26,8 +36,9 @@ export type CanonicalEmbeddingConfig = Readonly<
     }
   | {
       provider: "openai";
-      model: typeof OPENAI_EMBEDDING_MODEL;
-      dimension: typeof OPENAI_EMBEDDING_DIMENSION;
+      model: OpenAIEmbeddingModel;
+      dimension: number;
+      baseUrl: string;
     }
 >;
 
@@ -90,8 +101,15 @@ function parseDimension(value: unknown, label: string): number {
   return value as number;
 }
 
+function requireBaseUrl(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new EmbeddingConfigError(`${label} must be a non-empty string.`);
+  }
+  return value.trim().replace(/\/+$/, "");
+}
+
 function assertKnownKeys(value: Record<string, unknown>, label: string): void {
-  const allowed = new Set(["provider", "model", "dimension"]);
+  const allowed = new Set(["provider", "model", "dimension", "baseUrl"]);
   const unknown = Object.keys(value).filter(key => !allowed.has(key));
   if (unknown.length > 0) {
     throw new EmbeddingConfigError(`${label} contains unsupported field ${unknown[0]}.`);
@@ -129,9 +147,11 @@ function parseEmbeddingBlock(
       : requireCanonicalValues
         ? requireModel(undefined, `${label}.model`)
         : OPENAI_EMBEDDING_MODEL;
-    if (model !== OPENAI_EMBEDDING_MODEL) {
+    const expectedDimension = OPENAI_EMBEDDING_MODELS.get(model);
+    if (expectedDimension === undefined) {
+      const supported = Array.from(OPENAI_EMBEDDING_MODELS.keys()).join(", ");
       throw new EmbeddingConfigError(
-        `${label}.model must be ${OPENAI_EMBEDDING_MODEL} for the OpenAI provider.`,
+        `${label}.model must be one of: ${supported}.`,
       );
     }
 
@@ -139,17 +159,24 @@ function parseEmbeddingBlock(
       ? parseDimension(value.dimension, `${label}.dimension`)
       : requireCanonicalValues
         ? parseDimension(undefined, `${label}.dimension`)
-        : OPENAI_EMBEDDING_DIMENSION;
-    if (dimension !== OPENAI_EMBEDDING_DIMENSION) {
+        : expectedDimension;
+    if (dimension !== expectedDimension) {
       throw new EmbeddingConfigError(
-        `${label}.dimension must be ${OPENAI_EMBEDDING_DIMENSION} for the OpenAI provider.`,
+        `${label}.dimension must be ${expectedDimension} for model ${model}.`,
       );
     }
 
+    const baseUrl = hasOwn(value, "baseUrl")
+      ? requireBaseUrl(value.baseUrl, `${label}.baseUrl`)
+      : requireCanonicalValues && hasOwn(value, "baseUrl")
+        ? requireBaseUrl(value.baseUrl, `${label}.baseUrl`)
+        : DEFAULT_OPENAI_BASE_URL;
+
     return Object.freeze({
       provider: "openai",
-      model: OPENAI_EMBEDDING_MODEL,
-      dimension: OPENAI_EMBEDDING_DIMENSION,
+      model: model as OpenAIEmbeddingModel,
+      dimension: expectedDimension,
+      baseUrl,
     });
   }
 
@@ -178,10 +205,31 @@ function resolveSource(
     if (hasOwn(config, "models")) {
       const models = requireRecord(config.models, "models");
       if (hasOwn(models, "embed")) {
+        const embedValue = requireModel(models.embed, "models.embed");
+        // Support openai:<model> shorthand (e.g. "openai:text-embedding-3-small")
+        if (embedValue.startsWith("openai:")) {
+          const model = embedValue.slice("openai:".length);
+          const dimension = OPENAI_EMBEDDING_MODELS.get(model);
+          if (dimension === undefined) {
+            const supported = Array.from(OPENAI_EMBEDDING_MODELS.keys()).join(", ");
+            throw new EmbeddingConfigError(
+              `models.embed OpenAI model must be one of: ${supported}. Got: ${model}`,
+            );
+          }
+          return {
+            canonical: Object.freeze({
+              provider: "openai",
+              model: model as OpenAIEmbeddingModel,
+              dimension,
+              baseUrl: DEFAULT_OPENAI_BASE_URL,
+            }),
+            source: "legacy-models",
+          };
+        }
         return {
           canonical: Object.freeze({
             provider: "local",
-            model: requireModel(models.embed, "models.embed"),
+            model: embedValue,
             dimension: null,
           }),
           source: "legacy-models",
@@ -217,8 +265,13 @@ export function resolveEmbeddingConfig(
 ): ResolvedEmbeddingConfig {
   const resolved = resolveSource(options);
   const env = options.env ?? process.env;
+  const hasApiKey = typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim() !== "";
+  // For non-default endpoints (self-hosted / proxy), API key is optional
+  const isNonDefaultEndpoint = resolved.canonical.provider === "openai"
+    && resolved.canonical.baseUrl !== DEFAULT_OPENAI_BASE_URL;
   const credentialAvailable = resolved.canonical.provider === "local"
-    || (typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim() !== "");
+    || hasApiKey
+    || isNonDefaultEndpoint;
 
   return Object.freeze({
     canonical: resolved.canonical,
@@ -234,9 +287,10 @@ export function resolveEmbeddingModelOverride(
 ): string {
   if (override === undefined) return resolved.canonical.model;
   const model = requireModel(override, "embedding model override");
-  if (resolved.canonical.provider === "openai" && model !== OPENAI_EMBEDDING_MODEL) {
+  if (resolved.canonical.provider === "openai" && !OPENAI_EMBEDDING_MODELS.has(model)) {
+    const supported = Array.from(OPENAI_EMBEDDING_MODELS.keys()).join(", ");
     throw new EmbeddingConfigError(
-      `OpenAI embedding model override must be ${OPENAI_EMBEDDING_MODEL}.`,
+      `OpenAI embedding model override must be one of: ${supported}.`,
     );
   }
   return model;

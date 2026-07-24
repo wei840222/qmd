@@ -175,9 +175,16 @@ function getStore(): ReturnType<typeof createStore> {
     setDefaultLlamaCpp(cliLlama);
     if (embedding.canonical.provider === "openai") {
       const apiKey = process.env.OPENAI_API_KEY?.trim();
-      const provider = apiKey
+      const configuredModel = embedding.canonical.model;
+      const configuredDimension = embedding.canonical.dimension;
+      const configuredBaseUrl = embedding.canonical.baseUrl;
+      const canConstruct = (apiKey != null && apiKey !== "") || embedding.credentialAvailable;
+      const provider = canConstruct
         ? new OpenAIEmbeddingProvider({
-            apiKey,
+            apiKey: apiKey || undefined,
+            model: configuredModel,
+            dimension: configuredDimension,
+            baseUrl: configuredBaseUrl,
             authorizeRequest: request => {
               const activeProvider = store?.embeddingProvider;
               if (!activeProvider?.remote) {
@@ -200,7 +207,7 @@ function getStore(): ReturnType<typeof createStore> {
               });
             },
           })
-        : new UnavailableOpenAIEmbeddingProvider();
+        : new UnavailableOpenAIEmbeddingProvider({ model: configuredModel, dimension: configuredDimension, baseUrl: configuredBaseUrl });
       cliEmbeddingOwner = createCliEmbeddingProviderOwner(
         embedding.canonical,
         cliLlama,
