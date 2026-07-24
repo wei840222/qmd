@@ -548,28 +548,39 @@ Supported model families:
 > since vectors are not cross-compatible between models. The prompt format is
 > automatically adjusted for each model family.
 
-### Remote Embedding (Explicit Opt-in)
+### Remote Embedding & Models Configuration (Explicit Opt-in)
 
-QMD stays local by default. To use OpenAI embeddings, opt in in `index.yml` and
-provide the API key through the process environment. QMD never writes the key to
-SQLite, diagnostics, logs, or error messages.
+QMD stays local by default. To use remote embeddings or remote LLM models, configure them in `index.yml` under the unified `models:` section (or `embedding:` block).
+
+```yaml
+# Unified models configuration (Recommended)
+models:
+  embed: openai:text-embedding-3-small      # or openai:text-embedding-3-large
+  embed_base_url: https://bifrost.home-infra.weii.cloud/v1 # Optional proxy / self-hosted endpoint
+
+  # Optional: Remote LLM Query Expansion & Reranking
+  rerank_api_url: https://bifrost.home-infra.weii.cloud/v1
+  rerank_api_model: bge-reranker-v2-m3
+  expand_api_url: https://bifrost.home-infra.weii.cloud/v1
+  expand_api_model: qwen3-7b-instruct
+```
+
+Or using the `embedding:` block syntax:
 
 ```yaml
 embedding:
   provider: openai
   model: text-embedding-3-small
   dimension: 1536
+  baseUrl: https://bifrost.home-infra.weii.cloud/v1
 ```
 
-`qmd init` writes the local EmbeddingGemma defaults only; it does not prompt for
-or generate a remote embedding configuration. To use a remote endpoint, edit
-`index.yml` manually, then complete the preflight and consent steps below.
+`qmd init` writes local defaults only; it does not prompt for or generate a remote embedding configuration. To use a remote endpoint, edit `index.yml` manually, set credentials (if required), and complete preflight below.
+
+> **API Key Note:** When using official OpenAI (`api.openai.com`), set `OPENAI_API_KEY="..."`. For self-hosted proxies or keyless local servers configured via `embed_base_url` / `baseUrl`, `OPENAI_API_KEY` is optional. QMD never writes keys to SQLite, diagnostics, logs, or error messages.
 
 ```sh
-export OPENAI_API_KEY="..."
-# Optional: route OpenAI-compatible embedding requests through a proxy.
-# The URL must include the proxy's OpenAI-compatible /v1 prefix.
-export OPENAI_BASE_URL="https://bifrost.home-infra.weii.cloud/v1"
+export OPENAI_API_KEY="..." # Required for api.openai.com; optional for self-hosted proxies
 
 # 1. Print the exact disclosure and conservative token/cost upper bound.
 #    This is side-effect free and sends no remote request.
@@ -588,32 +599,15 @@ qmd embed --remote-probe
 qmd embed
 ```
 
-`OPENAI_BASE_URL` changes only the destination for the OpenAI embedding
-provider; QMD continues to send OpenAI-compatible `POST /embeddings` requests
-using the configured `OPENAI_API_KEY`. Leave it unset to use
-`https://api.openai.com/v1`. Changing the endpoint changes the remote embedding
-identity without persisting the endpoint URL, so QMD requires a new preflight
-and consent before it sends document content to that destination.
+`embed_base_url` (or `OPENAI_BASE_URL` env) changes the destination for the OpenAI embedding provider; QMD sends OpenAI-compatible `POST /embeddings` requests. Leave it unset to use `https://api.openai.com/v1`. Changing the endpoint changes the remote embedding identity, so QMD requires a new preflight and consent before sending document content to that destination.
 
-The acknowledgement is bound to the policy version, embedding identity, and
-current document generation. If documents, provider, model, dimension, chunk
-profile, or policy change, QMD stops and requires a new preflight. A dimension or
-identity change also requires separate destructive authorization because
-`vectors_vec` can store only one dimension:
+The acknowledgement is bound to the policy version, embedding identity, and current document generation. If documents, provider, model, dimension, chunk profile, or policy change, QMD stops and requires a new preflight. A dimension or identity change also requires separate destructive authorization because `vectors_vec` can store only one dimension:
 
 ```sh
 qmd embed --force --allow-remote
 ```
 
-Remote document chunks use deterministic UTF-8 byte windows. Query embedding is
-allowed only when the same identity is `ready` and compatible vectors exist; a
-vector or hybrid query then sends the formatted query text to the configured
-remote provider. After an authorized identity reset deletes the old vectors,
-there is no vector rollback; lexical search remains available while rebuilding.
-`qmd status` and `qmd doctor` report provider/model/dimension, short fingerprint,
-key presence as a boolean, acknowledgement, pending/inconsistent chunks, CJK
-channel readiness, and actionable repair commands. See
-`docs/architecture-cjk-openai.zh-TW.md` for the state machines and data-disclosure boundary.
+Remote document chunks use deterministic UTF-8 byte windows. Query embedding is allowed only when the same identity is `ready` and compatible vectors exist; a vector or hybrid query then sends the formatted query text to the configured remote provider. After an authorized identity reset deletes the old vectors, there is no vector rollback; lexical search remains available while rebuilding. `qmd status` and `qmd doctor` report provider/model/dimension, short fingerprint, key presence as a boolean, acknowledgement, pending/inconsistent chunks, CJK channel readiness, and actionable repair commands. See `docs/architecture-cjk-openai.md` for the state machines and data-disclosure boundary.
 
 ### CJK Lexical Search and Expansion
 
