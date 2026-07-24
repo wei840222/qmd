@@ -50,6 +50,7 @@ export interface Collection {
  */
 export interface ModelsConfig {
   embed?: string;
+  embed_base_url?: string;
   rerank?: string;
   generate?: string;
   expand_api_url?: string;

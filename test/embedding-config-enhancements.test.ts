@@ -57,13 +57,10 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
   });
 
   describe("TODO 3: embedding block baseUrl support", () => {
-    test("parses custom baseUrl in embedding block", () => {
+    test("parses custom baseUrl in embedding block and infers provider/model/dimension if omitted", () => {
       const resolved = resolveEmbeddingConfig({
         config: {
           embedding: {
-            provider: "openai",
-            model: "text-embedding-3-small",
-            dimension: 1536,
             baseUrl: "https://bifrost.home-infra.weii.cloud/v1/",
           },
         },
@@ -77,6 +74,46 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
         baseUrl: "https://bifrost.home-infra.weii.cloud/v1",
       });
       expect(resolved.source).toBe("embedding-block");
+    });
+  });
+
+  describe("Option A: models.embed_base_url unified models block", () => {
+    test("infers OpenAI provider when models.embed_base_url is specified alone", () => {
+      const resolved = resolveEmbeddingConfig({
+        config: {
+          models: {
+            embed_base_url: "https://bifrost.home-infra.weii.cloud/v1",
+          },
+        },
+        defaultLocalModel,
+      });
+
+      expect(resolved.canonical).toEqual({
+        provider: "openai",
+        model: "text-embedding-3-small",
+        dimension: 1536,
+        baseUrl: "https://bifrost.home-infra.weii.cloud/v1",
+      });
+      expect(resolved.credentialAvailable).toBe(true);
+    });
+
+    test("combines models.embed shorthand with models.embed_base_url", () => {
+      const resolved = resolveEmbeddingConfig({
+        config: {
+          models: {
+            embed: "openai:text-embedding-3-large",
+            embed_base_url: "https://bifrost.home-infra.weii.cloud/v1",
+          },
+        },
+        defaultLocalModel,
+      });
+
+      expect(resolved.canonical).toEqual({
+        provider: "openai",
+        model: "text-embedding-3-large",
+        dimension: 3072,
+        baseUrl: "https://bifrost.home-infra.weii.cloud/v1",
+      });
     });
   });
 
