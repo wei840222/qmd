@@ -558,9 +558,9 @@ models:
   embed_base_url: https://bifrost.home-infra.weii.cloud/v1 # Optional proxy / self-hosted endpoint
   embed_dimension: 1536                       # Optional: explicit vector dimension override
 
-  # Optional: Remote LLM Query Expansion
-  expand_api_url: https://bifrost.home-infra.weii.cloud/v1
-  expand_api_model: qwen3-7b-instruct
+  # Optional: Remote LLM Query Expansion (generate / expand)
+  generate_api_url: https://bifrost.home-infra.weii.cloud/v1
+  generate_api_model: qwen3-7b-instruct
 
   # Optional: Remote Reranking (supports both /v1/rerank and /v1/chat/completions LLM endpoints)
   rerank_api_url: https://bifrost.home-infra.weii.cloud/v1

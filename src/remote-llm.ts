@@ -13,6 +13,9 @@ import type {
 } from "./llm.js";
 
 export interface RemoteLLMOptions {
+  generateApiUrl?: string;
+  generateApiModel?: string;
+  generateApiKey?: string;
   expandApiUrl?: string;
   expandApiModel?: string;
   expandApiKey?: string;
@@ -49,9 +52,13 @@ export class RemoteLLM implements LLM {
   private rerankCircuitBroken = false;
 
   constructor(options: RemoteLLMOptions) {
-    this.expandApiUrl = options.expandApiUrl?.trim().replace(/\/+$/, "");
-    this.expandApiModel = options.expandApiModel?.trim();
-    this.expandApiKey = options.expandApiKey?.trim();
+    const rawExpandUrl = options.generateApiUrl ?? options.expandApiUrl;
+    const rawExpandModel = options.generateApiModel ?? options.expandApiModel;
+    const rawExpandKey = options.generateApiKey ?? options.expandApiKey;
+
+    this.expandApiUrl = rawExpandUrl?.trim().replace(/\/+$/, "");
+    this.expandApiModel = rawExpandModel?.trim();
+    this.expandApiKey = rawExpandKey?.trim();
     this.rerankApiUrl = options.rerankApiUrl?.trim().replace(/\/+$/, "");
     this.rerankApiModel = options.rerankApiModel?.trim();
     this.rerankApiKey = options.rerankApiKey?.trim();
