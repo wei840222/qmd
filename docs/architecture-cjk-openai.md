@@ -63,9 +63,10 @@ The analyzer fingerprint includes:
 - Analyzer version and normalization rules;
 - Jieba capability status;
 - Versioned Traditional Chinese technical dictionary content hash;
+- Optional user custom dictionary content hash (`userDictionarySha256`);
 - Token stream configuration parameters.
 
-Changes to dictionary or analyzer configurations invalidate existing fingerprints and trigger a diagnosable rebuild, preventing stale or semantically incompatible indexes from remaining active.
+Changes to dictionary (built-in or custom user dictionary) or analyzer configurations invalidate existing fingerprints and trigger a diagnosable rebuild, preventing stale or semantically incompatible indexes from remaining active.
 
 ## Embedding Identity & Single-Dimension Restriction
 
@@ -136,3 +137,27 @@ Document indexing transmits deterministic UTF-8 chunks to the remote provider; v
 - Corresponding actionable remediation commands.
 
 Diagnostics operations do not create schemas, modify SQLite databases, load local LLM models, or issue remote HTTP requests.
+
+## Remote LLM Query Expansion & Dual Reranking
+
+```mermaid
+flowchart TD
+    Q[qmd search / query] --> H{HybridLLM<br/>Remote config present?}
+    H -->|No| L0[LlamaCpp local models only]
+    H -->|Yes| EX[expandQuery] & RK[rerank]
+
+    EX --> EXQ{expand_api_url configured?}
+    EXQ -->|Yes| R1[RemoteLLM -> POST /v1/chat/completions]
+    EXQ -->|No / Error| L1[LlamaCpp local expansion]
+
+    RK --> RKQ{rerank_api_url configured?}
+    RKQ -->|Yes| R2Q{Endpoint type?}
+    R2Q -->|/v1/rerank| R2[RemoteLLM -> POST /v1/rerank<br/>+ Sigmoid normalization]
+    R2Q -->|/v1/chat/completions or 404| R3[RemoteLLM -> POST /v1/chat/completions<br/>+ Structured JSON LLM Reranking]
+    RKQ -->|No / Error| L2[LlamaCpp local reranking]
+```
+
+- **Per-operation Routing (`HybridLLM`)**: Operation routing for query expansion and reranking is completely decoupled. Callers can specify remote endpoints for expansion, reranking, or both while keeping embedding local.
+- **Graceful Local Fallback**: When remote endpoints emit errors or fail network connections, per-endpoint circuit breakers trip and operations gracefully fall back to local `LlamaCpp` models without interrupting search queries.
+- **Dual Reranking Support**: `RemoteLLM` supports both dedicated Cross-Encoder endpoints (`/v1/rerank`) and general LLM endpoints (`/v1/chat/completions`). When `/v1/rerank` receives an HTTP 404 response, it automatically switches to structured LLM Chat Completions reranking.
+- **Sigmoid Score Normalization**: Reranker outputs emitting raw log-odds scores are automatically normalized using sigmoid $\sigma(x) = \frac{1}{1 + e^{-x}}$ to standard $0 \dots 1$ bounds for rank fusion.
