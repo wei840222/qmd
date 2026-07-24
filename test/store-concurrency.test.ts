@@ -53,7 +53,14 @@ function expectSchemaIntact(dbPath: string): void {
       .prepare(`SELECT name FROM sqlite_master WHERE type = 'trigger'`)
       .all() as { name: string }[];
     expect(new Set(triggers.map(t => t.name))).toEqual(
-      new Set(["documents_ai", "documents_ad", "documents_au"])
+      new Set([
+        "documents_ai",
+        "documents_ad",
+        "documents_au",
+        "documents_cjk_journal_ai",
+        "documents_cjk_journal_au",
+        "documents_cjk_journal_ad",
+      ])
     );
 
     const fts = db
@@ -68,6 +75,11 @@ function expectSchemaIntact(dbPath: string): void {
       .prepare(`SELECT value FROM store_config WHERE key = 'fts_cjk_normalized_version'`)
       .get() as { value?: string } | undefined;
     expect(cjkVersion?.value).toBe("1");
+
+    const cjkIndexVersion = db
+      .prepare(`SELECT value FROM store_config WHERE key = 'cjk_index_schema_version'`)
+      .get() as { value?: string } | undefined;
+    expect(cjkIndexVersion?.value).toBe("3");
 
     const leakedShadow = db
       .prepare(`SELECT name FROM sqlite_master WHERE name LIKE 'documents_fts_rebuild%'`)

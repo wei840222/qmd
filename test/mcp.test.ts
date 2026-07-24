@@ -11,7 +11,7 @@ import type { Database } from "../src/db.js";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getDefaultLlamaCpp, disposeDefaultLlamaCpp } from "../src/llm";
-import { unlinkSync } from "node:fs";
+import { readFileSync, unlinkSync } from "node:fs";
 import { mkdtemp, writeFile, readdir, unlink, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -27,6 +27,8 @@ import { syncConfigToDb } from "../src/store";
 let testDb: Database;
 let testDbPath: string;
 let testConfigDir: string;
+const modelIntegrationDimension = Number(process.env.QMD_MODEL_INTEGRATION_DIMENSION ?? 0);
+const runModelIntegration = Number.isInteger(modelIntegrationDimension) && modelIntegrationDimension > 0;
 
 afterAll(async () => {
   // Ensure native resources are released to avoid ggml-metal asserts on process exit.
@@ -81,6 +83,7 @@ function initTestDatabase(db: Database): void {
       pos INTEGER NOT NULL DEFAULT 0,
       model TEXT NOT NULL,
       embed_fingerprint TEXT NOT NULL DEFAULT '',
+      total_chunks INTEGER NOT NULL DEFAULT 1,
       embedded_at TEXT NOT NULL,
       PRIMARY KEY (hash, seq)
     )
@@ -104,8 +107,9 @@ function initTestDatabase(db: Database): void {
     END
   `);
 
-  // Create vector table
-  db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[768] distance_metric=cosine)`);
+  if (runModelIntegration) {
+    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[${modelIntegrationDimension}] distance_metric=cosine)`);
+  }
 
   // Store collections — makes the DB self-contained
   db.exec(`
@@ -182,13 +186,13 @@ function seedTestData(db: Database): void {
     `).run(doc.path, doc.title, doc.hash, now, now);
   }
 
-  // Add embeddings for vector search
-  const embedding = new Float32Array(768);
-  for (let i = 0; i < 768; i++) embedding[i] = Math.random();
-
-  for (const doc of docs.slice(0, 4)) { // Skip large file for embeddings
-    db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embed_fingerprint, embedded_at) VALUES (?, 0, 0, ?, ?, ?)`).run(doc.hash, DEFAULT_EMBED_MODEL, getEmbeddingFingerprint(DEFAULT_EMBED_MODEL), now);
-    db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${doc.hash}_0`, embedding);
+  if (runModelIntegration) {
+    const embedding = new Float32Array(modelIntegrationDimension);
+    for (let i = 0; i < modelIntegrationDimension; i++) embedding[i] = Math.random();
+    for (const doc of docs.slice(0, 4)) { // Skip large file for embeddings
+      db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embed_fingerprint, embedded_at) VALUES (?, 0, 0, ?, ?, ?)`).run(doc.hash, DEFAULT_EMBED_MODEL, getEmbeddingFingerprint(DEFAULT_EMBED_MODEL), now);
+      db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${doc.hash}_0`, embedding);
+    }
   }
 }
 
@@ -325,7 +329,7 @@ describe("MCP Server", () => {
   // searchVec (Vector similarity search)
   // ===========================================================================
 
-  describe.skipIf(!!process.env.CI)("searchVec (vector similarity)", () => {
+  describe.skipIf(!runModelIntegration)("searchVec (vector similarity)", () => {
     test("returns results for semantic query", async () => {
       const results = await searchVec(testDb, "project documentation", DEFAULT_EMBED_MODEL, 10);
       expect(results.length).toBeGreaterThan(0);
@@ -351,7 +355,7 @@ describe("MCP Server", () => {
   // hybridQuery (query expansion + reranking)
   // ===========================================================================
 
-  describe.skipIf(!!process.env.CI)("hybridQuery (expansion + reranking)", () => {
+  describe.skipIf(!runModelIntegration)("hybridQuery (expansion + reranking)", () => {
     test("expands query with typed variations", async () => {
       const expanded = await expandQuery("api documentation", DEFAULT_QUERY_MODEL, testDb);
       // Returns ExpandedQuery[] — typed expansions, original excluded
@@ -599,15 +603,16 @@ describe("MCP Server", () => {
     test("returns index status", () => {
       const status = getStatus(testDb);
       expect(status.totalDocuments).toBe(5);
-      expect(status.hasVectorIndex).toBe(true);
+      expect(status.hasVectorIndex).toBe(runModelIntegration);
       expect(status.collections.length).toBe(1);
       expect(status.collections[0]!.path).toBe("/test/docs");
     });
 
     test("shows documents needing embedding", () => {
       const status = getStatus(testDb);
-      // large-file.md doesn't have embeddings
-      expect(status.needsEmbedding).toBe(1);
+      // The model-integration fixture embeds four documents; the deterministic
+      // contract fixture intentionally embeds none.
+      expect(status.needsEmbedding).toBe(runModelIntegration ? 1 : 5);
     });
   });
 
@@ -936,11 +941,12 @@ describe("MCP Server", () => {
 import { startMcpHttpServer, type HttpServerHandle } from "../src/mcp/server";
 import { enableProductionMode } from "../src/store";
 
-describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
+describe("MCP HTTP Transport", () => {
   let handle: HttpServerHandle;
   let baseUrl: string;
   let httpTestDbPath: string;
   let httpTestConfigDir: string;
+  let httpDbBeforeStartup: Buffer;
   // Stash original env to restore after tests
   const origIndexPath = process.env.INDEX_PATH;
   const origConfigDir = process.env.QMD_CONFIG_DIR;
@@ -948,8 +954,8 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
   beforeAll(async () => {
     // Create isolated test database with seeded data
     httpTestDbPath = `/tmp/qmd-mcp-http-test-${Date.now()}.sqlite`;
-    const db = openDatabase(httpTestDbPath);
-    initTestDatabase(db);
+    const initializedStore = createStore(httpTestDbPath);
+    const db = initializedStore.db;
     seedTestData(db);
 
     // 300 pad lines (37 chars each = 11100 chars) puts the marker past the
@@ -966,6 +972,12 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
         .run(fixtureHash, absLineFixtureBody, now);
       db.prepare(`INSERT INTO documents (collection, path, title, hash, created_at, modified_at, active) VALUES ('docs', ?, ?, ?, ?, ?, 1)`)
         .run("absolute-line-fixture.md", "Absolute Line Fixture", fixtureHash, now, now);
+
+      const notesHash = "hash-mcp-notes";
+      db.prepare(`INSERT OR IGNORE INTO content (hash, doc, created_at) VALUES (?, ?, ?)`)
+        .run(notesHash, "# Notes Marker\n\nMCP_SECOND_COLLECTION_ONLY", now);
+      db.prepare(`INSERT INTO documents (collection, path, title, hash, created_at, modified_at, active) VALUES ('notes', ?, ?, ?, ?, ?, 1)`)
+        .run("second.md", "Notes Marker", notesHash, now, now);
     }
 
     // Sync config into SQLite
@@ -974,11 +986,15 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
         docs: {
           path: "/test/docs",
           pattern: "**/*.md",
-        }
+        },
+        notes: {
+          path: "/test/notes",
+          pattern: "**/*.md",
+        },
       }
     };
     syncConfigToDb(db, httpTestConfig);
-    db.close();
+    initializedStore.close();
 
     // Create isolated YAML config
     const configPrefix = join(tmpdir(), `qmd-mcp-http-config-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -989,6 +1005,7 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
     process.env.INDEX_PATH = httpTestDbPath;
     process.env.QMD_CONFIG_DIR = httpTestConfigDir;
 
+    httpDbBeforeStartup = readFileSync(httpTestDbPath);
     handle = await startMcpHttpServer(0, { quiet: true }); // OS-assigned ephemeral port
     baseUrl = `http://localhost:${handle.port}`;
   });
@@ -1059,6 +1076,28 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
     return { status: res.status, json, contentType: res.headers.get("content-type") };
   }
 
+  test("startup, status, and remote preflight leave the SQLite file byte-identical", async () => {
+    sessionId = null;
+    try {
+      await mcpRequest({
+        jsonrpc: "2.0", id: 100, method: "initialize",
+        params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "readonly-test", version: "1.0" } },
+      });
+      await mcpRequest({
+        jsonrpc: "2.0", id: 101, method: "tools/call",
+        params: { name: "status", arguments: {} },
+      });
+      await mcpRequest({
+        jsonrpc: "2.0", id: 102, method: "tools/call",
+        params: { name: "remote_embedding_preflight", arguments: {} },
+      });
+
+      expect(readFileSync(httpTestDbPath)).toEqual(httpDbBeforeStartup);
+    } finally {
+      sessionId = null;
+    }
+  });
+
   test("POST /mcp initialize returns 200 JSON (not SSE)", async () => {
     const { status, json, contentType } = await mcpRequest({
       jsonrpc: "2.0",
@@ -1094,6 +1133,11 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
     expect(toolNames).toContain("query");
     expect(toolNames).toContain("get");
     expect(toolNames).toContain("status");
+    expect(toolNames).toContain("remote_embedding_preflight");
+
+    const queryTool = json.result.tools.find((tool: any) => tool.name === "query");
+    expect(queryTool.inputSchema.properties.expansion.enum).toEqual(["auto", "force", "skip"]);
+    expect(queryTool.inputSchema.properties.explain.type).toBe("boolean");
   });
 
   test("POST /mcp tools/call query returns results", async () => {
@@ -1112,6 +1156,79 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
     // Should have content array with text results
     expect(json.result.content.length).toBeGreaterThan(0);
     expect(json.result.content[0].type).toBe("text");
+  });
+
+  test("POST /mcp tools/call query searches every requested collection", async () => {
+    await mcpRequest({
+      jsonrpc: "2.0", id: 1, method: "initialize",
+      params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "test", version: "1.0" } },
+    });
+
+    const { status, json } = await mcpRequest({
+      jsonrpc: "2.0", id: 31, method: "tools/call",
+      params: {
+        name: "query",
+        arguments: {
+          query: "MCP_SECOND_COLLECTION_ONLY",
+          collections: ["docs", "notes"],
+          expansion: "skip",
+          rerank: false,
+        },
+      },
+    });
+
+    expect(status).toBe(200);
+    const text = json.result.content.find((content: { type: string }) => content.type === "text")?.text ?? "";
+    expect(text).toContain("notes/second.md");
+  });
+
+  test("POST /mcp tools/call query explains the shared standalone lex policy", async () => {
+    await mcpRequest({
+      jsonrpc: "2.0", id: 1, method: "initialize",
+      params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "test", version: "1.0" } },
+    });
+
+    const { status, json } = await mcpRequest({
+      jsonrpc: "2.0", id: 32, method: "tools/call",
+      params: {
+        name: "query",
+        arguments: { query: "lex: readme", expansion: "auto", rerank: false, explain: true },
+      },
+    });
+
+    expect(status).toBe(200);
+    expect(json.result.structuredContent.expansion).toEqual({
+      action: "skip",
+      reason: "explicit-skip",
+      query: "readme",
+    });
+    expect(json.result.structuredContent.results.length).toBeGreaterThan(0);
+    expect(json.result.structuredContent.results[0].explain.expansion).toEqual(
+      json.result.structuredContent.expansion,
+    );
+  });
+
+  test("POST /mcp tools/call query returns a typed expansion conflict", async () => {
+    await mcpRequest({
+      jsonrpc: "2.0", id: 1, method: "initialize",
+      params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "test", version: "1.0" } },
+    });
+
+    const { status, json } = await mcpRequest({
+      jsonrpc: "2.0", id: 33, method: "tools/call",
+      params: {
+        name: "query",
+        arguments: { query: "lex: readme", expansion: "force", rerank: false, explain: true },
+      },
+    });
+
+    expect(status).toBe(200);
+    expect(json.result.isError).toBe(true);
+    expect(json.result.structuredContent.expansionError).toEqual({
+      reason: "conflicting-directives",
+      query: "readme",
+      mode: "force",
+    });
   });
 
   test("POST /mcp tools/call get returns document", async () => {

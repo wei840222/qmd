@@ -1,4 +1,5 @@
 node_modules/
+.tmp/
 dist/
 package-lock.json
 .npmrc
@@ -9,12 +10,16 @@ texts/
 .cursor/
 .github/copilot/
 *.md
+!THIRD_PARTY_NOTICES.md
 !README.md
 !CLAUDE.md
 !CHANGELOG.md
 !skills/**/*.md
 !finetune/*.md
 !docs/*.md
+!tasks/*.md
+!test/eval-cjk-docs/*.md
 finetune/outputs/
 finetune/data/train/
 .claude/
+.codegraph

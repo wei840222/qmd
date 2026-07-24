@@ -1,4 +1,4 @@
-import { isBun, openDatabase } from "../db.js";
+import { isBun, openDatabase, openReadOnlyDatabase } from "../db.js";
 import type { Database, SQLiteValue } from "../db.js";
 import fastGlob from "fast-glob";
 import { execSync, spawn as nodeSpawn } from "child_process";
@@ -18,8 +18,6 @@ import {
   getContextForFile,
   getContextForPath,
   listCollections,
-  removeCollection,
-  renameCollection,
   findSimilarFiles,
   findDocument,
   matchFilesByGlob,
@@ -44,10 +42,12 @@ import {
   toVirtualPath,
   insertContent,
   insertDocument,
+  insertDocumentWithContent,
   findActiveDocument,
   findOrMigrateLegacyDocument,
   updateDocumentTitle,
   updateDocument,
+  updateDocumentWithContent,
   deactivateDocument,
   getActiveDocumentPaths,
   cleanupOrphanedContent,
@@ -75,12 +75,36 @@ import {
   getDefaultDbPath,
   reindexCollection,
   generateEmbeddings,
-  maybeAdoptLegacyEmbeddingFingerprint,
+  getPendingEmbeddingDocsReadOnly,
   syncConfigToDb,
+  type ConfigSyncDiagnostic,
   type ReindexResult,
   type ChunkStrategy,
 } from "../store.js";
 import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
+import { rebuildCjkLexicalIndex } from "../search/cjk-index.js";
+import type { ExpansionMode } from "../search/query-expansion.js";
+import {
+  EmbeddingConfigError,
+  readCanonicalEmbeddingConfig,
+  resolveEmbeddingConfig,
+  writeCanonicalEmbeddingConfig,
+} from "../embedding/config.js";
+import {
+  OpenAIEmbeddingProvider,
+  UnavailableOpenAIEmbeddingProvider,
+} from "../embedding/openai.js";
+import type { EmbeddingProviderOwner } from "../embedding/provider.js";
+import { createCliEmbeddingProviderOwner } from "./embedding-owner.js";
+import { readStoredEmbeddingIdentity } from "../embedding/identity.js";
+import {
+  acceptRemoteEmbeddingPreflight,
+  authorizeRemoteEmbeddingPurpose,
+  createRemoteEmbeddingPreflight,
+  probeRemoteEmbeddingDimension,
+  remoteEmbeddingIdentity,
+} from "../embedding/remote-consent.js";
+import { inspectIndexDiagnostics } from "../diagnostics.js";
 import {
   formatSearchResults,
   formatDocuments,
@@ -122,25 +146,92 @@ import {
 // =============================================================================
 
 let store: ReturnType<typeof createStore> | null = null;
+let cliEmbeddingOwner: EmbeddingProviderOwner | null = null;
 let storeDbPathOverride: string | undefined;
 let currentIndexName = "index";
 
 function getStore(): ReturnType<typeof createStore> {
   if (!store) {
     store = createStore(storeDbPathOverride);
-    // Sync YAML config into SQLite store_collections so store.ts reads from DB
-    try {
-      const activeModels = ensureModelsConfiguredForCli();
-      const config = loadConfig();
-      syncConfigToDb(store.db, config);
-      setDefaultLlamaCpp(new LlamaCpp({
-        embedModel: activeModels.embed,
-        generateModel: activeModels.generate,
-        rerankModel: activeModels.rerank,
-      }));
-    } catch {
-      // Config may not exist yet — that's fine, DB works without it
+    // Sync YAML config into SQLite store_collections (external config wins)
+    const config = loadConfig();
+    syncConfigToDb(store.db, config);
+    const dbEmbeddingConfig = readCanonicalEmbeddingConfig(store.db);
+    const activeModels = ensureModelsConfiguredForCli();
+    const embedding = resolveEmbeddingConfig({
+      config,
+      dbConfig: dbEmbeddingConfig,
+      env: process.env,
+      defaultLocalModel: activeModels.embed,
+    });
+    writeCanonicalEmbeddingConfig(store.db, embedding.canonical);
+    const cliLlama = new LlamaCpp({
+      embedModel: embedding.canonical.provider === "local"
+        ? embedding.canonical.model
+        : activeModels.embed,
+      generateModel: activeModels.generate,
+      rerankModel: activeModels.rerank,
+    });
+    setDefaultLlamaCpp(cliLlama);
+    if (embedding.canonical.provider === "openai") {
+      const apiKey = process.env.OPENAI_API_KEY?.trim();
+      const provider = apiKey
+        ? new OpenAIEmbeddingProvider({
+            apiKey,
+            authorizeRequest: request => {
+              const activeProvider = store?.embeddingProvider;
+              if (!activeProvider?.remote) {
+                throw new EmbeddingConfigError("Remote embedding provider is not active.");
+              }
+              const storedIdentity = readStoredEmbeddingIdentity(store!.db);
+              const requestIdentity = [
+                storedIdentity,
+                remoteEmbeddingIdentity(activeProvider, "regex"),
+                remoteEmbeddingIdentity(activeProvider, "auto"),
+              ].find(identity => identity?.fingerprint === request.fingerprint);
+              if (!requestIdentity) {
+                throw new EmbeddingConfigError(
+                  "Remote request fingerprint does not match an active embedding identity.",
+                );
+              }
+              authorizeRemoteEmbeddingPurpose(store!.db, requestIdentity, request.purpose, {
+                lease: request.buildLease,
+                requestFingerprint: request.fingerprint,
+              });
+            },
+          })
+        : new UnavailableOpenAIEmbeddingProvider();
+      cliEmbeddingOwner = createCliEmbeddingProviderOwner(
+        embedding.canonical,
+        cliLlama,
+        provider,
+      );
+      store.embeddingProvider = provider;
+      store.authorizeRemoteRequest = (purpose, context) => {
+        authorizeRemoteEmbeddingPurpose(
+          store!.db,
+          context.identity ?? remoteEmbeddingIdentity(provider!),
+          purpose,
+          { lease: context.lease },
+        );
+      };
+      store.authorizeRemoteBuildStart = identity => {
+        authorizeRemoteEmbeddingPurpose(store!.db, identity, "capability-probe");
+      };
+    } else {
+      cliEmbeddingOwner = createCliEmbeddingProviderOwner(embedding.canonical, cliLlama);
+      store.embeddingProvider = cliEmbeddingOwner.provider;
     }
+  }
+  return store;
+}
+
+function getDoctorStore(): ReturnType<typeof createStore> {
+  if (!store) {
+    const dbPath = getDbPath();
+    store = existsSync(dbPath)
+      ? createStore(dbPath, { readOnly: true })
+      : createStore(":memory:");
   }
   return store;
 }
@@ -152,22 +243,56 @@ function getDb(): Database {
 /** Re-sync YAML config into SQLite after CLI mutations (add/remove/rename collection, context changes) */
 function resyncConfig(): void {
   const s = getStore();
-  try {
-    const config = loadConfig();
-    // Clear config hash to force re-sync
-    s.db.prepare(`DELETE FROM store_config WHERE key = 'config_hash'`).run();
-    syncConfigToDb(s.db, config);
-  } catch {
-    // Config may not exist — that's fine
-  }
+  syncConfigToDb(s.db, loadConfig());
 }
 
 function closeDb(): void {
+  // A provider owner may still have queued work that depends on this store.
+  // The common CLI cleanup closes provider/runtime before closing the database.
+  if (cliEmbeddingOwner) return;
   if (store) {
     store.close();
     store = null;
   }
 }
+
+export interface CliResourceCloserOptions {
+  getOwner(): EmbeddingProviderOwner | null;
+  clearOwner(): void;
+  disposeFallback(): Promise<void>;
+  closeStore(): void;
+}
+
+export function createCliResourceCloser(options: CliResourceCloserOptions): () => Promise<void> {
+  let closePromise: Promise<void> | null = null;
+  return () => {
+    if (!closePromise) {
+      closePromise = (async () => {
+        const owner = options.getOwner();
+        try {
+          if (owner) await owner.close();
+          else await options.disposeFallback();
+        } finally {
+          options.clearOwner();
+          options.closeStore();
+        }
+      })();
+    }
+    return closePromise;
+  };
+}
+
+const closeCliResources = createCliResourceCloser({
+  getOwner: () => cliEmbeddingOwner,
+  clearOwner: () => { cliEmbeddingOwner = null; },
+  disposeFallback: disposeDefaultLlamaCpp,
+  closeStore: () => {
+    if (store) {
+      store.close();
+      store = null;
+    }
+  },
+});
 
 function getDbPath(): string {
   return store?.dbPath ?? storeDbPathOverride ?? getDefaultDbPath();
@@ -465,7 +590,7 @@ function sanitizeDiagnosticMessage(message: string): string {
 
 async function showStatus(): Promise<void> {
   const dbPath = getDbPath();
-  const db = getDb();
+  const db = getDoctorStore().db;
 
   // Collections are defined in YAML; no duplicate cleanup needed.
   // Collections are defined in YAML; no duplicate cleanup needed.
@@ -483,8 +608,28 @@ async function showStatus(): Promise<void> {
   // Overall stats
   const totalDocs = db.prepare(`SELECT COUNT(*) as count FROM documents WHERE active = 1`).get() as { count: number };
   const vectorCount = db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get() as { count: number };
-  const statusEmbedModel = resolveEmbedModelForCli();
-  const needsEmbedding = getHashesNeedingEmbedding(db, undefined, statusEmbedModel);
+  const statusConfig = loadConfig();
+  const statusEmbedModel = statusConfig.models?.embed ?? resolveModels().embed;
+  const statusEmbedding = resolveEmbeddingConfig({
+    config: statusConfig,
+    dbConfig: readCanonicalEmbeddingConfig(db),
+    env: process.env,
+    defaultLocalModel: statusEmbedModel,
+  }).canonical;
+  const diagnostics = inspectIndexDiagnostics(db, {
+    fallbackModel: statusEmbedding.model,
+    provider: statusEmbedding.provider === "openai"
+      ? new UnavailableOpenAIEmbeddingProvider()
+      : undefined,
+    keyConfigured: Boolean(process.env.OPENAI_API_KEY?.trim()),
+    configuredProvider: {
+      id: statusEmbedding.provider === "openai" ? "openai" : "local-llama-cpp",
+      remote: statusEmbedding.provider === "openai",
+      model: statusEmbedding.model,
+      dimension: statusEmbedding.dimension,
+    },
+  });
+  const needsEmbedding = diagnostics.embedding.chunks.pendingDocuments;
 
   // Most recent update across all collections
   const mostRecent = db.prepare(`SELECT MAX(modified_at) as latest FROM documents WHERE active = 1`).get() as { latest: string | null };
@@ -504,8 +649,7 @@ async function showStatus(): Promise<void> {
       process.kill(mcpPid, 0);
       console.log(`MCP:   ${c.green}running${c.reset} (PID ${mcpPid})`);
     } catch {
-      unlinkSync(mcpPidPath);
-      // Stale PID file cleaned up silently
+      console.log(`MCP:   ${c.dim}not running${c.reset} (stale PID file)`);
     }
   }
   console.log("");
@@ -520,6 +664,26 @@ async function showStatus(): Promise<void> {
     const lastUpdate = new Date(mostRecent.latest);
     console.log(`  Updated:  ${formatTimeAgo(lastUpdate)}`);
   }
+
+  console.log(`\n${c.bold}Embedding${c.reset}`);
+  console.log(`  Provider: ${diagnostics.embedding.provider.id ?? "unknown"}`);
+  console.log(`  Model:    ${diagnostics.embedding.provider.model}`);
+  console.log(`  Dimension: ${diagnostics.embedding.provider.dimension ?? "unknown"}`);
+  console.log(`  Identity: ${diagnostics.embedding.identity.shortFingerprint ?? "unknown"} (${diagnostics.embedding.build.state})`);
+  console.log(`  Pending:  ${diagnostics.embedding.chunks.pendingDocuments}; metadata-only=${diagnostics.embedding.chunks.metadataOnly}, vector-only=${diagnostics.embedding.chunks.vectorOnly}`);
+  if (diagnostics.embedding.provider.remote) {
+    console.log(`  API key:  ${diagnostics.embedding.provider.keyConfigured ? "configured" : "not configured"}`);
+    console.log(`  Consent:  ${diagnostics.embedding.remote.acknowledgement ? "accepted" : "required"}`);
+    console.log(`  Pricing:  checked ${diagnostics.embedding.remote.pricingCheckedAt}`);
+  }
+  if (diagnostics.embedding.repairCommand) console.log(`  Repair:   ${diagnostics.embedding.repairCommand}`);
+
+  console.log(`\n${c.bold}CJK Lexical${c.reset}`);
+  console.log(`  Jieba:    ${diagnostics.lexical.jiebaCapability}`);
+  console.log(`  Analyzer: ${diagnostics.lexical.analyzerFingerprint.slice(0, 12)} (${diagnostics.lexical.state})`);
+  console.log(`  Channels: char=${diagnostics.lexical.channels.char}, word=${diagnostics.lexical.channels.word}, bigram=${diagnostics.lexical.channels.bigram}`);
+  if (diagnostics.lexical.rebuildReason) console.log(`  Reason:   ${diagnostics.lexical.rebuildReason}`);
+  if (diagnostics.lexical.repairCommand) console.log(`  Repair:   ${diagnostics.lexical.repairCommand}`);
 
   // Get all contexts grouped by collection (from YAML)
   const allContexts = listAllContexts();
@@ -610,7 +774,10 @@ async function showStatus(): Promise<void> {
       const match = uri.match(/^hf:([^/]+\/[^/]+)\//);
       return match ? `https://huggingface.co/${match[1]}` : uri;
     };
-    const activeModels = resolveModelsForCli();
+    const activeModels = {
+      ...resolveModels(statusConfig.models),
+      embed: statusEmbedding.model,
+    };
     console.log(`\n${c.bold}Models${c.reset}`);
     console.log(`  Embedding:   ${hfLink(activeModels.embed)}`);
     console.log(`  Reranking:   ${hfLink(activeModels.rerank)}`);
@@ -741,6 +908,7 @@ async function updateCollections(): Promise<void> {
 
   // Check if any documents need embedding (show once at end)
   const needsEmbedding = getHashesNeedingEmbedding(db);
+  await rebuildCjkLexicalIndex(getDbPath());
   closeDb();
 
   console.log(`${c.green}✓ All collections updated.${c.reset}`);
@@ -884,7 +1052,6 @@ function contextRemove(pathArg: string): void {
     // Remove global context
     setGlobalContext(undefined);
     // Resync so SQLite store_config is updated
-    const s = getStore();
     resyncConfig();
     closeDb();
     console.log(`${c.green}✓${c.reset} Removed global context`);
@@ -912,6 +1079,8 @@ function contextRemove(pathArg: string): void {
       process.exit(1);
     }
 
+    resyncConfig();
+    closeDb();
     console.log(`${c.green}✓${c.reset} Removed context for: ${pathArg}`);
     return;
   }
@@ -942,6 +1111,8 @@ function contextRemove(pathArg: string): void {
     process.exit(1);
   }
 
+  resyncConfig();
+  closeDb();
   console.log(`${c.green}✓${c.reset} Removed context for: qmd://${detected.collectionName}/${detected.relativePath}`);
 }
 
@@ -1610,15 +1781,24 @@ function collectionRemove(name: string): void {
   }
 
   const db = getDb();
-  const result = removeCollection(db, name);
-  // Also remove from YAML config
+  const deletedDocs = Number((db.prepare(`SELECT COUNT(*) AS count FROM documents WHERE collection = ?`).get(name) as { count: number }).count);
+  const cleanedHashes = Number((db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM content c
+    WHERE NOT EXISTS (
+      SELECT 1 FROM documents d
+      WHERE d.hash = c.hash AND d.collection <> ?
+    )
+  `).get(name) as { count: number }).count);
+  // External config is authoritative; reconciliation performs the SQLite mutation.
   yamlRemoveCollectionFn(name);
+  resyncConfig();
   closeDb();
 
   console.log(`${c.green}✓${c.reset} Removed collection '${name}'`);
-  console.log(`  Deleted ${result.deletedDocs} documents`);
-  if (result.cleanedHashes > 0) {
-    console.log(`  Cleaned up ${result.cleanedHashes} orphaned content hashes`);
+  console.log(`  Deleted ${deletedDocs} documents`);
+  if (cleanedHashes > 0) {
+    console.log(`  Cleaned up ${cleanedHashes} orphaned content hashes`);
   }
 }
 
@@ -1639,10 +1819,10 @@ function collectionRename(oldName: string, newName: string): void {
     process.exit(1);
   }
 
-  const db = getDb();
-  renameCollection(db, oldName, newName);
-  // Also rename in YAML config
+  getDb();
+  // External config is authoritative; reconciliation performs the SQLite mutation.
   yamlRenameCollectionFn(oldName, newName);
+  resyncConfig();
   closeDb();
 
   console.log(`${c.green}✓${c.reset} Renamed collection '${oldName}' to '${newName}'`);
@@ -1734,18 +1914,23 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
         }
       } else {
         // Content changed - insert new content hash and update document
-        insertContent(db, hash, content, now);
         const stat = statSync(filepath);
-        updateDocument(db, existing.id, title, hash,
-          stat ? new Date(stat.mtime).toISOString() : now);
+        updateDocumentWithContent(
+          db,
+          hash,
+          content,
+          now,
+          existing.id,
+          title,
+          stat ? new Date(stat.mtime).toISOString() : now,
+        );
         updated++;
       }
     } else {
       // New document - insert content and document
       indexed++;
-      insertContent(db, hash, content, now);
       const stat = statSync(filepath);
-      insertDocument(db, collectionName, path, title, hash,
+      insertDocumentWithContent(db, hash, content, now, collectionName, path, title,
         stat ? new Date(stat.birthtime).toISOString() : now,
         stat ? new Date(stat.mtime).toISOString() : now);
     }
@@ -1785,6 +1970,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
     console.log(`\nRun 'qmd embed' to update embeddings (${needsEmbedding} unique hashes need vectors)`);
   }
 
+  await rebuildCjkLexicalIndex(getDbPath());
   closeDb();
 }
 
@@ -1863,17 +2049,115 @@ function resolveModelsForCli(): { embed: string; generate: string; rerank: strin
 async function vectorIndex(
   model: string = resolveEmbedModelForCli(),
   force: boolean = false,
-  batchOptions?: { maxDocsPerBatch?: number; maxBatchBytes?: number; chunkStrategy?: ChunkStrategy; collection?: string; maxDurationMs?: number },
+  batchOptions?: {
+    maxDocsPerBatch?: number;
+    maxBatchBytes?: number;
+    chunkStrategy?: ChunkStrategy;
+    collection?: string;
+    maxDurationMs?: number;
+    remotePreflight?: boolean;
+    remoteProbe?: boolean;
+    remoteAccept?: { preflightId: string; fingerprint: string; policyVersion: string };
+    allowDestructiveRebuild?: boolean;
+  },
 ): Promise<void> {
+  if (batchOptions?.remotePreflight) {
+    const config = loadConfig();
+    const dbPath = getDbPath();
+    const temporaryStore = existsSync(dbPath) ? undefined : createStore(":memory:");
+    const db = temporaryStore?.db ?? openReadOnlyDatabase(dbPath);
+    try {
+      const hasStoreConfig = db.prepare(`
+        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'store_config'
+      `).get() != null;
+      const embedding = resolveEmbeddingConfig({
+        config,
+        dbConfig: hasStoreConfig ? readCanonicalEmbeddingConfig(db) : undefined,
+        env: process.env,
+        defaultLocalModel: config.models?.embed ?? DEFAULT_EMBED_MODEL,
+      });
+      if (embedding.canonical.provider !== "openai") {
+        throw new EmbeddingConfigError("Remote embedding options require embedding.provider: openai.");
+      }
+      console.log(JSON.stringify(createRemoteEmbeddingPreflight(
+        db,
+        new UnavailableOpenAIEmbeddingProvider(),
+        { chunkStrategy: batchOptions.chunkStrategy },
+      ), null, 2));
+    } finally {
+      temporaryStore?.close();
+      if (!temporaryStore) db.close();
+    }
+    return;
+  }
   const storeInstance = getStore();
   const db = storeInstance.db;
+  const provider = storeInstance.embeddingProvider;
+  const remoteAction = batchOptions?.remoteProbe
+    || batchOptions?.remoteAccept !== undefined;
+  if (remoteAction && !provider?.remote) {
+    throw new EmbeddingConfigError("Remote embedding options require embedding.provider: openai.");
+  }
+  if (provider?.remote) {
+    if (batchOptions?.remoteProbe) {
+      if (provider instanceof UnavailableOpenAIEmbeddingProvider) {
+        throw new EmbeddingConfigError("Remote capability probe requires OPENAI_API_KEY.");
+      }
+      console.log(JSON.stringify(await probeRemoteEmbeddingDimension(db, provider, {
+        chunkStrategy: batchOptions.chunkStrategy,
+      }), null, 2));
+      closeDb();
+      return;
+    }
+    if (batchOptions?.remoteAccept) {
+      acceptRemoteEmbeddingPreflight(db, provider, {
+        ...batchOptions.remoteAccept,
+        surface: "cli",
+      });
+      console.log(`${c.green}✓ Remote embedding preflight accepted.${c.reset}`);
+      closeDb();
+      return;
+    }
+
+    if (force && batchOptions?.allowDestructiveRebuild !== true) {
+      throw new EmbeddingConfigError("Remote --force embedding requires --allow-remote.");
+    }
+    if (force && batchOptions?.collection) {
+      throw new EmbeddingConfigError("Remote destructive embedding rebuilds cannot be collection-scoped.");
+    }
+    const identity = remoteEmbeddingIdentity(provider, batchOptions?.chunkStrategy);
+    const pending = getPendingEmbeddingDocsReadOnly(
+      db,
+      batchOptions?.collection,
+      identity.model,
+      identity.fingerprint,
+    );
+    if (pending.length === 0 && !force) {
+      console.log(`${c.green}✓ All content hashes already have embeddings.${c.reset}`);
+      closeDb();
+      return;
+    }
+    if (provider instanceof UnavailableOpenAIEmbeddingProvider) {
+      throw new EmbeddingConfigError(
+        "OpenAI document embedding is authorized, but OPENAI_API_KEY is not configured.",
+      );
+    }
+    model = provider.model;
+  }
 
   if (force) {
     console.log(`${c.yellow}Force re-indexing: clearing all vectors...${c.reset}`);
   }
 
   // Check if there's work to do before starting
-  const hashesToEmbed = getHashesNeedingEmbedding(db, batchOptions?.collection, model);
+  const hashesToEmbed = provider?.remote
+    ? getPendingEmbeddingDocsReadOnly(
+        db,
+        batchOptions?.collection,
+        provider.model,
+        remoteEmbeddingIdentity(provider, batchOptions?.chunkStrategy).fingerprint,
+      ).length
+    : getHashesNeedingEmbedding(db, batchOptions?.collection, model);
   if (hashesToEmbed === 0 && !force) {
     console.log(`${c.green}✓ All content hashes already have embeddings.${c.reset}`);
     closeDb();
@@ -1899,6 +2183,7 @@ async function vectorIndex(
     maxBatchBytes: batchOptions?.maxBatchBytes,
     chunkStrategy: batchOptions?.chunkStrategy,
     maxDurationMs: batchOptions?.maxDurationMs,
+    allowDestructiveRebuild: batchOptions?.allowDestructiveRebuild,
     onProgress: (info) => {
       if (info.totalBytes === 0) return;
       // Progress is measured by input bytes, not by chunks. The final chunk
@@ -2004,6 +2289,7 @@ type OutputOptions = {
   context?: string;      // Optional context for query expansion
   candidateLimit?: number;  // Max candidates to rerank (default: 40)
   intent?: string;       // Domain intent for disambiguation
+  expansion?: ExpansionMode; // Shared auto | force | skip policy
   skipRerank?: boolean;  // Skip LLM reranking, use RRF scores only
   chunkStrategy?: ChunkStrategy;  // "auto" (default) or "regex"
   fullPath?: boolean;    // Show realpath instead of qmd:// URI (relative to $PWD when subpath)
@@ -2391,7 +2677,7 @@ function filterByCollections<T extends { filepath?: string; file?: string }>(res
  * 
  * Examples:
  *   "CAP theorem"                    -> null (plain query, use expansion)
- *   "lex: CAP theorem"               -> [{ type: 'lex', query: 'CAP theorem' }]
+ *   "lex: CAP theorem"               -> null (explicit shared-policy skip)
  *   "lex: CAP\nvec: consistency"     -> [{ type: 'lex', ... }, { type: 'vec', ... }]
  *   "CAP\nconsistency"               -> throws (multiple plain lines)
  */
@@ -2400,7 +2686,7 @@ interface ParsedStructuredQuery {
   intent?: string;
 }
 
-function parseStructuredQuery(query: string): ParsedStructuredQuery | null {
+export function parseStructuredQuery(query: string): ParsedStructuredQuery | null {
   const rawLines = query.split('\n').map((line, idx) => ({
     raw: line,
     trimmed: line.trim(),
@@ -2450,6 +2736,9 @@ function parseStructuredQuery(query: string): ParsedStructuredQuery | null {
       if (/\r|\n/.test(text)) {
         throw new Error(`Line ${line.number} (${type}:) contains a newline. Keep each query on a single line.`);
       }
+      if (type === 'lex' && rawLines.length === 1) {
+        return null;
+      }
       typed.push({ type, query: text, line: line.number });
       continue;
     }
@@ -2476,14 +2765,10 @@ function search(query: string, opts: OutputOptions): void {
   // Validate collection filter (supports multiple -c flags)
   // Use default collections if none specified
   const collectionNames = resolveCollectionFilter(opts.collection, true);
-  const singleCollection = collectionNames.length === 1 ? collectionNames[0] : undefined;
 
   // Use large limit for --all, otherwise fetch more than needed and let outputResults filter
   const fetchLimit = opts.all ? 100000 : Math.max(50, opts.limit * 2);
-  const results = filterByCollections(
-    searchFTS(db, query, fetchLimit, singleCollection),
-    collectionNames
-  );
+  const results = searchFTS(db, query, fetchLimit, collectionNames);
 
   // Add context to results
   const resultsWithContext = results.map(r => ({
@@ -2527,13 +2812,12 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
   // Validate collection filter (supports multiple -c flags)
   // Use default collections if none specified
   const collectionNames = resolveCollectionFilter(opts.collection, true);
-  const singleCollection = collectionNames.length === 1 ? collectionNames[0] : undefined;
 
   checkIndexHealth(store.db);
 
   await withLLMSession(async () => {
-    let results = await vectorSearchQuery(store, query, {
-      collection: singleCollection,
+    const results = await vectorSearchQuery(store, query, {
+      collection: collectionNames,
       limit: opts.all ? 500 : (opts.limit || 10),
       minScore: opts.minScore || 0.3,
       intent: opts.intent,
@@ -2544,14 +2828,6 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
         },
       },
     });
-
-    // Post-filter for multi-collection
-    if (collectionNames.length > 1) {
-      results = results.filter(r => {
-        const prefixes = collectionNames.map(n => `qmd://${n}/`);
-        return prefixes.some(p => r.file.startsWith(p));
-      });
-    }
 
     closeDb();
 
@@ -2578,7 +2854,6 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
   // Validate collection filter (supports multiple -c flags)
   // Use default collections if none specified
   const collectionNames = resolveCollectionFilter(opts.collection, true);
-  const singleCollection = collectionNames.length === 1 ? collectionNames[0] : undefined;
 
   checkIndexHealth(store.db);
 
@@ -2586,6 +2861,9 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
   const parsed = parseStructuredQuery(query);
   // Intent can come from --intent flag or from intent: line in query document
   const intent = opts.intent || parsed?.intent;
+  if (opts.expansion === "force" && parsed?.searches.some(search => search.type === "lex")) {
+    throw new Error("conflicting expansion directives: --expand cannot be combined with lex:");
+  }
 
   await withLLMSession(async () => {
     let results;
@@ -2608,7 +2886,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
       process.stderr.write(`${c.dim}└─ Searching...${c.reset}\n`);
 
       results = await structuredSearch(store, structuredQueries, {
-        collections: singleCollection ? [singleCollection] : undefined,
+        collections: collectionNames.length > 0 ? collectionNames : undefined,
         limit: opts.all ? 500 : (opts.limit || 10),
         minScore: opts.minScore || 0,
         candidateLimit: opts.candidateLimit,
@@ -2636,15 +2914,24 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
     } else {
       // Standard hybrid query with automatic expansion
       results = await hybridQuery(store, query, {
-        collection: singleCollection,
+        collections: collectionNames.length > 0 ? collectionNames : undefined,
         limit: opts.all ? 500 : (opts.limit || 10),
         minScore: opts.minScore || 0,
         candidateLimit: opts.candidateLimit,
         skipRerank: opts.skipRerank,
         explain: !!opts.explain,
         intent,
+        expansion: opts.expansion,
         chunkStrategy: opts.chunkStrategy,
         hooks: {
+          onExpansionDecision: (decision) => {
+            if (decision.reason !== "auto-expand" && decision.reason !== "strong-signal") {
+              process.stderr.write(`${c.dim}Expansion policy: ${decision.reason}${c.reset}\n`);
+            }
+          },
+          onExpansionError: (event) => {
+            process.stderr.write(`${c.dim}Expansion error: ${event.reason}${c.reset}\n`);
+          },
           onStrongSignal: (score) => {
             process.stderr.write(`${c.dim}Strong BM25 signal (${score.toFixed(2)}) — skipping expansion${c.reset}\n`);
           },
@@ -2671,14 +2958,6 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
             process.stderr.write(`${c.dim} (${formatMs(ms)})${c.reset}\n`);
           },
         },
-      });
-    }
-
-    // Post-filter for multi-collection
-    if (collectionNames.length > 1) {
-      results = results.filter(r => {
-        const prefixes = collectionNames.map(n => `qmd://${n}/`);
-        return prefixes.some(p => r.file.startsWith(p));
       });
     }
 
@@ -2750,6 +3029,12 @@ function parseCLI() {
       "max-docs-per-batch": { type: "string" },
       "max-batch-mb": { type: "string" },
       timeout: { type: "string" },  // embed session cap in minutes (0 = no limit; default 30)
+      "remote-preflight": { type: "boolean" },
+      "remote-probe": { type: "boolean" },
+      "remote-accept": { type: "string" },
+      "remote-fingerprint": { type: "string" },
+      "remote-policy": { type: "string" },
+      "allow-remote": { type: "boolean" },
       // Update options
       pull: { type: "boolean" },  // git pull before update
       refresh: { type: "boolean" },
@@ -2763,6 +3048,7 @@ function parseCLI() {
       // Query options
       "candidate-limit": { type: "string", short: "C" },
       "no-rerank": { type: "boolean", default: false },
+      expand: { type: "boolean", default: false },
       "no-gpu": { type: "boolean", default: false },
       intent: { type: "string" },
       // Chunking options
@@ -2836,6 +3122,7 @@ function parseCLI() {
     skipRerank: !!values["no-rerank"],
     explain: !!values.explain,
     intent: values.intent as string | undefined,
+    expansion: values.expand ? "force" : "auto",
     chunkStrategy: parseChunkStrategy(values["chunk-strategy"]),
     fullPath: !!values["full-path"],
   };
@@ -3284,21 +3571,27 @@ function showHelp(): void {
   console.log("Maintenance:");
   console.log("  qmd init                      - Create a project-local .qmd index");
   console.log("  qmd status                    - View index + collection health");
-  console.log("  qmd update [--pull]           - Re-index collections (optionally git pull first)");
+  console.log("  qmd update                    - Run configured collection update commands, then re-index");
   console.log("  qmd embed [-f] [-c <name>]    - Generate/refresh vector embeddings");
   console.log("    --max-docs-per-batch <n>    - Cap docs loaded into memory per embedding batch");
   console.log("    --max-batch-mb <n>          - Cap UTF-8 MB loaded into memory per embedding batch");
   console.log("    --timeout <minutes>         - Embed session cap in minutes (0 = no limit; default 30)");
+  console.log("    --remote-preflight         - Print remote disclosure/cost preflight (no request)");
+  console.log("    --remote-probe             - Probe remote dimension with one versioned sentinel (requires consent)");
+  console.log("    --remote-accept <id>       - Accept exact preflight (requires fingerprint + policy)");
+  console.log("    --remote-fingerprint <fp>  - Fingerprint paired with --remote-accept");
+  console.log("    --remote-policy <version>  - Policy version paired with --remote-accept");
+  console.log("    --allow-remote             - Separately authorize remote destructive rebuild (also requires --force)");
   console.log("  qmd cleanup                   - Clear caches, vacuum DB");
   console.log("");
   console.log("Query syntax (qmd query):");
-  console.log("  QMD queries are either a single expand query (no prefix) or a multi-line");
+  console.log("  QMD queries are either a single policy query or a multi-line");
   console.log("  document where every line is typed with lex:, vec:, or hyde:. This grammar");
   console.log("  matches the docs in docs/SYNTAX.md and is enforced in the CLI.");
   console.log("");
   const grammar = [
-    `query          = expand_query | query_document ;`,
-    `expand_query   = text | explicit_expand ;`,
+    `query          = policy_query | query_document ;`,
+    `policy_query   = [ "lex:" ] text | explicit_expand ;`,
     `explicit_expand= "expand:" text ;`,
     `query_document = [ intent_line ] { typed_line } ;`,
     `intent_line    = "intent:" text newline ;`,
@@ -3315,13 +3608,18 @@ function showHelp(): void {
   }
   console.log("");
   console.log("  Examples:");
-  console.log("    qmd query \"how does auth work\"                # single-line → implicit expand");
+  console.log("    qmd query \"how does auth work\"                # shared auto policy");
+  console.log("    qmd query --expand \"how does auth work\"       # force expansion");
+  console.log("    qmd query \"lex: authentication\"               # skip expansion");
   console.log("    qmd query $'lex: CAP theorem\\nvec: consistency'  # typed query document");
   console.log("    qmd query $'lex: \"exact matches\" sports -baseball'  # phrase + negation lex search");
   console.log("    qmd query $'hyde: Hypothetical answer text'       # hyde-only document");
   console.log("");
   console.log("  Constraints:");
-  console.log("    - Standalone expand queries cannot mix with typed lines.");
+  console.log("    - auto skips expansion for CJK or a strong lexical signal; otherwise it expands.");
+  console.log("    - --expand or expand: selects force; standalone lex: selects skip.");
+  console.log("    - --expand combined with lex: is an error; explicit directives beat auto.");
+  console.log("    - Standalone policy queries cannot mix with typed lines.");
   console.log("    - Query documents allow only lex:, vec:, or hyde: prefixes.");
   console.log("    - Each typed line must be single-line text with balanced quotes.");
   console.log("");
@@ -3356,6 +3654,15 @@ function showHelp(): void {
   console.log("Embed/query options:");
   console.log("  --chunk-strategy <auto|regex> - Chunking mode (default: regex; auto uses AST for code files)");
   console.log("  --timeout <minutes>          - Embed session cap in minutes (0 = no limit; default 30)");
+  console.log("  --expand                    - Force query expansion (auto is the default; lex: skips)");
+  console.log("");
+  console.log("Embedding providers & disclosure:");
+  console.log("  - Local embedding is the default. OpenAI requires explicit provider configuration and OPENAI_API_KEY.");
+  console.log("  - Remote document builds send titles and deterministic UTF-8 document chunks; vector/hybrid queries send formatted query text.");
+  console.log("  - --remote-preflight computes a conservative token/cost upper bound and sends no remote request.");
+  console.log("  - --force and --allow-remote are independent approvals; both are required for a remote destructive identity rebuild.");
+  console.log("  - Deleting old vectors has no vector rollback; lexical search remains available while rebuilding.");
+  console.log("  - If Jieba or the analyzed index is unavailable, CJK search omits word and bigram channels and uses character-only fallback.");
   console.log("");
   console.log("Multi-get options:");
   console.log("  -l <num>                   - Maximum lines per file");
@@ -3823,12 +4130,24 @@ async function runDoctorDeviceChecks(nextSteps: string[]): Promise<void> {
 }
 
 async function showDoctor(): Promise<void> {
-  const storeInstance = getStore();
+  const storeInstance = getDoctorStore();
   const db = storeInstance.db;
   const pkg = readPackageJson();
   const activeModels = resolveModelsForCli();
-  const embedModel = activeModels.embed;
-  const fingerprint = getEmbeddingFingerprint(embedModel);
+  let doctorConfig: ReturnType<typeof loadConfig> | undefined;
+  try {
+    doctorConfig = loadConfig();
+  } catch {
+    // The dedicated index-config check below reports parse errors. Keep the
+    // remaining diagnostics available by falling back to DB/default config.
+  }
+  const doctorEmbedding = resolveEmbeddingConfig({
+    config: doctorConfig,
+    dbConfig: readCanonicalEmbeddingConfig(db),
+    env: process.env,
+    defaultLocalModel: activeModels.embed,
+  }).canonical;
+  const embedModel = doctorEmbedding.model;
   const nextSteps: string[] = [];
 
   console.log(`${c.bold}QMD Doctor${c.reset}\n`);
@@ -3853,6 +4172,38 @@ async function showDoctor(): Promise<void> {
   }
 
   const configCheck = checkDoctorIndexConfig(nextSteps);
+  if (configCheck.valid) {
+    try {
+      const row = db.prepare(`
+        SELECT value FROM store_config WHERE key = 'config_sync_diagnostic'
+      `).get() as { value: string } | undefined;
+      const diagnostic = row ? JSON.parse(row.value) as ConfigSyncDiagnostic : null;
+      if (diagnostic?.reconciled) {
+        const changes = [
+          diagnostic.collections.added.length > 0
+            ? `added ${diagnostic.collections.added.join(", ")}`
+            : null,
+          diagnostic.collections.updated.length > 0
+            ? `updated ${diagnostic.collections.updated.join(", ")}`
+            : null,
+          diagnostic.collections.removed.length > 0
+            ? `removed ${diagnostic.collections.removed.join(", ")}`
+            : null,
+          diagnostic.globalContextUpdated ? "updated global context" : null,
+        ].filter((part): part is string => part !== null);
+        doctorCheck(
+          "config reconciliation",
+          false,
+          `startup repaired store_collections drift: ${sanitizeDiagnosticMessage(changes.join("; "))}`,
+        );
+      } else {
+        doctorCheck("config reconciliation", true, "external config and SQLite metadata are in sync");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      doctorCheck("config reconciliation", false, `diagnostic is unreadable: ${sanitizeDiagnosticMessage(message)}`);
+    }
+  }
   const configModels = configCheck.config?.models ?? {};
   checkEnvironmentOverrides(activeModels, configModels);
   checkModelDefaults(activeModels, configModels);
@@ -3860,17 +4211,42 @@ async function showDoctor(): Promise<void> {
 
   await runDoctorDeviceChecks(nextSteps);
 
-  try {
-    const adoption = await maybeAdoptLegacyEmbeddingFingerprint(storeInstance, embedModel);
-    if (adoption.checked || adoption.adopted > 0) {
-      doctorCheck("legacy fingerprint adoption", adoption.adopted > 0, adoption.adopted > 0 ? `adopted ${adoption.adopted} legacy chunks; ${adoption.reason}` : adoption.reason);
-    }
-  } catch (error) {
-    doctorCheck("legacy fingerprint adoption", false, error instanceof Error ? error.message : String(error));
+  const diagnostics = inspectIndexDiagnostics(db, {
+    fallbackModel: embedModel,
+    provider: doctorEmbedding.provider === "openai"
+      ? new UnavailableOpenAIEmbeddingProvider()
+      : undefined,
+    keyConfigured: Boolean(process.env.OPENAI_API_KEY?.trim()),
+    configuredProvider: {
+      id: doctorEmbedding.provider === "openai" ? "openai" : "local-llama-cpp",
+      remote: doctorEmbedding.provider === "openai",
+      model: doctorEmbedding.model,
+      dimension: doctorEmbedding.dimension,
+    },
+  });
+  const fingerprint = diagnostics.embedding.identity.fullFingerprint;
+  const embeddingHealthy = diagnostics.embedding.build.state === "ready"
+    || diagnostics.embedding.build.state === "empty";
+  doctorCheck(
+    "embedding identity",
+    embeddingHealthy,
+    `${diagnostics.embedding.provider.id ?? "unknown"}/${diagnostics.embedding.provider.model}; state=${diagnostics.embedding.build.state}; fingerprint=${diagnostics.embedding.identity.shortFingerprint ?? "none"}`,
+  );
+  const lexicalHealthy = diagnostics.lexical.rebuildReason == null;
+  doctorCheck(
+    "CJK lexical channels",
+    lexicalHealthy,
+    `char=${diagnostics.lexical.channels.char}, word=${diagnostics.lexical.channels.word}, bigram=${diagnostics.lexical.channels.bigram}${diagnostics.lexical.rebuildReason ? `; reason=${diagnostics.lexical.rebuildReason}` : ""}`,
+  );
+  if (diagnostics.embedding.repairCommand && !embeddingHealthy) {
+    nextSteps.push(`Repair embeddings with \`${diagnostics.embedding.repairCommand}\`.`);
+  }
+  if (diagnostics.lexical.repairCommand && !lexicalHealthy) {
+    nextSteps.push(`Repair CJK lexical indexes with \`${diagnostics.lexical.repairCommand}\`.`);
   }
 
   try {
-    const pending = getHashesNeedingEmbedding(db, undefined, embedModel);
+    const pending = diagnostics.embedding.chunks.pendingDocuments;
     doctorCheck("embedding freshness", pending === 0, pending === 0 ? "all active documents match current fingerprint" : `${formatCount(pending)} active documents need embeddings. Next: \`qmd embed\``);
     if (pending > 0) {
       nextSteps.push(`Run \`qmd embed\` to generate ${formatCount(pending)} missing/stale document embeddings.`);
@@ -3888,7 +4264,10 @@ async function showDoctor(): Promise<void> {
     `).all() as { model: string; fingerprint: string; docs: number; chunks: number }[];
     const uniqueFingerprints = new Set(rows.map(row => row.fingerprint));
     const offCurrent = rows.filter(row => row.model === embedModel && row.fingerprint !== fingerprint);
-    const ok = rows.length === 0 || (uniqueFingerprints.size === 1 && rows[0]?.fingerprint === fingerprint && offCurrent.length === 0);
+    const ok = rows.length === 0 || (fingerprint != null
+      && uniqueFingerprints.size === 1
+      && rows[0]?.fingerprint === fingerprint
+      && offCurrent.length === 0);
     const currentDocs = rows
       .filter(row => row.model === embedModel && row.fingerprint === fingerprint)
       .reduce((sum, row) => sum + row.docs, 0);
@@ -3907,7 +4286,7 @@ async function showDoctor(): Promise<void> {
       nextSteps.push("Run `qmd embed` to converge mixed named embedding fingerprints; use `qmd embed --force` if old named fingerprints or vector sample mismatches remain.");
     }
     const details = rows.length === 0
-      ? `no vectors yet; current fingerprint ${fingerprint}`
+      ? `no vectors yet; current fingerprint ${fingerprint ?? "unknown until dimension is known"}`
       : ok
         ? `${formatCount(currentDocs)} docs on current fingerprint (${fingerprint})`
         : `${formatCount(currentDocs)} docs current, ${formatCount(otherDocs)} docs legacy/stale. ${groups}. Next: \`qmd embed\``;
@@ -3919,16 +4298,22 @@ async function showDoctor(): Promise<void> {
     doctorCheck("embedding fingerprints", false, error instanceof Error ? error.message : String(error));
   }
 
-  try {
-    const vectorSample = await checkEmbeddingVectorSamples(db, embedModel, fingerprint);
-    doctorCheck("embedding vector sample", vectorSample.ok, vectorSample.details);
-    if (!vectorSample.ok) {
-      nextSteps.push("Run `qmd embed --force` to rebuild existing vectors that no longer reproduce under the current embedding pipeline.");
+  if (diagnostics.embedding.provider.remote) {
+    doctorCheck("embedding vector sample", true, "skipped for remote provider; doctor sends no remote embedding request");
+  } else if (fingerprint != null) {
+    try {
+      const vectorSample = await checkEmbeddingVectorSamples(db, embedModel, fingerprint);
+      doctorCheck("embedding vector sample", vectorSample.ok, vectorSample.details);
+      if (!vectorSample.ok) {
+        nextSteps.push("Run `qmd embed --force` to rebuild existing vectors that no longer reproduce under the current embedding pipeline.");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? sanitizeDiagnosticMessage(error.message) : sanitizeDiagnosticMessage(String(error));
+      doctorCheck("embedding vector sample", false, `${message}; rebuild with \`qmd embed --force\``);
+      nextSteps.push("Run `qmd embed --force` to rebuild existing vectors, then rerun `qmd doctor`.");
     }
-  } catch (error) {
-    const message = error instanceof Error ? sanitizeDiagnosticMessage(error.message) : sanitizeDiagnosticMessage(String(error));
-    doctorCheck("embedding vector sample", false, `${message}; rebuild with \`qmd embed --force\``);
-    nextSteps.push("Run `qmd embed --force` to rebuild existing vectors, then rerun `qmd doctor`.");
+  } else {
+    doctorCheck("embedding vector sample", true, "skipped until the local embedding dimension is known");
   }
 
   const steps = normalizedDoctorNextSteps(nextSteps);
@@ -4190,6 +4575,7 @@ if (isMain) {
             process.exit(1);
           }
           updateCollectionSettings(name, { update: cmd });
+          resyncConfig();
           if (cmd) {
             console.log(`✓ Set update command for '${name}': ${cmd}`);
           } else {
@@ -4214,6 +4600,7 @@ if (isMain) {
           }
           const include = subcommand === 'include';
           updateCollectionSettings(name, { includeByDefault: include });
+          resyncConfig();
           console.log(`✓ Collection '${name}' ${include ? 'included in' : 'excluded from'} default queries`);
           break;
         }
@@ -4301,19 +4688,56 @@ if (isMain) {
         const maxBatchMb = parseEmbedBatchOption("maxBatchBytes", cli.values["max-batch-mb"]);
         const embedChunkStrategy = parseChunkStrategy(cli.values["chunk-strategy"]);
         const embedMaxDurationMs = parseEmbedTimeoutOption(cli.values["timeout"]);
+        const remotePreflight = cli.values["remote-preflight"] === true;
+        const remoteProbe = cli.values["remote-probe"] === true;
+        const remoteAcceptId = typeof cli.values["remote-accept"] === "string"
+          ? cli.values["remote-accept"]
+          : undefined;
+        const remoteFingerprint = typeof cli.values["remote-fingerprint"] === "string"
+          ? cli.values["remote-fingerprint"]
+          : undefined;
+        const remotePolicy = typeof cli.values["remote-policy"] === "string"
+          ? cli.values["remote-policy"]
+          : undefined;
+        const allowRemote = cli.values["allow-remote"] === true;
+        if (allowRemote && cli.values.force !== true) {
+          throw new Error("--allow-remote requires --force.");
+        }
+        const remoteControlCount = Number(remotePreflight) + Number(remoteProbe) + Number(remoteAcceptId !== undefined);
+        if (remoteControlCount > 1) {
+          throw new Error("Use only one of --remote-preflight, --remote-probe, or --remote-accept.");
+        }
+        if (remoteAcceptId !== undefined && (!remoteFingerprint || !remotePolicy)) {
+          throw new Error("--remote-accept requires --remote-fingerprint and --remote-policy.");
+        }
+        if (remoteAcceptId === undefined && (remoteFingerprint !== undefined || remotePolicy !== undefined)) {
+          throw new Error("--remote-fingerprint and --remote-policy require --remote-accept.");
+        }
         // Validate -c against configured collections before dispatching, so a
         // typo errors with "Collection not found: X" instead of silently
         // reporting success because no pending docs match a nonexistent name.
         // embed operates on a single collection; only the first value is used.
         const embedValidatedCollections = resolveCollectionFilter(cli.opts.collection, false);
         const embedCollection = embedValidatedCollections[0];
-        await vectorIndex(resolveEmbedModelForCli(), !!cli.values.force, {
+        await vectorIndex(
+          remotePreflight ? DEFAULT_EMBED_MODEL : resolveEmbedModelForCli(),
+          !!cli.values.force,
+          {
           maxDocsPerBatch,
           maxBatchBytes: maxBatchMb === undefined ? undefined : maxBatchMb * 1024 * 1024,
           chunkStrategy: embedChunkStrategy,
           collection: embedCollection,
           maxDurationMs: embedMaxDurationMs,
-        });
+          remotePreflight,
+          remoteProbe,
+          remoteAccept: remoteAcceptId === undefined ? undefined : {
+            preflightId: remoteAcceptId,
+            fingerprint: remoteFingerprint!,
+            policyVersion: remotePolicy!,
+          },
+            allowDestructiveRebuild: cli.values.force === true && allowRemote,
+          },
+        );
       } catch (error) {
         exitWithError(error);
       }
@@ -4444,8 +4868,11 @@ if (isMain) {
           const selfPath = fileURLToPath(import.meta.url);
           const indexArgs = cli.values.index ? ["--index", String(cli.values.index)] : [];
           const hostArgs = host ? ["--host", host] : [];
+          const isBunRuntime = typeof (process.versions as Record<string, string | undefined>).bun === "string";
           const spawnArgs = selfPath.endsWith(".ts")
-            ? ["--import", pathJoin(dirname(selfPath), "..", "..", "node_modules", "tsx", "dist", "esm", "index.mjs"), selfPath, ...indexArgs, "mcp", "--http", "--port", String(port), ...hostArgs]
+            ? isBunRuntime
+              ? [selfPath, ...indexArgs, "mcp", "--http", "--port", String(port), ...hostArgs]
+              : ["--import", pathJoin(dirname(selfPath), "..", "..", "node_modules", "tsx", "dist", "esm", "index.mjs"), selfPath, ...indexArgs, "mcp", "--http", "--port", String(port), ...hostArgs]
             : [selfPath, ...indexArgs, "mcp", "--http", "--port", String(port), ...hostArgs];
           const child = nodeSpawn(process.execPath, spawnArgs, {
             stdio: ["ignore", logFd, logFd],
@@ -4581,6 +5008,7 @@ if (isMain) {
     await finishSuccessfulCliCommand({
       command: cli.command,
       format: cli.opts.format,
+      cleanup: closeCliResources,
     });
   }
 

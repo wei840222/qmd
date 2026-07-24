@@ -27,10 +27,12 @@ import {
   DEFAULT_MULTI_GET_MAX_BYTES,
   type QMDStore,
   type ExpandedQuery,
+  type HybridQueryExplain,
   type IndexStatus,
 } from "../index.js";
 import { getConfigPath } from "../collections.js";
-import { enableProductionMode } from "../store.js";
+import { enableProductionMode, type ExpansionErrorEvent } from "../store.js";
+import type { ExpansionDecision } from "../search/query-expansion.js";
 
 // =============================================================================
 // Types for structured content
@@ -44,20 +46,10 @@ type SearchResultItem = {
   context: string | null;
   line: number;   // Absolute line in source markdown
   snippet: string;
+  explain?: HybridQueryExplain;
 };
 
-type StatusResult = {
-  totalDocuments: number;
-  needsEmbedding: number;
-  hasVectorIndex: boolean;
-  collections: {
-    name: string;
-    path: string | null;
-    pattern: string | null;
-    documents: number;
-    lastUpdated: string;
-  }[];
-};
+type StatusResult = IndexStatus;
 
 // =============================================================================
 // Helper functions
@@ -271,12 +263,12 @@ Combine types for best results. First sub-query gets 2× weight — put your str
 
 | Goal | Approach |
 |------|----------|
-| General search (recommended) | Pass \`query\` — auto-expanded into typed variants, fused, reranked |
+| General search (recommended) | Pass \`query\` — evaluated by the shared expansion policy, fused, reranked |
 | Know exact term/name | \`lex\` only |
 | Concept search | \`vec\` only |
 | Best recall | \`lex\` + \`vec\` |
 | Complex/nuanced | \`lex\` + \`vec\` + \`hyde\` |
-| Unknown vocabulary | Pass \`query\` with natural language so the server auto-expands it |
+| Unknown vocabulary | Pass \`query\` with natural language; use \`expansion: "force"\` when expansion must run |
 
 ## Examples
 
@@ -304,8 +296,11 @@ Intent-aware lex (C++ performance, not sports):
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: {
         query: z.string().optional().describe(
-          "Plain-text query, auto-expanded by the SDK into lex/vec/hyde variants, fused via " +
+          "Plain-text query, expanded according to the shared expansion policy, fused via " +
           "RRF and reranked. Recommended default for most searches. Mutually exclusive with 'searches'."
+        ),
+        expansion: z.enum(["auto", "force", "skip"]).optional().default("auto").describe(
+          "Query expansion policy: auto skips CJK/strong lexical matches, force always expands, skip never expands"
         ),
         searches: z.array(subSearchSchema).max(10).optional().describe(
           "Typed sub-queries to execute (lex/vec/hyde). First gets 2x weight. Use for precise " +
@@ -323,10 +318,13 @@ Intent-aware lex (C++ performance, not sports):
         rerank: z.boolean().optional().default(true).describe(
           "Rerank results using LLM (default: true). Set to false for faster results on CPU-only machines."
         ),
+        explain: z.boolean().optional().default(false).describe(
+          "Include retrieval traces and the shared query-expansion decision or typed expansion error"
+        ),
       },
     },
-    async ({ query, searches, limit, minScore, candidateLimit, collections, intent, rerank }) => {
-      // Require exactly one of `query` (plain text, auto-expanded) or `searches` (typed sub-queries).
+    async ({ query, searches, expansion, limit, minScore, candidateLimit, collections, intent, rerank, explain }) => {
+      // Require exactly one of `query` (plain text with an expansion policy) or `searches` (typed sub-queries).
       if (!query && (!searches || searches.length === 0)) {
         return {
           content: [{ type: "text" as const, text: "Error: provide either 'query' (plain text) or 'searches' (typed sub-queries)" }],
@@ -343,21 +341,39 @@ Intent-aware lex (C++ performance, not sports):
       // Use default collections if none specified
       const effectiveCollections = collections ?? defaultCollectionNames;
 
-      // Plain `query` is auto-expanded by the SDK (expand → fuse → rerank);
+      // Plain `query` follows the requested SDK expansion policy before fusion and reranking;
       // `searches` runs the caller's typed sub-queries directly.
       const searchOptions = query
         ? { query }
         : { queries: (searches ?? []).map(s => ({ type: s.type, query: s.query })) };
 
-      const results = await store.search({
-        ...searchOptions,
-        collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
-        limit,
-        minScore,
-        candidateLimit,
-        rerank,
-        intent,
-      });
+      let expansionDecision: ExpansionDecision | undefined;
+      let expansionError: ExpansionErrorEvent | undefined;
+      let results: Awaited<ReturnType<QMDStore["search"]>>;
+      try {
+        results = await store.search({
+          ...searchOptions,
+          collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
+          limit,
+          minScore,
+          candidateLimit,
+          rerank,
+          intent,
+          explain,
+          expansion: query ? expansion : undefined,
+          hooks: explain && query ? {
+            onExpansionDecision: decision => { expansionDecision = decision; },
+            onExpansionError: event => { expansionError = event; },
+          } : undefined,
+        });
+      } catch (error) {
+        if (!expansionError) throw error;
+        return {
+          content: [{ type: "text" as const, text: `Query expansion failed: ${expansionError.reason}` }],
+          structuredContent: { results: [], expansionError },
+          isError: true,
+        };
+      }
 
       // Use the plain query, or the first lex/vec sub-query, for snippet extraction
       const primaryQuery = query
@@ -376,12 +392,16 @@ Intent-aware lex (C++ performance, not sports):
           context: r.context,
           line,
           snippet: addLineNumbers(snippet, line),
+          ...(explain && r.explain ? { explain: r.explain } : {}),
         };
       });
 
       return {
         content: [{ type: "text", text: formatSearchSummary(filtered, primaryQuery) }],
-        structuredContent: { results: filtered },
+        structuredContent: {
+          results: filtered,
+          ...(explain && expansionDecision ? { expansion: expansionDecision } : {}),
+        },
       };
     }
   );
@@ -558,6 +578,10 @@ Intent-aware lex (C++ performance, not sports):
         `  Vector index: ${status.hasVectorIndex ? 'yes' : 'no'}`,
         `  Collections: ${status.collections.length}`,
       ];
+      if (status.diagnostics) {
+        summary.push(`  Embedding: ${status.diagnostics.embedding.build.state}`);
+        summary.push(`  CJK lexical: ${status.diagnostics.lexical.state}`);
+      }
 
       for (const col of status.collections) {
         summary.push(`    - ${col.name}: ${col.path} (${col.documents} docs)`);
@@ -568,6 +592,26 @@ Intent-aware lex (C++ performance, not sports):
         structuredContent: status,
       };
     }
+  );
+
+  server.registerTool(
+    "remote_embedding_preflight",
+    {
+      title: "Remote Embedding Preflight",
+      description: "Return the conservative, side-effect-free remote embedding consent document. This never sends document content or credentials to a provider.",
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      inputSchema: {},
+    },
+    async () => {
+      const preflight = await store.preflightRemoteEmbedding();
+      return {
+        content: [{
+          type: "text",
+          text: `Remote embedding preflight ${preflight.fingerprint} for ${preflight.pendingDocuments} pending documents.`,
+        }],
+        structuredContent: { ...preflight },
+      };
+    },
   );
 
   return server;
@@ -592,6 +636,7 @@ export async function startMcpServer(options: McpStartupOptions = {}): Promise<v
   const store = await createStore({
     dbPath: options.dbPath ?? getDefaultDbPath(),
     ...(existsSync(configPath) ? { configPath } : {}),
+    readOnly: true,
   });
   const server = await createMcpServer(store);
   const transport = new StdioServerTransport();
@@ -626,6 +671,7 @@ export async function startMcpHttpServer(
   const store = await createStore({
     dbPath: options.dbPath ?? getDefaultDbPath(),
     ...(existsSync(configPath) ? { configPath } : {}),
+    readOnly: true,
   });
 
   // Pre-fetch default collection names for REST endpoint

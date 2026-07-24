@@ -5,7 +5,7 @@
  * Uses inline config (no YAML files) to verify the SDK works self-contained.
  */
 
-import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,7 +22,7 @@ import {
   type VectorSearchOptions,
   type ExpandQueryOptions,
 } from "../src/index.js";
-import { setDefaultLlamaCpp } from "../src/llm.js";
+import { setDefaultLlamaCpp, withLLMSessionForLlm } from "../src/llm.js";
 
 // =============================================================================
 // Test Helpers
@@ -145,6 +145,93 @@ describe("createStore", () => {
 
     expect(store.dbPath).toBe(dbPath);
     await store.close();
+  });
+
+  test("isolates inline embedding configuration per store", async () => {
+    const first = await createStore({
+      dbPath: freshDbPath(),
+      config: {
+        collections: {},
+        embedding: { provider: "local", model: "local-model-a" },
+      },
+    });
+    const second = await createStore({
+      dbPath: freshDbPath(),
+      config: {
+        collections: {},
+        embedding: { provider: "local", model: "local-model-b" },
+      },
+    });
+
+    try {
+      expect(first.internal.embeddingProvider?.model).toBe("local-model-a");
+      expect(second.internal.embeddingProvider?.model).toBe("local-model-b");
+    } finally {
+      await Promise.all([first.close(), second.close()]);
+    }
+  });
+
+  test("uses the canonical database embedding config in DB-only mode", async () => {
+    const dbPath = freshDbPath();
+    const configured = await createStore({
+      dbPath,
+      config: {
+        collections: {},
+        embedding: { provider: "local", model: "persisted-local-model" },
+      },
+    });
+    await configured.close();
+
+    const reopened = await createStore({ dbPath });
+    try {
+      expect(reopened.internal.embeddingProvider?.model).toBe("persisted-local-model");
+    } finally {
+      await reopened.close();
+    }
+  });
+
+  test("closes the owned provider and Llama instance exactly once", async () => {
+    const store = await createStore({
+      dbPath: freshDbPath(),
+      config: { collections: {} },
+    });
+    const providerClose = vi.spyOn(store.internal.embeddingProvider!, "close");
+    const llmDispose = vi.spyOn(store.internal.llm!, "dispose");
+
+    await Promise.all([store.close(), store.close()]);
+    await store.close();
+
+    expect(providerClose).toHaveBeenCalledTimes(1);
+    expect(llmDispose).toHaveBeenCalledTimes(1);
+  });
+
+  test("drains active Llama sessions before disposing an OpenAI store runtime", async () => {
+    const store = await createStore({
+      dbPath: freshDbPath(),
+      config: { collections: {}, embedding: { provider: "openai" } },
+    });
+    const providerClose = vi.spyOn(store.internal.embeddingProvider!, "close");
+    const llmDispose = vi.spyOn(store.internal.llm!, "dispose");
+    let release!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>(resolve => { markStarted = resolve; });
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const active = withLLMSessionForLlm(store.internal.llm!, async () => {
+      markStarted();
+      await pending;
+    });
+    await started;
+
+    const close = store.close();
+    try {
+      expect(providerClose).toHaveBeenCalledTimes(1);
+      expect(llmDispose).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await active;
+      await close;
+    }
+    expect(llmDispose).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -386,33 +473,30 @@ describe("inline config isolation", () => {
     await store.close();
   });
 
-  test("two stores with different inline configs are independent", async () => {
-    const store1 = await createStore({
-      dbPath: freshDbPath(),
-      config: {
-        collections: {
-          docs: { path: docsDir, pattern: "**/*.md" },
-        },
-      },
-    });
+  test("two simultaneously open stores isolate config mutations and close", async () => {
+    const config1: CollectionConfig = {
+      collections: { docs: { path: docsDir, pattern: "**/*.md" } },
+    };
+    const config2: CollectionConfig = {
+      collections: { notes: { path: notesDir, pattern: "**/*.md" } },
+    };
+    const store1 = await createStore({ dbPath: freshDbPath(), config: config1 });
+    const store2 = await createStore({ dbPath: freshDbPath(), config: config2 });
 
-    // Close first store (resets config source)
-    await store1.close();
+    try {
+      expect(await store1.renameCollection("docs", "renamed-docs")).toBe(true);
+      expect(await store2.renameCollection("notes", "renamed-notes")).toBe(true);
+      await store1.close();
+      await store2.addCollection("more-notes", { path: notesDir, pattern: "**/*.txt" });
 
-    const store2 = await createStore({
-      dbPath: freshDbPath(),
-      config: {
-        collections: {
-          notes: { path: notesDir, pattern: "**/*.md" },
-        },
-      },
-    });
-
-    const names = (await store2.listCollections()).map(c => c.name);
-    expect(names).toContain("notes");
-    expect(names).not.toContain("docs");
-
-    await store2.close();
+      expect(Object.keys(config1.collections).sort()).toEqual(["renamed-docs"]);
+      expect(Object.keys(config2.collections).sort()).toEqual(["more-notes", "renamed-notes"]);
+      expect((await store2.listCollections()).map(collection => collection.name).sort())
+        .toEqual(["more-notes", "renamed-notes"]);
+    } finally {
+      await store1.close();
+      await store2.close();
+    }
   });
 });
 
@@ -467,6 +551,34 @@ describe("YAML config file mode", () => {
     const raw = readFileSync(configPath, "utf-8");
     const parsed = YAML.parse(raw) as CollectionConfig;
     expect(parsed.collections.docs!.context).toEqual({ "/api": "API documentation" });
+  });
+
+  test("two simultaneously open YAML stores isolate paths, mutations, and close", async () => {
+    const firstPath = join(testDir, `config-first-${Date.now()}.yml`);
+    const secondPath = join(testDir, `config-second-${Date.now()}.yml`);
+    writeFileSync(firstPath, YAML.stringify({
+      collections: { first: { path: docsDir, pattern: "**/*.md" } },
+    }));
+    writeFileSync(secondPath, YAML.stringify({
+      collections: { second: { path: notesDir, pattern: "**/*.md" } },
+    }));
+    const first = await createStore({ dbPath: freshDbPath(), configPath: firstPath });
+    const second = await createStore({ dbPath: freshDbPath(), configPath: secondPath });
+
+    try {
+      expect(await first.renameCollection("first", "renamed-first")).toBe(true);
+      expect(await second.renameCollection("second", "renamed-second")).toBe(true);
+      await second.close();
+      await first.addCollection("more-first", { path: docsDir, pattern: "**/*.txt" });
+
+      const firstConfig = YAML.parse(readFileSync(firstPath, "utf8")) as CollectionConfig;
+      const secondConfig = YAML.parse(readFileSync(secondPath, "utf8")) as CollectionConfig;
+      expect(Object.keys(firstConfig.collections).sort()).toEqual(["more-first", "renamed-first"]);
+      expect(Object.keys(secondConfig.collections)).toEqual(["renamed-second"]);
+    } finally {
+      await first.close();
+      await second.close();
+    }
   });
 
   test("non-existent config file returns empty collections", async () => {
@@ -628,8 +740,46 @@ describe("search (unified API)", () => {
     expect(results).toHaveLength(1);
   });
 
-  // Tests below use search({ query: ... }) which triggers LLM query expansion
-  describe.skipIf(!!process.env.CI)("with LLM query expansion", () => {
+  test("search() forwards the explicit expansion policy", async () => {
+    const results = await store.search({
+      query: "authentication",
+      expansion: "skip",
+      explain: true,
+      rerank: false,
+    });
+
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0]?.explain?.expansion?.reason).toBe("explicit-skip");
+  });
+
+  test("search() exposes the shared expansion decision through SDK hooks", async () => {
+    const decisions: string[] = [];
+    const results = await store.search({
+      query: "lex: authentication",
+      expansion: "auto",
+      rerank: false,
+      hooks: {
+        onExpansionDecision: decision => decisions.push(decision.reason),
+      },
+    });
+
+    expect(results.length).toBeGreaterThan(0);
+    expect(decisions).toEqual(["explicit-skip"]);
+  });
+
+  test("search() applies every requested collection to a plain query", async () => {
+    const results = await store.search({
+      query: "search engine",
+      collections: ["docs", "notes"],
+      expansion: "skip",
+      rerank: false,
+    });
+
+    expect(results.map(result => result.file)).toContain("qmd://notes/ideas.md");
+  });
+
+  // Hardware/model integration is explicit so the SDK contract gate remains deterministic.
+  describe.skipIf(process.env.QMD_MODEL_INTEGRATION !== "1")("with LLM query expansion", () => {
     test("search() with query and rerank:false returns results", async () => {
       const results = await store.search({ query: "authentication", rerank: false });
       expect(results.length).toBeGreaterThan(0);
@@ -948,20 +1098,29 @@ describe("embed", () => {
     };
   }
 
-  function createFakeEmbedLlm() {
+  function createFakeEmbedProvider() {
     const embedBatchCalls: string[][] = [];
     return {
       embedBatchCalls,
+      providerId: "fake",
+      model: "fake-embed",
+      dimension: 3,
+      remote: false,
+      canonicalIdentityMaterial: () => "fake-embed:3",
+      formatQuery: (query: string) => `query:${query}`,
+      formatDocument: (text: string, title?: string) => title ? `${title}\n${text}` : text,
       async embed(_text: string) {
-        return { embedding: [0.1, 0.2, 0.3], model: "fake-embed" };
+        return { vector: [0.1, 0.2, 0.3], model: "fake-embed", dimension: 3 };
       },
       async embedBatch(texts: string[]) {
         embedBatchCalls.push([...texts]);
         return texts.map((_text, index) => ({
-          embedding: [index + 1, index + 2, index + 3],
+          vector: [index + 1, index + 2, index + 3],
           model: "fake-embed",
+          dimension: 3,
         }));
       },
+      async close() {},
     };
   }
 
@@ -975,9 +1134,9 @@ describe("embed", () => {
       },
     });
 
-    const fakeLlm = createFakeEmbedLlm();
+    const fakeProvider = createFakeEmbedProvider();
     setDefaultLlamaCpp(createFakeTokenizer() as any);
-    store.internal.llm = fakeLlm as any;
+    store.internal.embeddingProvider = fakeProvider;
 
     try {
       await store.update();
@@ -986,11 +1145,477 @@ describe("embed", () => {
         maxBatchBytes: 1024 * 1024,
       });
 
-      expect(fakeLlm.embedBatchCalls).toHaveLength(3);
-      expect(fakeLlm.embedBatchCalls.map(call => call.length)).toEqual([1, 1, 1]);
+      expect(fakeProvider.embedBatchCalls).toHaveLength(3);
+      expect(fakeProvider.embedBatchCalls.map(call => call.length)).toEqual([1, 1, 1]);
       expect(result.docsProcessed).toBe(3);
       expect(result.chunksEmbedded).toBe(3);
     } finally {
+      setDefaultLlamaCpp(null);
+      await store.close();
+    }
+  });
+
+  test("store.embed uses deterministic remote chunking without a local tokenizer", async () => {
+    const remoteDir = join(testDir, `remote-chunk-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await mkdir(remoteDir, { recursive: true });
+    await writeFile(join(remoteDir, "long.md"), `# 台灣索引\n\n${"遠端向量文件內容。".repeat(2_000)}`);
+    const store = await createStore({
+      dbPath: freshDbPath(),
+      config: {
+        collections: {
+          docs: { path: remoteDir, pattern: "**/*.md" },
+        },
+      },
+    });
+    const remoteProvider = createFakeEmbedProvider();
+    remoteProvider.remote = true;
+    remoteProvider.providerId = "fake-remote";
+    remoteProvider.canonicalIdentityMaterial = () => "fake-remote:utf8-window-v1:3";
+    setDefaultLlamaCpp({
+      async tokenize() {
+        throw new Error("remote embedding must not load or call a local tokenizer");
+      },
+    } as any);
+    store.internal.embeddingProvider = remoteProvider;
+
+    try {
+      await store.update();
+      const preflight = await store.preflightRemoteEmbedding();
+      await store.acceptRemoteEmbeddingPreflight(preflight);
+      const result = await store.embed();
+
+      expect(result.docsProcessed).toBe(1);
+      expect(result.chunksEmbedded).toBeGreaterThan(1);
+      expect(remoteProvider.embedBatchCalls.flat()).not.toHaveLength(0);
+      expect(remoteProvider.embedBatchCalls.flat().every(input => new TextEncoder().encode(input).byteLength <= 8_192))
+        .toBe(true);
+    } finally {
+      setDefaultLlamaCpp(null);
+      await store.close();
+    }
+  });
+
+  test("store.embed does not fan out a terminal remote batch failure", async () => {
+    const store = await createStore({
+      dbPath: freshDbPath(),
+      config: {
+        collections: {
+          docs: { path: docsDir, pattern: "**/*.md" },
+        },
+      },
+    });
+    const fakeProvider = createFakeEmbedProvider();
+    let singleCalls = 0;
+    fakeProvider.remote = true;
+    fakeProvider.embedBatch = async () => {
+      throw Object.assign(new Error("remote retry budget exhausted"), {
+        name: "EmbeddingProviderError",
+        code: "RETRY_EXHAUSTED",
+      });
+    };
+    fakeProvider.embed = async () => {
+      singleCalls += 1;
+      return { vector: [0.1, 0.2, 0.3], model: "fake-embed", dimension: 3 };
+    };
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.internal.embeddingProvider = fakeProvider;
+
+    try {
+      await store.update();
+      const preflight = await store.preflightRemoteEmbedding();
+      await store.acceptRemoteEmbeddingPreflight(preflight);
+      await expect(store.embed()).rejects.toMatchObject({ code: "RETRY_EXHAUSTED" });
+      expect(fakeProvider.embedBatchCalls).toHaveLength(0);
+      expect(singleCalls).toBe(0);
+    } finally {
+      setDefaultLlamaCpp(null);
+      await store.close();
+    }
+  });
+
+  test("store.embed preserves successful chunks when a document is only partially embedded", async () => {
+    const partialDir = join(testDir, `partial-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await mkdir(partialDir, { recursive: true });
+    await writeFile(join(partialDir, "long.md"), `# Long document\n\n${"partial resume content. ".repeat(900)}`);
+    const store = await createStore({
+      dbPath: freshDbPath(),
+      config: {
+        collections: {
+          partial: { path: partialDir, pattern: "**/*.md" },
+        },
+      },
+    });
+    const fakeProvider = createFakeEmbedProvider();
+    fakeProvider.embedBatch = async () => [{
+      vector: [0.1, 0.2, 0.3],
+      model: "fake-embed",
+      dimension: 3,
+    }];
+    fakeProvider.embed = async () => {
+      throw new Error("simulated partial failure");
+    };
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.internal.embeddingProvider = fakeProvider;
+
+    try {
+      await store.update();
+      const result = await store.embed();
+      const rows = store.internal.db.prepare(`
+        SELECT seq, total_chunks
+        FROM content_vectors
+        ORDER BY seq
+      `).all() as { seq: number; total_chunks: number }[];
+
+      expect(result.errors).toBeGreaterThan(0);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ seq: 0 });
+      expect(rows[0]!.total_chunks).toBeGreaterThan(1);
+
+      const resumedProvider = createFakeEmbedProvider();
+      store.internal.embeddingProvider = resumedProvider;
+      const resumed = await store.embed();
+      const resumedInputs = resumedProvider.embedBatchCalls.reduce(
+        (count, call) => count + call.length,
+        0,
+      );
+      const missingChunks = rows[0]!.total_chunks - 1;
+      expect(resumed.chunksEmbedded).toBe(missingChunks);
+      expect(resumedInputs).toBe(missingChunks);
+    } finally {
+      setDefaultLlamaCpp(null);
+      await store.close();
+      await rm(partialDir, { recursive: true, force: true });
+    }
+  });
+
+  test("store.embed repairs a metadata-only chunk instead of treating it as complete", async () => {
+    const store = await createStore({
+      dbPath: freshDbPath(),
+      config: {
+        collections: {
+          docs: { path: docsDir, pattern: "**/*.md" },
+        },
+      },
+    });
+    const initialProvider = createFakeEmbedProvider();
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.internal.embeddingProvider = initialProvider;
+
+    try {
+      await store.update();
+      await store.embed();
+      const missing = store.internal.db.prepare(`
+        SELECT hash, seq
+        FROM content_vectors
+        ORDER BY hash, seq
+        LIMIT 1
+      `).get() as { hash: string; seq: number };
+      store.internal.db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`)
+        .run(`${missing.hash}_${missing.seq}`);
+
+      const repairProvider = createFakeEmbedProvider();
+      store.internal.embeddingProvider = repairProvider;
+      const repaired = await store.embed();
+      const repairedInputs = repairProvider.embedBatchCalls.reduce(
+        (count, call) => count + call.length,
+        0,
+      );
+
+      expect(repaired.chunksEmbedded).toBe(1);
+      expect(repairedInputs).toBe(1);
+      expect(store.internal.db.prepare(`
+        SELECT 1 FROM vectors_vec WHERE hash_seq = ?
+      `).get(`${missing.hash}_${missing.seq}`)).toBeDefined();
+    } finally {
+      setDefaultLlamaCpp(null);
+      await store.close();
+    }
+  });
+
+  test("store.embed removes a vector-only orphan before publishing ready", async () => {
+    const store = await createStore({
+      dbPath: freshDbPath(),
+      config: {
+        collections: {
+          docs: { path: docsDir, pattern: "**/*.md" },
+        },
+      },
+    });
+    const initialProvider = createFakeEmbedProvider();
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.internal.embeddingProvider = initialProvider;
+
+    try {
+      await store.update();
+      await store.embed();
+      store.internal.db.prepare(`
+        INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)
+      `).run("orphan_0", new Float32Array(initialProvider.dimension));
+
+      const repairProvider = createFakeEmbedProvider();
+      store.internal.embeddingProvider = repairProvider;
+      const repaired = await store.embed();
+      const repairRequests = repairProvider.embedBatchCalls.reduce(
+        (count, call) => count + call.length,
+        0,
+      );
+
+      expect(repaired.chunksEmbedded).toBe(0);
+      expect(repairRequests).toBe(0);
+      expect(store.internal.db.prepare(`
+        SELECT 1 FROM vectors_vec WHERE hash_seq = 'orphan_0'
+      `).get()).toBeFalsy();
+      expect(store.internal.db.prepare(`
+        SELECT status FROM embedding_index_state WHERE singleton = 1
+      `).get()).toMatchObject({ status: "ready" });
+    } finally {
+      setDefaultLlamaCpp(null);
+      await store.close();
+    }
+  });
+
+  test("store.embed prunes stale extra chunk rows without re-embedding valid chunks", async () => {
+    const store = await createStore({
+      dbPath: freshDbPath(),
+      config: {
+        collections: {
+          docs: { path: docsDir, pattern: "**/*.md" },
+        },
+      },
+    });
+    const initialProvider = createFakeEmbedProvider();
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.internal.embeddingProvider = initialProvider;
+
+    try {
+      await store.update();
+      await store.embed();
+      const row = store.internal.db.prepare(`
+        SELECT hash, model, embed_fingerprint AS fingerprint, embedded_at AS embeddedAt
+        FROM content_vectors
+        WHERE total_chunks = 1
+        ORDER BY hash
+        LIMIT 1
+      `).get() as { hash: string; model: string; fingerprint: string; embeddedAt: string };
+      store.internal.db.prepare(`
+        INSERT INTO content_vectors
+          (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
+        VALUES (?, 1, 0, ?, ?, 1, ?)
+      `).run(row.hash, row.model, row.fingerprint, row.embeddedAt);
+      store.internal.db.prepare(`
+        INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)
+      `).run(`${row.hash}_1`, new Float32Array(initialProvider.dimension));
+
+      const repairProvider = createFakeEmbedProvider();
+      store.internal.embeddingProvider = repairProvider;
+      const repaired = await store.embed();
+
+      expect(repaired.chunksEmbedded).toBe(0);
+      expect(repairProvider.embedBatchCalls).toHaveLength(0);
+      expect(store.internal.db.prepare(`
+        SELECT 1 FROM content_vectors WHERE hash = ? AND seq = 1
+      `).get(row.hash)).toBeFalsy();
+      expect(store.internal.db.prepare(`
+        SELECT 1 FROM vectors_vec WHERE hash_seq = ?
+      `).get(`${row.hash}_1`)).toBeFalsy();
+      expect(store.internal.db.prepare(`
+        SELECT status FROM embedding_index_state WHERE singleton = 1
+      `).get()).toMatchObject({ status: "ready" });
+    } finally {
+      setDefaultLlamaCpp(null);
+      await store.close();
+    }
+  });
+
+  test("store.embed publishes the provider identity and reuses completed vectors", async () => {
+    const store = await createStore({
+      dbPath: freshDbPath(),
+      config: {
+        collections: {
+          docs: { path: docsDir, pattern: "**/*.md" },
+        },
+      },
+    });
+
+    const fakeProvider = createFakeEmbedProvider();
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.internal.embeddingProvider = fakeProvider;
+
+    try {
+      await store.update();
+      const first = await store.embed();
+      const callsAfterFirst = fakeProvider.embedBatchCalls.length;
+      const state = store.internal.db.prepare(`
+        SELECT status, fingerprint, provider_id, model, dimension, lease_owner
+        FROM embedding_index_state
+        WHERE singleton = 1
+      `).get() as {
+        status: string;
+        fingerprint: string;
+        provider_id: string;
+        model: string;
+        dimension: number;
+        lease_owner: string | null;
+      };
+      const vectorFingerprints = store.internal.db.prepare(`
+        SELECT DISTINCT embed_fingerprint AS fingerprint
+        FROM content_vectors
+      `).all() as Array<{ fingerprint: string }>;
+
+      expect(first.docsProcessed).toBe(3);
+      expect(state).toMatchObject({
+        status: "ready",
+        provider_id: "fake",
+        model: "fake-embed",
+        dimension: 3,
+        lease_owner: null,
+      });
+      expect(vectorFingerprints).toEqual([{ fingerprint: state.fingerprint }]);
+
+      const second = await store.embed();
+      expect(second.docsProcessed).toBe(0);
+      expect(fakeProvider.embedBatchCalls).toHaveLength(callsAfterFirst);
+    } finally {
+      setDefaultLlamaCpp(null);
+      await store.close();
+    }
+  });
+
+  test("store.embed acquires the identity lease after probing an unknown dimension", async () => {
+    const store = await createStore({
+      dbPath: freshDbPath(),
+      config: {
+        collections: {
+          docs: { path: docsDir, pattern: "**/*.md" },
+        },
+      },
+    });
+    let dimension: number | null = null;
+    const provider = {
+      providerId: "probe-provider",
+      model: "probe-model",
+      remote: false,
+      get dimension() { return dimension; },
+      canonicalIdentityMaterial() {
+        if (dimension === null) throw new Error("dimension unknown");
+        return `probe-model:${dimension}`;
+      },
+      formatQuery: (query: string) => query,
+      formatDocument: (text: string) => text,
+      async embed() {
+        dimension = 3;
+        return { vector: [0.1, 0.2, 0.3], model: "probe-model", dimension: 3 };
+      },
+      async embedBatch(texts: string[]) {
+        dimension = 3;
+        return texts.map(() => ({ vector: [0.1, 0.2, 0.3], model: "probe-model", dimension: 3 }));
+      },
+      async close() {},
+    };
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.internal.embeddingProvider = provider;
+
+    try {
+      await store.update();
+      const result = await store.embed();
+      const state = store.internal.db.prepare(`
+        SELECT status, provider_id, model, dimension, lease_owner
+        FROM embedding_index_state
+        WHERE singleton = 1
+      `).get();
+
+      expect(result.errors).toBe(0);
+      expect(state).toEqual({
+        status: "ready",
+        provider_id: "probe-provider",
+        model: "probe-model",
+        dimension: 3,
+        lease_owner: null,
+      });
+    } finally {
+      setDefaultLlamaCpp(null);
+      await store.close();
+    }
+  });
+
+  test("store.embed reuses a persisted identity before loading an unknown-dimension provider", async () => {
+    const dbPath = freshDbPath();
+    const config = {
+      collections: {
+        docs: { path: docsDir, pattern: "**/*.md" },
+      },
+    };
+    const firstStore = await createStore({ dbPath, config });
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    firstStore.internal.embeddingProvider = createFakeEmbedProvider();
+    await firstStore.update();
+    await firstStore.embed();
+    await firstStore.close();
+
+    const secondStore = await createStore({ dbPath, config });
+    let providerCalls = 0;
+    const provider = {
+      providerId: "fake",
+      model: "fake-embed",
+      dimension: null,
+      remote: false,
+      canonicalIdentityMaterial() { throw new Error("model must not load"); },
+      canonicalIdentityMaterialForDimension: (dimension: number) => `fake-embed:${dimension}`,
+      formatQuery: (query: string) => query,
+      formatDocument: (text: string) => text,
+      async embed() {
+        providerCalls++;
+        return { vector: [0.1, 0.2, 0.3], model: "fake-embed", dimension: 3 };
+      },
+      async embedBatch(texts: string[]) {
+        providerCalls++;
+        return texts.map(() => ({ vector: [0.1, 0.2, 0.3], model: "fake-embed", dimension: 3 }));
+      },
+      async close() {},
+    };
+    secondStore.internal.embeddingProvider = provider;
+
+    try {
+      const result = await secondStore.embed();
+      expect(result.docsProcessed).toBe(0);
+      expect(providerCalls).toBe(0);
+    } finally {
+      setDefaultLlamaCpp(null);
+      await secondStore.close();
+    }
+  });
+
+  test("store.embed renews its identity lease before each document batch", async () => {
+    const store = await createStore({
+      dbPath: freshDbPath(),
+      config: {
+        collections: {
+          docs: { path: docsDir, pattern: "**/*.md" },
+        },
+      },
+    });
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    const provider = createFakeEmbedProvider();
+    const originalEmbedBatch = provider.embedBatch.bind(provider);
+    const expirations: number[] = [];
+    provider.embedBatch = async (texts) => {
+      const row = store.internal.db.prepare(
+        "SELECT lease_expires_at FROM embedding_index_state WHERE singleton = 1",
+      ).get() as { lease_expires_at: number };
+      expirations.push(row.lease_expires_at);
+      return originalEmbedBatch(texts);
+    };
+    store.internal.embeddingProvider = provider;
+    let now = 10_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => ++now);
+
+    try {
+      await store.update();
+      await store.embed({ maxDocsPerBatch: 1 });
+      expect(expirations.length).toBeGreaterThan(1);
+      expect(new Set(expirations).size).toBe(expirations.length);
+    } finally {
+      clock.mockRestore();
       setDefaultLlamaCpp(null);
       await store.close();
     }
@@ -1007,9 +1632,9 @@ describe("embed", () => {
       },
     });
 
-    const fakeLlm = createFakeEmbedLlm();
+    const fakeProvider = createFakeEmbedProvider();
     setDefaultLlamaCpp(createFakeTokenizer() as any);
-    store.internal.llm = fakeLlm as any;
+    store.internal.embeddingProvider = fakeProvider;
 
     try {
       await store.update();
@@ -1047,9 +1672,9 @@ describe("embed", () => {
       },
     });
 
-    const fakeLlm = createFakeEmbedLlm();
+    const fakeProvider = createFakeEmbedProvider();
     setDefaultLlamaCpp(createFakeTokenizer() as any);
-    store.internal.llm = fakeLlm as any;
+    store.internal.embeddingProvider = fakeProvider;
 
     const vectorCounts = () => store.internal.db.prepare(`
       SELECT d.collection, COUNT(DISTINCT v.hash) AS count
