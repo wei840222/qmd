@@ -1,0 +1,138 @@
+# QMD CJK Search and OpenAI Embedding Architecture
+
+This document explains QMD's CJK lexical search pipeline, embedding identity state machine, and data disclosure boundaries for remote embedding providers. It describes the current implementation rather than a future proposal.
+
+## Search Data Flow
+
+```mermaid
+flowchart LR
+  Q[Query] --> E[Shared expansion policy]
+  E --> O[Original query ×2]
+  E --> X[Zero or more typed variants ×1]
+  O --> C[Character FTS5]
+  O --> W[Word FTS5]
+  O --> B[Bigram FTS5]
+  O --> V[Vector search]
+  X -->|lex| C
+  X -->|lex| W
+  X -->|lex| B
+  X -->|vec / hyde| V
+  C --> R[Channel-aware weighted RRF]
+  W --> R
+  B --> R
+  V --> R
+  R --> S[Unified score & trace]
+  S --> K[Top-K Results]
+```
+
+- Character, word, and bigram tables are independent lexical channels; scores from different channels are never directly summed without normalization.
+- Each channel ranks candidates independently before weighted Reciprocal Rank Fusion (RRF) combines them. Use `--explain` to inspect channel contributions and tie-breakers.
+- The original query runs through all available lexical and vector paths, with each ranked list assigned a ×2 RRF weight multiplier.
+- Query expansion produces zero or more typed variants, with each ranked list assigned a ×1 RRF weight multiplier. `lex` variants search lexical channels only; `vec` and `hyde` search vector space only.
+- The shared expansion policy is used across CLI, SDK, and MCP. Callers can explicitly specify `auto`, `force`, or `skip`; selecting `skip` suppresses typed variant generation.
+- If Jieba or published word/bigram indexes are unavailable, search degrades gracefully to the character channel only. Word and bigram channels remain marked unavailable until a successful rebuild. Diagnostics report `unavailable` or `stale` states alongside actionable remediation instructions rather than silently failing or pretending to be complete.
+
+## CJK Index Publishing
+
+```mermaid
+stateDiagram-v2
+  [*] --> Empty
+  Empty --> Building: create shadow tables
+  Ready --> Ready: sync API atomically updates document & all channels
+  Ready --> Dirty: raw / async document mutations
+  Ready --> Building: analyzer fingerprint changed or forced rebuild
+  Dirty --> Building: qmd update
+  Unavailable --> Building: qmd update after Jieba is restored
+  Building --> Building: replay mutation journal
+  Building --> Ready: atomic swap & publish
+  Building --> Dirty: rebuild or replay failure
+  Building --> Unavailable: Jieba capability lost
+  Building --> Ready: dead owner lease expired & published build exists
+  Building --> Empty: dead owner lease expired & never published
+  Building --> Dirty: dead owner lease expired & dirty marker exists
+```
+
+Healthy published indexes update character, word, and bigram channels within a single transaction during synchronous document mutations, maintaining the `Ready` state. Raw SQL mutations bypassing the synchronous API write dirty markers.
+
+Index rebuilds obtain a stable read snapshot before populating shadow tables. Document mutations occurring after the snapshot are recorded in a mutation journal and replayed prior to publication. Publication occurs atomically only when the analyzer fingerprint, source mutation head, and shadow tables are fully consistent.
+
+When a dead owner's build lease expires, cleanup restores the state to `Ready`, `Empty`, or `Dirty` depending on existing published builds and dirty markers. `qmd status` and `qmd doctor` display current state causes and remediation commands.
+
+The analyzer fingerprint includes:
+
+- Analyzer version and normalization rules;
+- Jieba capability status;
+- Versioned Traditional Chinese technical dictionary content hash;
+- Token stream configuration parameters.
+
+Changes to dictionary or analyzer configurations invalidate existing fingerprints and trigger a diagnosable rebuild, preventing stale or semantically incompatible indexes from remaining active.
+
+## Embedding Identity & Single-Dimension Restriction
+
+```mermaid
+stateDiagram-v2
+  [*] --> Empty
+  Empty --> Building: acquire lease
+  Building --> Building: renew lease
+  Building --> Ready: all metadata & vectors complete
+  Building --> Partial: request failed or lease expired
+  Partial --> Building: resume with same identity
+  Ready --> Mismatch: requested identity changed
+  Ready --> Incompatible: persisted identity fails validation
+  Mismatch --> Building: authorize destructive rebuild
+  Incompatible --> Building: authorize destructive rebuild
+```
+
+The `vectors_vec` table holds vectors of a single dimension at any given time. Embedding identity fingerprints are derived from canonical materials: provider name, model identifier, dimension, remote/local mode, and prompt/chunking profiles.
+
+Identity incompatibilities require clearing embedding metadata and vector tables prior to rebuilding; lexical search indexes remain available and unaffected.
+
+Build leases use owner IDs and generation sequence numbers to prevent concurrent writer collisions. Interrupted builds with matching identities retain successfully committed chunks and resume by requesting only metadata-only, vector-only, missing, or layout-incomplete chunks. Vector search queries only `ready` vectors with compatible fingerprints.
+
+## Remote Embedding Disclosure & Consent
+
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant Q as QMD
+  participant D as SQLite consent/state
+  participant P as Remote provider
+
+  U->>Q: qmd embed --remote-preflight
+  Q->>D: Read-only check of document generation & pending counts
+  Q-->>U: Disclosure, token/cost upper bound, fingerprint
+  Note over Q,P: No remote request sent in preflight step
+  U->>Q: --remote-accept + exact id/fingerprint/policy
+  Q->>D: Store minimal durable acknowledgement
+  U->>Q: --remote-probe
+  Q->>D: Validate acknowledgement & document generation
+  Q->>P: Send fixed, versioned capability sentinel
+  P-->>Q: Return dimension
+  U->>Q: qmd embed
+  loop Every document batch
+    Q->>D: Validate consent, generation, & identity lease owner
+    Q->>P: Send UTF-8 bounded document chunks
+    P-->>Q: Return vectors
+  end
+```
+
+Remote embedding providers require explicit opt-in; local providers remain the default.
+
+Preflight calculations compute conservative token and cost upper bounds without transmitting document content, queries, API keys, or sentinels. Acknowledgements bind policy versions, embedding fingerprints, and document generations; changes to any parameter invalidate consent and require a new preflight.
+
+Capability probes send fixed, non-sensitive sentinels only after durable acknowledgement is recorded.
+
+API keys are read strictly from process environment variables and are never stored in SQLite, diagnostics, log output, or error messages. Remote API errors expose only allowlisted status codes and messages, redacting response bodies, request payloads, credentials, and sensitive URLs. Destructive identity rebuilds require independent `--force --allow-remote` authorization flags, and generation guards revalidate authorization within SQLite write locks before clearing existing vectors.
+
+Document indexing transmits deterministic UTF-8 chunks to the remote provider; vector and hybrid search queries transmit formatted query text to the same provider. Destructive identity resets cannot be rolled back once old vectors are purged, though lexical search indexes remain operational throughout.
+
+## Diagnostics
+
+`qmd status`, `qmd doctor`, SDK `getStatus()`, and MCP `status` share a unified, read-only diagnostics model providing:
+
+- Provider, model, dimension, short fingerprint, and API key configuration status (as boolean flags only);
+- Embedding state, lease details, pending/inconsistent chunk counts, consent acknowledgements, and pricing timestamp (`checkedAt`);
+- Jieba capability status, analyzer fingerprint, channel readiness (`char`/`word`/`bigram`), and dirty/rebuild reasons;
+- Corresponding actionable remediation commands.
+
+Diagnostics operations do not create schemas, modify SQLite databases, load local LLM models, or issue remote HTTP requests.
