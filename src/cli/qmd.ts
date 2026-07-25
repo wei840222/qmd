@@ -83,9 +83,12 @@ import {
 } from "../store.js";
 import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
 import { rebuildCjkLexicalIndex } from "../search/cjk-index.js";
+import { RemoteLLM } from "../remote-llm.js";
+import { HybridLLM } from "../hybrid-llm.js";
 import type { ExpansionMode } from "../search/query-expansion.js";
 import {
   EmbeddingConfigError,
+  OPENAI_EMBEDDING_MODEL,
   readCanonicalEmbeddingConfig,
   resolveEmbeddingConfig,
   writeCanonicalEmbeddingConfig,
@@ -229,6 +232,27 @@ function getStore(): ReturnType<typeof createStore> {
       cliEmbeddingOwner = createCliEmbeddingProviderOwner(embedding.canonical, cliLlama);
       store.embeddingProvider = cliEmbeddingOwner.provider;
     }
+
+    const rawGenerateUrl = config.models?.generate_url ?? config.models?.generate_base_url ?? config.models?.generate_api_url;
+    const rawRerankUrl = config.models?.rerank_url ?? config.models?.rerank_base_url ?? config.models?.rerank_api_url;
+    const hasRemoteLLM = Boolean(rawGenerateUrl || rawRerankUrl);
+
+    const remoteLlm = hasRemoteLLM
+      ? new RemoteLLM({
+          generateUrl: config.models?.generate_url,
+          generateBaseUrl: config.models?.generate_base_url,
+          generateApiUrl: config.models?.generate_api_url,
+          generateApiModel: config.models?.generate_api_model,
+          generateApiKey: config.models?.generate_api_key,
+          rerankUrl: config.models?.rerank_url,
+          rerankBaseUrl: config.models?.rerank_base_url,
+          rerankApiUrl: config.models?.rerank_api_url,
+          rerankApiModel: config.models?.rerank_api_model,
+          rerankApiKey: config.models?.rerank_api_key,
+        })
+      : undefined;
+
+    store.llm = remoteLlm ? new HybridLLM(cliLlama, remoteLlm) : cliLlama;
   }
   return store;
 }
@@ -2038,7 +2062,17 @@ function ensureModelsConfiguredForCli(): { embed: string; generate: string; rera
 }
 
 export function resolveEmbedModelForCli(): string {
-  return ensureModelsConfiguredForCli().embed;
+  try {
+    const config = loadConfig();
+    const resolved = resolveEmbeddingConfig({
+      config,
+      defaultLocalModel: DEFAULT_EMBED_MODEL,
+    });
+    return resolved.canonical.model;
+  } catch {
+    const raw = ensureModelsConfiguredForCli().embed;
+    return raw.startsWith("openai:") ? raw.slice("openai:".length) || OPENAI_EMBEDDING_MODEL : raw;
+  }
 }
 
 export function resolveGenerateModelForCli(): string {

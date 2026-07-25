@@ -193,14 +193,15 @@ function resolveSource(
     if (hasOwn(config, "models")) {
       const models = requireRecord(config.models, "models");
       const hasEmbed = hasOwn(models, "embed");
-      const hasEmbedBaseUrl = hasOwn(models, "embed_base_url");
+      const rawEmbedBaseUrl = models.embed_url ?? models.embed_base_url ?? models.embed_api_url;
+      const hasEmbedBaseUrl = rawEmbedBaseUrl !== undefined && String(rawEmbedBaseUrl).trim() !== "";
       const customDimension = hasOwn(models, "embed_dimension")
         ? parseDimension(models.embed_dimension, "models.embed_dimension")
         : undefined;
 
       if (hasEmbed || hasEmbedBaseUrl || customDimension !== undefined) {
         const baseUrl = hasEmbedBaseUrl
-          ? requireBaseUrl(models.embed_base_url, "models.embed_base_url")
+          ? requireBaseUrl(rawEmbedBaseUrl, "models.embed_base_url")
           : DEFAULT_OPENAI_BASE_URL;
 
         if (hasEmbed) {

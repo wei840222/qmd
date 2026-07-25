@@ -555,22 +555,24 @@ QMD stays local by default. To use remote embeddings or remote LLM models, confi
 ```yaml
 models:
   embed: openai:text-embedding-3-small        # or openai:text-embedding-3-large
-  embed_base_url: https://api.example.com/v1  # Optional proxy / self-hosted endpoint
+  embed_api_url: https://api.example.com/v1   # Optional proxy / self-hosted endpoint (aliases: embed_url, embed_base_url, embed_api_url)
   embed_dimension: 1536                       # Optional: explicit vector dimension override
 
-  # Optional: Remote LLM Query Expansion (supports generate_url / generate_base_url / generate_api_url)
-  generate_url: https://api.example.com/v1    # Base URL or full endpoint
-  generate_api_model: qwen3-7b-instruct
+  # Optional: Remote LLM Query Expansion (aliases: generate_url, generate_base_url, generate_api_url)
+  generate_api_url: https://api.example.com/v1    # Base URL (appends /chat/completions) or full endpoint
+  generate_api_model: alibaba/kimi-k2.5
 
-  # Optional: Remote Reranking (supports rerank_url / rerank_base_url / rerank_api_url)
-  rerank_url: https://api.example.com/v1      # Supports both /v1/rerank and /v1/chat/completions LLM endpoints
-  rerank_api_model: bge-reranker-v2-m3
+  # Optional: Remote Reranking (aliases: rerank_url, rerank_base_url, rerank_api_url)
+  rerank_api_url: https://api.example.com/v1/chat/completions # Supports both /v1/rerank and /v1/chat/completions LLM endpoints
+  rerank_api_model: alibaba/kimi-k2.5
 
 # Optional: Custom User Dictionary for CJK segmentation
 dictionary: ~/.config/qmd/dictionary.txt
 ```
 
-> **Smart URL Resolution & Reranker Endpoints:** Remote LLM URLs support `_url`, `_base_url`, and `_api_url` aliases. When given a Base URL (e.g. `https://.../v1`), QMD automatically appends `/chat/completions` or `/rerank`. If a full endpoint URL is provided, it is used directly. For reranking, QMD supports both dedicated Cross-Encoder endpoints (`/v1/rerank`) and general LLM endpoints (`/v1/chat/completions`).
+> **Smart URL Resolution & Aliases:** All remote endpoint URLs support `_url`, `_base_url`, and `_api_url` aliases (e.g. `generate_url`, `generate_base_url`, `generate_api_url`). When given a Base URL (e.g. `https://api.example.com/v1`), QMD automatically appends `/chat/completions` for LLM generate and `/rerank` for reranking. If a full endpoint URL is provided, it is used directly. For reranking, QMD supports both dedicated Cross-Encoder endpoints (`/v1/rerank`) and general LLM endpoints (`/v1/chat/completions`).
+
+> **CLI, SDK & MCP Integration:** Remote LLM query expansion and LLM Chat Reranking are automatically wired into CLI (`qmd query`), SDK (`createStore`), and MCP. Query expansion automatically enforces query language & script consistency (e.g., Traditional Chinese queries generate Traditional Chinese `lex`, `vec`, and `hyde` variations). LLM Chat Reranking features prompt-tail Recency Enforcement and strict JSON sanitization to ensure safe execution with any remote LLM backend.
 
 `qmd init` writes local defaults only; it does not prompt for or generate a remote embedding configuration. To use a remote endpoint, edit `index.yml` manually, set credentials (if required), and complete preflight below.
 
@@ -604,9 +606,9 @@ The acknowledgement is bound to the policy version, embedding identity, and curr
 qmd embed --force --allow-remote
 ```
 
-Remote document chunks use deterministic UTF-8 byte windows. Query embedding is allowed only when the same identity is `ready` and compatible vectors exist; a vector or hybrid query then sends the formatted query text to the configured remote provider. After an authorized identity reset deletes the old vectors, there is no vector rollback; lexical search remains available while rebuilding. `qmd status` and `qmd doctor` report provider/model/dimension, short fingerprint, key presence as a boolean, acknowledgement, pending/inconsistent chunks, CJK channel readiness, and actionable repair commands. See `docs/architecture-cjk-openai.md` for the state machines and data-disclosure boundary.
+Remote document chunks use deterministic UTF-8 byte windows. Query embedding is allowed only when the same identity is `ready` and compatible vectors exist; a vector or hybrid query then sends the formatted query text to the configured remote provider. After an authorized identity reset deletes the old vectors, there is no vector rollback; lexical search remains available while rebuilding. `qmd status` and `qmd doctor` report provider/model/dimension, short fingerprint, key presence as a boolean, acknowledgement, pending/inconsistent chunks, CJK channel readiness, and actionable repair commands. See `docs/architecture-cjk-remote-provider.md` for the state machines and data-disclosure boundary.
 
-### CJK Lexical Search and Expansion
+### CJK Lexical Search, Expansion, and Dictionary Maintenance
 
 CJK lexical search combines independent character, word, and bigram channels by
 rank. If Jieba or the published word/bigram index is unavailable, stale, or
@@ -617,8 +619,11 @@ reports the reason and remediation.
 Query expansion uses one shared `auto | force | skip` policy across CLI, SDK, and
 MCP. Precedence is: explicit skip or `lex:` skips expansion; explicit force,
 `expand:`, or `--expand` forces it; under `auto`, CJK queries skip local model expansion (0ms bypass) but automatically expand when a remote LLM (`generate_api_url`) is configured; strong lexical
-signals skip expansion, and remaining queries expand. Explicit force fails if the expansion
-model is unavailable rather than silently changing behavior.
+signals skip expansion, and remaining queries expand. Expanded queries automatically maintain language consistency with the user query.
+
+For CJK dictionary maintenance and candidate synchronization, QMD provides two npm scripts:
+- `npm run dict:refresh` — Compares upstream Traditional Chinese technical dictionary candidates and reports diffs.
+- `npm run dict:sync` — Automatically syncs unreviewed candidates and rebuilds the embedded CJK dictionary module.
 
 ## Installation
 
