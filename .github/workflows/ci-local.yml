@@ -36,6 +36,8 @@ jobs:
 
       - name: Tests
         run: pnpm test
+        env:
+          CI: true
 
   test-bun:
     name: Bun (Node ${{ matrix.node-version }})
