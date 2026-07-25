@@ -262,22 +262,24 @@ Configure models and custom endpoints in `~/.config/qmd/index.yml` under the `mo
 ```yaml
 models:
   embed: openai:text-embedding-3-small        # or openai:text-embedding-3-large
-  embed_base_url: https://api.example.com/v1  # Optional proxy / self-hosted endpoint
+  embed_api_url: https://api.example.com/v1   # Optional proxy / self-hosted endpoint (aliases: embed_url, embed_base_url, embed_api_url)
   embed_dimension: 1536                       # Optional: explicit vector dimension override
 
-  # Optional: Remote LLM Query Expansion (supports generate_url / generate_base_url / generate_api_url)
-  generate_url: https://api.example.com/v1    # Base URL or full endpoint
-  generate_api_model: qwen3-7b-instruct
+  # Optional: Remote LLM Query Expansion (aliases: generate_url, generate_base_url, generate_api_url)
+  generate_api_url: https://api.example.com/v1    # Base URL (appends /chat/completions) or full endpoint
+  generate_api_model: qwen3-7b-instruct           # or your-model-name
 
   # Optional: Remote Reranking (supports rerank_url / rerank_base_url / rerank_api_url)
-  rerank_url: https://api.example.com/v1      # Supports both /v1/rerank and /v1/chat/completions LLM endpoints
+  rerank_api_url: https://api.example.com/v1/chat/completions # Supports both /v1/rerank and /v1/chat/completions LLM endpoints
   rerank_api_model: bge-reranker-v2-m3        # or gpt-4o-mini / qwen3-7b-instruct
 
 # Optional: Custom User Dictionary for CJK segmentation
 dictionary: ~/.config/qmd/dictionary.txt
 ```
 
-> **Smart URL Resolution & Reranker Endpoints:** Remote LLM URLs support `_url`, `_base_url`, and `_api_url` aliases. Given a Base URL (e.g. `https://.../v1`), QMD automatically appends `/chat/completions` or `/rerank`. Explicit endpoint URLs are preserved as-is. For reranking, QMD supports both dedicated Cross-Encoder endpoints (`/v1/rerank`) and general LLM endpoints (`/v1/chat/completions`).
+> **Smart URL Resolution & Reranker Endpoints:** Remote LLM URLs support `_url`, `_base_url`, and `_api_url` aliases. Given a Base URL (e.g. `https://api.example.com/v1`), QMD automatically appends `/chat/completions` or `/rerank`. Explicit endpoint URLs are preserved as-is. For reranking, QMD supports both dedicated Cross-Encoder endpoints (`/v1/rerank`) and general LLM endpoints (`/v1/chat/completions`) with strict JSON sanitization and prompt-tail Recency Enforcement.
+
+> **CLI & MCP Integration:** Remote LLM query expansion and LLM Chat Reranking are automatically wired into CLI (`qmd query`) and MCP. Query expansion automatically maintains language & script consistency matching the user query (e.g. Traditional Chinese queries produce Traditional Chinese `lex`, `vec`, and `hyde` variations).
 
 Health and diagnostics:
 

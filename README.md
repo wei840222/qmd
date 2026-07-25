@@ -560,11 +560,11 @@ models:
 
   # Optional: Remote LLM Query Expansion (aliases: generate_url, generate_base_url, generate_api_url)
   generate_api_url: https://api.example.com/v1    # Base URL (appends /chat/completions) or full endpoint
-  generate_api_model: alibaba/kimi-k2.5
+  generate_api_model: qwen3-7b-instruct           # or your-model-name
 
   # Optional: Remote Reranking (aliases: rerank_url, rerank_base_url, rerank_api_url)
   rerank_api_url: https://api.example.com/v1/chat/completions # Supports both /v1/rerank and /v1/chat/completions LLM endpoints
-  rerank_api_model: alibaba/kimi-k2.5
+  rerank_api_model: bge-reranker-v2-m3        # or gpt-4o-mini / qwen3-7b-instruct
 
 # Optional: Custom User Dictionary for CJK segmentation
 dictionary: ~/.config/qmd/dictionary.txt
