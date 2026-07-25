@@ -18,6 +18,10 @@ const darwinMetalEnv =
 
 const cleanEnv = { ...process.env };
 delete cleanEnv.OPENAI_BASE_URL;
+delete cleanEnv.OPENAI_API_KEY;
+delete cleanEnv.QMD_EMBED_MODEL;
+delete cleanEnv.QMD_GENERATE_MODEL;
+delete cleanEnv.QMD_RERANK_MODEL;
 
 function run(label, command, args, options = {}) {
   console.log(`==> ${label}`);
