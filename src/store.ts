@@ -177,7 +177,7 @@ export function getEmbeddingFingerprint(model: string = DEFAULT_EMBED_MODEL): st
  * falls back to the global singleton.
  */
 function getLlm(store: Store): LlamaCpp {
-  return store.localLlm ?? getDefaultLlamaCpp();
+  return store.localLlm ?? (store as any).llm ?? getDefaultLlamaCpp();
 }
 
 function authorizeEmbeddingProviderRequest(

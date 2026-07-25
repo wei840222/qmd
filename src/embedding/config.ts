@@ -151,13 +151,12 @@ function parseEmbeddingBlock(
     const model = hasOwn(value, "model")
       ? requireModel(value.model, `${label}.model`)
       : OPENAI_EMBEDDING_MODEL;
-    const expectedDimension = OPENAI_EMBEDDING_MODELS.get(model);
-    if (expectedDimension === undefined) {
-      const supported = Array.from(OPENAI_EMBEDDING_MODELS.keys()).join(", ");
+    if (model !== OPENAI_EMBEDDING_MODEL) {
       throw new EmbeddingConfigError(
-        `${label}.model must be one of: ${supported}.`,
+        `${label}.model must be ${OPENAI_EMBEDDING_MODEL}.`,
       );
     }
+    const expectedDimension = OPENAI_EMBEDDING_MODELS.get(model)!;
 
     const dimension = hasOwn(value, "dimension")
       ? parseDimension(value.dimension, `${label}.dimension`)
@@ -190,6 +189,17 @@ function resolveSource(
 
   if (options.config !== undefined) {
     const config = requireRecord(options.config, "embedding config source");
+    if (hasOwn(config, "embedding")) {
+      return {
+        canonical: parseEmbeddingBlock(
+          config.embedding,
+          defaultLocalModel,
+          "embedding config",
+          false,
+        ),
+        source: "embedding-block",
+      };
+    }
     if (hasOwn(config, "models")) {
       const models = requireRecord(config.models, "models");
       const hasEmbed = hasOwn(models, "embed");
@@ -303,10 +313,9 @@ export function resolveEmbeddingModelOverride(
 ): string {
   if (override === undefined) return resolved.canonical.model;
   const model = requireModel(override, "embedding model override");
-  if (resolved.canonical.provider === "openai" && !OPENAI_EMBEDDING_MODELS.has(model)) {
-    const supported = Array.from(OPENAI_EMBEDDING_MODELS.keys()).join(", ");
+  if (resolved.canonical.provider === "openai" && model !== resolved.canonical.model) {
     throw new EmbeddingConfigError(
-      `OpenAI embedding model override must be one of: ${supported}.`,
+      `OpenAI embedding model override must be ${resolved.canonical.model}.`,
     );
   }
   return model;

@@ -16,6 +16,9 @@ const darwinMetalEnv =
     ? { GGML_METAL_NO_RESIDENCY: "1" }
     : {};
 
+const cleanEnv = { ...process.env };
+delete cleanEnv.OPENAI_BASE_URL;
+
 function run(label, command, args, options = {}) {
   console.log(`==> ${label}`);
   const { env: extraEnv, ...spawnOptions } = options;
@@ -23,7 +26,7 @@ function run(label, command, args, options = {}) {
     cwd: root,
     stdio: "inherit",
     shell: process.platform === "win32",
-    env: { ...process.env, ...darwinMetalEnv, ...(extraEnv ?? {}) },
+    env: { ...cleanEnv, ...darwinMetalEnv, ...(extraEnv ?? {}) },
     ...spawnOptions,
   });
   if (result.status !== 0) {
