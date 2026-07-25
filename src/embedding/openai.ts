@@ -198,8 +198,10 @@ function parseResponse(
   value: unknown,
   inputCount: number,
   tokenUpperBound: number,
+  expectedModel: OpenAIEmbeddingModel = OPENAI_EMBEDDING_MODEL,
+  expectedDimension: number = OPENAI_EMBEDDING_DIMENSION,
 ): OpenAIEmbeddingResponse {
-  if (!isRecord(value) || value.object !== "list" || value.model !== OPENAI_EMBEDDING_MODEL) {
+  if (!isRecord(value) || value.object !== "list" || value.model !== expectedModel) {
     throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI embedding response schema is invalid.");
   }
   if (!isRecord(value.usage)) {
@@ -235,7 +237,7 @@ function parseResponse(
     }
     if (
       !Array.isArray(embedding)
-      || embedding.length !== OPENAI_EMBEDDING_DIMENSION
+      || embedding.length !== expectedDimension
       || embedding.some(value => typeof value !== "number"
         || !Number.isFinite(value)
         || !Number.isFinite(Math.fround(value)))
@@ -251,7 +253,7 @@ function parseResponse(
 
   return {
     object: "list",
-    model: OPENAI_EMBEDDING_MODEL,
+    model: expectedModel,
     data: byIndex as OpenAIEmbeddingResponse["data"],
     usage: {
       prompt_tokens: promptTokens as number,
@@ -549,7 +551,13 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
             this.throwIfInterrupted(options, deadlineController);
             if (requestController.signal.aborted) response = null;
             if (bodyRead && response) {
-              const parsed = parseResponse(body, inputs.length, batchUpperBound);
+              const parsed = parseResponse(
+                body,
+                inputs.length,
+                batchUpperBound,
+                this.model,
+                this.dimension,
+              );
               const usage = Object.freeze({
                 promptTokens: parsed.usage.prompt_tokens,
                 totalTokens: parsed.usage.total_tokens,

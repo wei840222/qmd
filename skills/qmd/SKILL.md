@@ -261,9 +261,10 @@ Configure models and custom endpoints in `~/.config/qmd/index.yml` under the `mo
 
 ```yaml
 models:
-  embed: openai:text-embedding-3-small        # or openai:text-embedding-3-large
-  embed_api_url: https://api.example.com/v1   # Optional proxy / self-hosted endpoint (aliases: embed_url, embed_base_url, embed_api_url)
-  embed_dimension: 1536                       # Optional: explicit vector dimension override
+  embed: hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf
+  embed_api_url: https://api.example.com/v1   # Both embed_api_url and embed_api_model enable remote embeddings
+  embed_api_model: text-embedding-3-small     # or text-embedding-3-large
+  embed_dimension: 1536                       # Optional: expected vector dimension; validates local output
 
   # Optional: Remote LLM Query Expansion (aliases: generate_url, generate_base_url, generate_api_url)
   generate_api_url: https://api.example.com/v1    # Base URL (appends /chat/completions) or full endpoint

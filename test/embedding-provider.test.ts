@@ -406,8 +406,12 @@ describe("embedding config resolver", () => {
     expect(() => resolveEmbeddingConfig({
       config: {
         collections: {},
-        embedding: { provider: "openai", model: "text-embedding-ada-002", dimension: 1536 },
-        models: { embed: "hf:legacy/embed.gguf" },
+        models: {
+          embed: "hf:legacy/embed.gguf",
+          embed_api_url: "https://api.openai.com/v1",
+          embed_api_model: "text-embedding-ada-002",
+          embed_dimension: 1536,
+        },
       },
       dbConfig: { provider: "local", model: "hf:db/embed.gguf", dimension: 768 },
       defaultLocalModel,
@@ -422,9 +426,15 @@ describe("embedding config resolver", () => {
     })).toThrowError(/models\.embed/);
   });
 
-  test("accepts only the canonical OpenAI model and dimension without requiring the key at resolve time", () => {
+  test("accepts supported OpenAI models with their native dimensions without requiring the key at resolve time", () => {
     const resolved = resolveEmbeddingConfig({
-      config: { collections: {}, embedding: { provider: "openai" } },
+      config: {
+        collections: {},
+        models: {
+          embed_api_url: "https://api.openai.com/v1",
+          embed_api_model: "text-embedding-3-small",
+        },
+      },
       defaultLocalModel,
       env: {},
     });
@@ -434,18 +444,41 @@ describe("embedding config resolver", () => {
       remoteRequestsEnabled: false,
     });
     expect(resolveEmbeddingConfig({
-      config: { collections: {}, embedding: { provider: "openai" } },
+      config: {
+        collections: {},
+        models: {
+          embed_api_url: "https://api.openai.com/v1",
+          embed_api_model: "text-embedding-3-small",
+        },
+      },
       defaultLocalModel,
       env: { OPENAI_API_KEY: "[REDACTED]" },
     }).remoteRequestsEnabled).toBe(true);
 
-    for (const embedding of [
-      { provider: "openai", model: "text-embedding-3-large" },
-      { provider: "openai", dimension: 768 },
-      { provider: "remote" },
+    expect(resolveEmbeddingConfig({
+      config: {
+        collections: {},
+        models: {
+          embed_api_url: "https://api.openai.com/v1",
+          embed_api_model: "text-embedding-3-large",
+        },
+      },
+      defaultLocalModel,
+      env: { OPENAI_API_KEY: "[REDACTED]" },
+    }).canonical).toEqual({
+      provider: "openai",
+      model: "text-embedding-3-large",
+      dimension: 3072,
+      baseUrl: "https://api.openai.com/v1",
+    });
+
+    for (const config of [
+      { collections: {}, models: { embed_api_url: "https://api.openai.com/v1", embed_api_model: "unknown-model" } },
+      { collections: {}, models: { embed_api_url: "https://api.openai.com/v1", embed_api_model: "text-embedding-3-small", embed_dimension: 768 } },
+      { collections: {}, embedding: { provider: "remote" } },
     ]) {
       expect(() => resolveEmbeddingConfig({
-        config: { collections: {}, embedding },
+        config,
         defaultLocalModel,
         env: { OPENAI_API_KEY: "[REDACTED]" },
       })).toThrowError(EmbeddingConfigError);
@@ -467,25 +500,52 @@ describe("embedding config resolver", () => {
     expect(first.canonical).not.toBe(second.canonical);
   });
 
-  test("preserves local model overrides but only accepts the canonical OpenAI model", () => {
+  test("preserves local model overrides and requires the configured OpenAI model", () => {
     const local = resolveEmbeddingConfig({
       config: { collections: {}, embedding: { provider: "local", model: "hf:configured/embed.gguf" } },
       defaultLocalModel,
     });
     const openai = resolveEmbeddingConfig({
-      config: { collections: {}, embedding: { provider: "openai" } },
+      config: {
+        collections: {},
+        models: {
+          embed_api_url: "https://api.openai.com/v1",
+          embed_api_model: "text-embedding-3-small",
+        },
+      },
       defaultLocalModel,
     });
 
     expect(resolveEmbeddingModelOverride(local, "hf:override/embed.gguf")).toBe("hf:override/embed.gguf");
     expect(resolveEmbeddingModelOverride(openai, "text-embedding-3-small")).toBe("text-embedding-3-small");
     expect(() => resolveEmbeddingModelOverride(openai, "text-embedding-3-large")).toThrowError(EmbeddingConfigError);
+
+    const largeOpenAI = resolveEmbeddingConfig({
+      config: {
+        collections: {},
+        models: {
+          embed_api_url: "https://api.openai.com/v1",
+          embed_api_model: "text-embedding-3-large",
+        },
+      },
+      defaultLocalModel,
+    });
+    expect(resolveEmbeddingModelOverride(largeOpenAI, "text-embedding-3-large"))
+      .toBe("text-embedding-3-large");
+    expect(() => resolveEmbeddingModelOverride(largeOpenAI, "text-embedding-3-small"))
+      .toThrowError(EmbeddingConfigError);
   });
 
   test("persists only canonical non-secret configuration in SQLite", () => {
     const store = createStore(":memory:");
     const resolved = resolveEmbeddingConfig({
-      config: { collections: {}, embedding: { provider: "openai" } },
+      config: {
+        collections: {},
+        models: {
+          embed_api_url: "https://api.openai.com/v1",
+          embed_api_model: "text-embedding-3-small",
+        },
+      },
       defaultLocalModel,
       env: { OPENAI_API_KEY: "[REDACTED]" },
     });

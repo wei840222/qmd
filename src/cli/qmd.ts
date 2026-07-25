@@ -2070,8 +2070,7 @@ export function resolveEmbedModelForCli(): string {
     });
     return resolved.canonical.model;
   } catch {
-    const raw = ensureModelsConfiguredForCli().embed;
-    return raw.startsWith("openai:") ? raw.slice("openai:".length) || OPENAI_EMBEDDING_MODEL : raw;
+    return ensureModelsConfiguredForCli().embed;
   }
 }
 
@@ -2118,7 +2117,9 @@ async function vectorIndex(
         defaultLocalModel: config.models?.embed ?? DEFAULT_EMBED_MODEL,
       });
       if (embedding.canonical.provider !== "openai") {
-        throw new EmbeddingConfigError("Remote embedding options require embedding.provider: openai.");
+        throw new EmbeddingConfigError(
+          "Remote embedding options require models.embed_api_url (or models.embed_url/models.embed_base_url) and models.embed_api_model.",
+        );
       }
       console.log(JSON.stringify(createRemoteEmbeddingPreflight(
         db,
@@ -2141,7 +2142,9 @@ async function vectorIndex(
   const remoteAction = batchOptions?.remoteProbe
     || batchOptions?.remoteAccept !== undefined;
   if (remoteAction && !provider?.remote) {
-    throw new EmbeddingConfigError("Remote embedding options require embedding.provider: openai.");
+    throw new EmbeddingConfigError(
+      "Remote embedding options require models.embed_api_url (or models.embed_url/models.embed_base_url) and models.embed_api_model.",
+    );
   }
   if (provider?.remote) {
     if (batchOptions?.remoteProbe) {

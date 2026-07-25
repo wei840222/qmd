@@ -435,15 +435,15 @@ The SDK requires explicit `dbPath` — no defaults are assumed. This makes it sa
                          │                           │
                  ┌───────┴───────┐           ┌───────┴───────┐
                  ▼               ▼           ▼               ▼
-             ┌───────┐       ┌───────┐   ┌───────┐       ┌───────┐
-             │ BM25  │       │Vector │   │  lex  │       │vec/HyDE│
-             │(FTS5) │       │Search │   └───┬───┘       └───┬───┘
-             └───┬───┘       └───┬───┘       ▼               ▼
-                 │               │         ┌───────┐       ┌───────┐
-                 │               │         │ BM25  │       │Vector │
-                 │               │         │(FTS5) │       │Search │
-                 └───────┬───────┘         └───┬───┘       └───┬───┘
-                         └─────────────┬─────────┴───────────────┘
+             ┌───────┐       ┌────────┐   ┌───────┐       ┌────────┐
+             │ BM25  │       │ Vector │   │  lex  │       │vec/HyDE│
+             │(FTS5) │       │ Search │   └───┬───┘       └───┬────┘
+             └───┬───┘       └───┬────┘       ▼               ▼
+                 │               │         ┌───────┐       ┌────────┐
+                 │               │         │ BM25  │       │ Vector │
+                 │               │         │(FTS5) │       │ Search │
+                 └───────┬───────┘         └───┬───┘       └───┬────┘
+                         └─────────────┬───────┴───────────────┘
                                        │
                                        ▼
                           ┌───────────────────────┐
@@ -554,9 +554,10 @@ QMD stays local by default. To use remote embeddings or remote LLM models, confi
 
 ```yaml
 models:
-  embed: openai:text-embedding-3-small        # or openai:text-embedding-3-large
-  embed_api_url: https://api.example.com/v1   # Optional proxy / self-hosted endpoint (aliases: embed_url, embed_base_url, embed_api_url)
-  embed_dimension: 1536                       # Optional: explicit vector dimension override
+  embed: hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf
+  embed_api_url: https://api.example.com/v1   # Both embed_api_url and embed_api_model enable remote embeddings
+  embed_api_model: text-embedding-3-small     # or text-embedding-3-large
+  embed_dimension: 1536                       # Optional: expected vector dimension; validates local output
 
   # Optional: Remote LLM Query Expansion (aliases: generate_url, generate_base_url, generate_api_url)
   generate_api_url: https://api.example.com/v1    # Base URL (appends /chat/completions) or full endpoint
@@ -576,7 +577,7 @@ dictionary: ~/.config/qmd/dictionary.txt
 
 `qmd init` writes local defaults only; it does not prompt for or generate a remote embedding configuration. To use a remote endpoint, edit `index.yml` manually, set credentials (if required), and complete preflight below.
 
-> **API Key Note:** When using official OpenAI (`api.openai.com`), set `OPENAI_API_KEY="..."`. For self-hosted proxies or keyless local servers configured via `embed_base_url` / `baseUrl`, `OPENAI_API_KEY` is optional. QMD never writes keys to SQLite, diagnostics, logs, or error messages.
+> **API Key Note:** Remote embeddings require both an embedding endpoint (`embed_url`, `embed_base_url`, or `embed_api_url`) and `embed_api_model`. When using official OpenAI (`api.openai.com`), set `OPENAI_API_KEY="..."`. For self-hosted proxies or keyless local servers, `OPENAI_API_KEY` is optional. QMD never writes keys to SQLite, diagnostics, logs, or error messages.
 
 ```sh
 export OPENAI_API_KEY="..." # Required for api.openai.com; optional for self-hosted proxies
@@ -598,7 +599,7 @@ qmd embed --remote-probe
 qmd embed
 ```
 
-`embed_base_url` (or `OPENAI_BASE_URL` env) changes the destination for the OpenAI embedding provider; QMD sends OpenAI-compatible `POST /embeddings` requests. Leave it unset to use `https://api.openai.com/v1`. Changing the endpoint changes the remote embedding identity, so QMD requires a new preflight and consent before sending document content to that destination.
+Configure `embed_url`, `embed_base_url`, or `embed_api_url` together with `embed_api_model` to select the OpenAI-compatible embedding provider; QMD sends `POST /embeddings` requests. Changing the endpoint or model changes the remote embedding identity, so QMD requires a new preflight and consent before sending document content to that destination.
 
 The acknowledgement is bound to the policy version, embedding identity, and current document generation. If documents, provider, model, dimension, chunk profile, or policy change, QMD stops and requires a new preflight. A dimension or identity change also requires separate destructive authorization because `vectors_vec` can store only one dimension:
 

@@ -260,6 +260,36 @@ describe("OpenAIEmbeddingProvider", () => {
     await provider.close();
   });
 
+  test("preserves the configured large-model identity and dimension", async () => {
+    const model = "text-embedding-3-large" as const;
+    const dimension = 3072;
+    const vector = Array.from({ length: dimension }, () => 0.25);
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(JSON.stringify({
+      object: "list",
+      model,
+      data: [{ object: "embedding", index: 0, embedding: vector }],
+      usage: { prompt_tokens: 1, total_tokens: 1 },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const provider = new OpenAIEmbeddingProvider({
+      apiKey: "test-key",
+      model,
+      dimension,
+      fetch,
+      maxAttempts: 1,
+    });
+
+    await expect(provider.embed("large model", DOCUMENT_OPTIONS)).resolves.toMatchObject({
+      model,
+      dimension,
+      vector,
+    });
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toMatchObject({
+      model,
+      dimensions: dimension,
+    });
+    await provider.close();
+  });
+
   test("normalizes OPENAI_BASE_URL, preserves explicit base URL precedence, and defaults when blank", async () => {
     const previousBaseUrl = process.env.OPENAI_BASE_URL;
     const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(JSON.stringify({

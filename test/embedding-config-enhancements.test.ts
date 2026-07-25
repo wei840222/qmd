@@ -1,67 +1,16 @@
 import { describe, expect, test } from "vitest";
-import {
-  resolveEmbeddingConfig,
-  EmbeddingConfigError,
-  DEFAULT_OPENAI_BASE_URL,
-} from "../src/embedding/config.js";
+import { resolveEmbeddingConfig } from "../src/embedding/config.js";
 
-describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
+describe("Embedding Config Enhancements", () => {
   const defaultLocalModel = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
-
-  describe("TODO 2: models.embed shorthand syntax", () => {
-    test("parses openai:text-embedding-3-small shorthand", () => {
-      const resolved = resolveEmbeddingConfig({
-        config: {
-          models: { embed: "openai:text-embedding-3-small" },
-        },
-        defaultLocalModel,
-        env: { OPENAI_API_KEY: "test-key" },
-      });
-
-      expect(resolved.canonical).toEqual({
-        provider: "openai",
-        model: "text-embedding-3-small",
-        dimension: 1536,
-        baseUrl: DEFAULT_OPENAI_BASE_URL,
-      });
-      expect(resolved.source).toBe("legacy-models");
-    });
-
-    test("parses openai:text-embedding-3-large shorthand", () => {
-      const resolved = resolveEmbeddingConfig({
-        config: {
-          models: { embed: "openai:text-embedding-3-large" },
-        },
-        defaultLocalModel,
-        env: { OPENAI_API_KEY: "test-key" },
-      });
-
-      expect(resolved.canonical).toEqual({
-        provider: "openai",
-        model: "text-embedding-3-large",
-        dimension: 3072,
-        baseUrl: DEFAULT_OPENAI_BASE_URL,
-      });
-    });
-
-    test("throws on invalid openai shorthand model", () => {
-      expect(() =>
-        resolveEmbeddingConfig({
-          config: {
-            models: { embed: "openai:non-existent-model" },
-          },
-          defaultLocalModel,
-        }),
-      ).toThrowError(EmbeddingConfigError);
-    });
-  });
-
-  describe("Unified models block configuration", () => {
-    test("parses custom embed_base_url in models block and infers provider/model/dimension if omitted", () => {
+  describe("remote embedding configuration", () => {
+    test("uses the remote provider only when embed_api_url and embed_api_model are both configured", () => {
       const resolved = resolveEmbeddingConfig({
         config: {
           models: {
-            embed_base_url: "https://api.example.com/v1/",
+            embed: defaultLocalModel,
+            embed_api_url: "https://api.example.com/v1/",
+            embed_api_model: "text-embedding-3-small",
           },
         },
         defaultLocalModel,
@@ -76,90 +25,131 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
       expect(resolved.source).toBe("legacy-models");
     });
 
-    test("parses custom embed_api_url or embed_url aliases", () => {
+    test.each(["embed_url", "embed_base_url"] as const)(
+      "uses the remote provider when %s and embed_api_model are both configured",
+      (urlKey) => {
+        const resolved = resolveEmbeddingConfig({
+          config: {
+            models: {
+              embed: defaultLocalModel,
+              [urlKey]: "https://api.example.com/v1/",
+              embed_api_model: "text-embedding-3-small",
+            },
+          },
+          defaultLocalModel,
+        });
+
+        expect(resolved.canonical).toEqual({
+          provider: "openai",
+          model: "text-embedding-3-small",
+          dimension: 1536,
+          baseUrl: "https://api.example.com/v1",
+        });
+      },
+    );
+
+    test("keeps the configured local model when embed_api_url has no embed_api_model", () => {
       const resolved = resolveEmbeddingConfig({
         config: {
           models: {
+            embed: defaultLocalModel,
             embed_api_url: "https://api.example.com/openai/v1",
           },
         },
         defaultLocalModel,
       });
 
-      expect(resolved.canonical.provider).toBe("openai");
-      if (resolved.canonical.provider === "openai") {
-        expect(resolved.canonical.baseUrl).toBe("https://api.example.com/openai/v1");
-      }
+      expect(resolved.canonical).toEqual({
+        provider: "local",
+        model: defaultLocalModel,
+        dimension: null,
+      });
       expect(resolved.credentialAvailable).toBe(true);
+      expect(resolved.remoteRequestsEnabled).toBe(false);
+    });
+
+    test("keeps the configured local model when embed_api_model has no embed_api_url", () => {
+      const resolved = resolveEmbeddingConfig({
+        config: {
+          models: {
+            embed: defaultLocalModel,
+            embed_api_model: "text-embedding-3-small",
+          },
+        },
+        defaultLocalModel,
+      });
+
+      expect(resolved.canonical).toEqual({
+        provider: "local",
+        model: defaultLocalModel,
+        dimension: null,
+      });
+      expect(resolved.credentialAvailable).toBe(true);
+      expect(resolved.remoteRequestsEnabled).toBe(false);
+    });
+
+    test("keeps the default local provider when only embed_api_url is configured", () => {
+      const resolved = resolveEmbeddingConfig({
+        config: {
+          models: {
+            embed_api_url: "https://api.example.com/v1",
+          },
+        },
+        defaultLocalModel,
+      });
+
+      expect(resolved.canonical).toEqual({
+        provider: "local",
+        model: defaultLocalModel,
+        dimension: null,
+      });
+    });
+
+    test("rejects the legacy embedding block as a remote provider selection path", () => {
+      expect(() => resolveEmbeddingConfig({
+        config: {
+          embedding: { provider: "openai" },
+        },
+        defaultLocalModel,
+      })).toThrowError(/models\.embed_api_url/);
+    });
+
+    test.each(["openai", "openai:text-embedding-3-small"])(
+      "rejects the deprecated models.embed shorthand %s",
+      (embed) => {
+        expect(() => resolveEmbeddingConfig({
+          config: { models: { embed } },
+          defaultLocalModel,
+        })).toThrowError(/models\.embed_api_url/);
+      },
+    );
+
+    test("retains embed_dimension for local response validation without selecting a remote provider", () => {
+      const resolved = resolveEmbeddingConfig({
+        config: {
+          models: {
+            embed: defaultLocalModel,
+            embed_dimension: 1024,
+          },
+        },
+        defaultLocalModel,
+      });
+
+      expect(resolved.canonical).toEqual({
+        provider: "local",
+        model: defaultLocalModel,
+        dimension: 1024,
+      });
     });
   });
 
-  describe("Option A: models.embed_base_url unified models block", () => {
-    test("infers OpenAI provider when models.embed_base_url is specified alone", () => {
+  describe("remote credentials", () => {
+    test("allows a missing OPENAI_API_KEY for a configured custom endpoint", () => {
       const resolved = resolveEmbeddingConfig({
         config: {
           models: {
-            embed_base_url: "https://api.example.com/v1",
-          },
-        },
-        defaultLocalModel,
-      });
-
-      expect(resolved.canonical).toEqual({
-        provider: "openai",
-        model: "text-embedding-3-small",
-        dimension: 1536,
-        baseUrl: "https://api.example.com/v1",
-      });
-      expect(resolved.credentialAvailable).toBe(true);
-    });
-
-    test("combines models.embed shorthand with models.embed_base_url", () => {
-      const resolved = resolveEmbeddingConfig({
-        config: {
-          models: {
-            embed: "openai:text-embedding-3-large",
-            embed_base_url: "https://api.example.com/v1",
-          },
-        },
-        defaultLocalModel,
-      });
-
-      expect(resolved.canonical).toEqual({
-        provider: "openai",
-        model: "text-embedding-3-large",
-        dimension: 3072,
-        baseUrl: "https://api.example.com/v1",
-      });
-    });
-
-    test("supports custom models.embed_dimension override", () => {
-      const resolved = resolveEmbeddingConfig({
-        config: {
-          models: {
-            embed: "openai:text-embedding-3-small",
-            embed_base_url: "https://api.example.com/v1",
-            embed_dimension: 512,
-          },
-        },
-        defaultLocalModel,
-      });
-
-      expect(resolved.canonical).toEqual({
-        provider: "openai",
-        model: "text-embedding-3-small",
-        dimension: 512,
-        baseUrl: "https://api.example.com/v1",
-      });
-    });
-  });
-
-  describe("TODO 4: optional OPENAI_API_KEY for custom endpoints", () => {
-    test("allows missing OPENAI_API_KEY when custom embed_base_url is specified", () => {
-      const resolved = resolveEmbeddingConfig({
-        config: {
-          models: {
-            embed_base_url: "https://api.example.com/v1",
+            embed_api_url: "https://api.example.com/v1",
+            embed_api_model: "text-embedding-3-small",
           },
         },
         defaultLocalModel,
@@ -168,34 +158,6 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
 
       expect(resolved.credentialAvailable).toBe(true);
       expect(resolved.remoteRequestsEnabled).toBe(true);
-    });
-
-    test("requires OPENAI_API_KEY when default OpenAI endpoint is used", () => {
-      const resolvedWithoutKey = resolveEmbeddingConfig({
-        config: {
-          models: {
-            embed: "openai:text-embedding-3-small",
-          },
-        },
-        defaultLocalModel,
-        env: {}, // No OPENAI_API_KEY
-      });
-
-      expect(resolvedWithoutKey.credentialAvailable).toBe(false);
-      expect(resolvedWithoutKey.remoteRequestsEnabled).toBe(false);
-
-      const resolvedWithKey = resolveEmbeddingConfig({
-        config: {
-          models: {
-            embed: "openai:text-embedding-3-small",
-          },
-        },
-        defaultLocalModel,
-        env: { OPENAI_API_KEY: "sk-test" },
-      });
-
-      expect(resolvedWithKey.credentialAvailable).toBe(true);
-      expect(resolvedWithKey.remoteRequestsEnabled).toBe(true);
     });
   });
 });
