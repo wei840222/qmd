@@ -2066,7 +2066,7 @@ export function resolveEmbedModelForCli(): string {
     const config = loadConfig();
     const resolved = resolveEmbeddingConfig({
       config,
-      defaultLocalModel: DEFAULT_EMBED_MODEL,
+      defaultLocalModel: process.env.QMD_EMBED_MODEL || DEFAULT_EMBED_MODEL,
     });
     return resolved.canonical.model;
   } catch {
