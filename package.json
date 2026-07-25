@@ -42,18 +42,18 @@
     "test:unit": "CI=true node ./node_modules/vitest/vitest.mjs run --reporter=verbose --testTimeout 60000 test/ && CI=true bun test --timeout 60000 --preload ./src/test-preload.ts test/",
     "test:quality": "node ./node_modules/vitest/vitest.mjs run --reporter=verbose test/eval-cjk.test.ts",
     "test:package": "node scripts/package-smoke.mjs",
+    "smoke:package-grammars": "node scripts/check-package-grammars.mjs",
+    "dict:refresh": "node scripts/refresh-zhtw-candidates.mjs",
+    "dict:sync": "node scripts/refresh-zhtw-candidates.mjs --skip-review",
+    "inspector": "npx @modelcontextprotocol/inspector tsx src/cli/qmd.ts mcp",
+    "release": "./scripts/release.sh",
     "qmd": "tsx src/cli/qmd.ts",
     "bench": "bun src/cli/qmd.ts bench",
     "index": "tsx src/cli/qmd.ts index",
     "vector": "tsx src/cli/qmd.ts vector",
     "search": "tsx src/cli/qmd.ts search",
     "vsearch": "tsx src/cli/qmd.ts vsearch",
-    "rerank": "tsx src/cli/qmd.ts rerank",
-    "inspector": "npx @modelcontextprotocol/inspector tsx src/cli/qmd.ts mcp",
-    "release": "./scripts/release.sh",
-    "smoke:package-grammars": "node scripts/check-package-grammars.mjs",
-    "dict:refresh": "node scripts/refresh-zhtw-candidates.mjs",
-    "dict:sync": "node scripts/refresh-zhtw-candidates.mjs --skip-review"
+    "rerank": "tsx src/cli/qmd.ts rerank"
   },
   "publishConfig": {
     "access": "public"

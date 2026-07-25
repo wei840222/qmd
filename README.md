@@ -555,17 +555,17 @@ QMD stays local by default. To use remote embeddings or remote LLM models, confi
 ```yaml
 models:
   embed: hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf
-  embed_api_url: https://api.example.com/v1   # Both embed_api_url and embed_api_model enable remote embeddings
-  embed_api_model: text-embedding-3-small     # or text-embedding-3-large
-  embed_dimension: 1536                       # Optional: expected vector dimension; validates local output
+  embed_api_url: https://api.openai.com/v1          # Both embed_api_url and embed_api_model enable remote embeddings
+  embed_api_model: text-embedding-3-small           # or text-embedding-3-large
+  embed_dimension: 1536                             # Optional: expected vector dimension; validates local output
 
   # Optional: Remote LLM Query Expansion (aliases: generate_url, generate_base_url, generate_api_url)
-  generate_api_url: https://api.example.com/v1    # Base URL (appends /chat/completions) or full endpoint
-  generate_api_model: qwen3-7b-instruct           # or your-model-name
+  generate_api_url: https://generativelanguage.googleapis.com/v1beta/openai/v1    # Base URL (appends /chat/completions) or full endpoint
+  generate_api_model: gemini-3.5-flash-lite         # or gpt-4o-mini
 
   # Optional: Remote Reranking (aliases: rerank_url, rerank_base_url, rerank_api_url)
-  rerank_api_url: https://api.example.com/v1/chat/completions # Supports both /v1/rerank and /v1/chat/completions LLM endpoints
-  rerank_api_model: bge-reranker-v2-m3        # or gpt-4o-mini / qwen3-7b-instruct
+  rerank_api_url: https://generativelanguage.googleapis.com/v1beta/openai/v1/chat/completions # Supports both /v1/rerank and /v1/chat/completions LLM endpoints
+  rerank_api_model: gemini-3.5-flash-lite           # or gpt-4o-mini
 
 # Optional: Custom User Dictionary for CJK segmentation
 dictionary: ~/.config/qmd/dictionary.txt
