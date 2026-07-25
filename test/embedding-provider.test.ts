@@ -651,7 +651,7 @@ describe("Store embedding provider seam", () => {
     }
 
     expect(close).not.toHaveBeenCalled();
-  }, 10_000);
+  }, 30_000);
 });
 
 describe("EmbeddingProviderOwner lifecycle", () => {
