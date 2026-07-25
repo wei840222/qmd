@@ -51,7 +51,9 @@
     "rerank": "tsx src/cli/qmd.ts rerank",
     "inspector": "npx @modelcontextprotocol/inspector tsx src/cli/qmd.ts mcp",
     "release": "./scripts/release.sh",
-    "smoke:package-grammars": "node scripts/check-package-grammars.mjs"
+    "smoke:package-grammars": "node scripts/check-package-grammars.mjs",
+    "dict:refresh": "node scripts/refresh-zhtw-candidates.mjs",
+    "dict:sync": "node scripts/refresh-zhtw-candidates.mjs --skip-review"
   },
   "publishConfig": {
     "access": "public"

@@ -109,7 +109,10 @@ export class RemoteLLM implements LLM {
     const systemPrompt = `You are a query expansion assistant for document search. Output variations for search backends using prefix lines:
 lex: keyword search phrase
 vec: semantic search question
-hyde: hypothetical passage answer (50-100 words)`;
+hyde: hypothetical passage answer (50-100 words)
+
+Rules:
+- Generate all variations in the SAME language and script as the user query (e.g. Traditional Chinese query -> Traditional Chinese variations). Do NOT switch to Japanese or other languages unless explicitly requested by the query.`;
 
     const userPrompt = options?.context
       ? `Context: ${options.context}\nQuery: ${query}`
@@ -163,8 +166,8 @@ hyde: hypothetical passage answer (50-100 words)`;
     }
   }
 
-  async rerank(query: string, documents: RerankDocument[], options?: RerankOptions): Promise<RerankResult> {
-    const model = options?.model ?? this.rerankApiModel ?? "remote-rerank";
+  async rerank(query: string, documents: RerankDocument[], options?: RerankOptions | string): Promise<RerankResult> {
+    const model = this.rerankApiModel || (typeof options === "string" ? options : options?.model) || "remote-rerank";
     if (!this.supportsRerank) {
       throw new Error("Remote reranking is not configured or circuit is broken.");
     }
@@ -237,17 +240,26 @@ hyde: hypothetical passage answer (50-100 words)`;
     documents: RerankDocument[],
     model: string,
   ): Promise<RerankResult> {
-    const systemPrompt = `You are a document relevance reranker. Rank each candidate document by relevance to the search query.
-Output ONLY a JSON object containing a "results" array. Each item must have:
-- "index": integer (0-based candidate index)
-- "score": number between 0.0 (irrelevant) and 1.0 (highly relevant)`;
+    const systemPrompt = `You are a document relevance reranker. Rank candidate documents by relevance to the search query.
+Output ONLY a single JSON object. DO NOT include markdown codeblocks (\`\`\`json), markdown formatting, preamble, or commentary.
+JSON format:
+{
+  "results": [
+    {"index": 0, "score": 0.95},
+    {"index": 2, "score": 0.85}
+  ]
+}
+Rules:
+1. "index": integer matching candidate index (0 to ${documents.length - 1}).
+2. "score": float between 0.0 (irrelevant) and 1.0 (highly relevant).
+3. Include relevant candidates. You may omit items with 0 relevance to conserve tokens.`;
 
     const docItems = documents.map((d, i) => {
       const text = typeof d === "string" ? d : d.text;
       return `[Candidate ${i}]\n${text.slice(0, 1000)}`;
     }).join("\n\n");
 
-    const userPrompt = `Query: ${query}\n\nCandidate Documents:\n${docItems}`;
+    const userPrompt = `Query: ${query}\n\nCandidate Documents:\n${docItems}\n\nReturn raw JSON only. Start with { and end with }. No Markdown fences.`;
 
     const url = this.rerankApiUrl!;
 
@@ -268,8 +280,9 @@ Output ONLY a JSON object containing a "results" array. Each item must have:
     });
 
     if (!res.ok) {
+      const errText = await res.text().catch(() => "");
       this.rerankCircuitBroken = true;
-      throw new Error(`LLM Chat Rerank API returned status ${res.status}`);
+      throw new Error(`LLM Chat Rerank API returned status ${res.status}: ${errText}`);
     }
 
     const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
@@ -277,25 +290,47 @@ Output ONLY a JSON object containing a "results" array. Each item must have:
 
     const formattedResults: RerankDocumentResult[] = [];
     try {
-      const jsonMatch = /\{[\s\S]*\}/.exec(rawContent);
-      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : rawContent) as {
+      // Clean markdown codeblock fences (e.g. ```json ... ```)
+      const cleaned = rawContent
+        .replace(/^```(?:json)?/gi, "")
+        .replace(/```$/g, "")
+        .trim();
+
+      const jsonMatch = /\{[\s\S]*\}/.exec(cleaned);
+      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : cleaned) as {
         results?: Array<{ index: number; score: number }>;
       };
 
-      const resultsList = parsed.results ?? [];
+      const resultsList = Array.isArray(parsed?.results) ? parsed.results : [];
+      const seenIndices = new Set<number>();
+
       for (const item of resultsList) {
-        if (typeof item.index === "number" && item.index >= 0 && item.index < documents.length) {
+        if (
+          item &&
+          typeof item.index === "number" &&
+          !isNaN(item.index) &&
+          item.index >= 0 &&
+          item.index < documents.length &&
+          !seenIndices.has(item.index)
+        ) {
+          seenIndices.add(item.index);
           const doc = documents[item.index];
           const file = typeof doc === "string" ? doc : doc?.file ?? `doc_${item.index}`;
+          const rawScore = typeof item.score === "number" && !isNaN(item.score) ? item.score : 0;
+          const clampedScore = Math.max(0, Math.min(1, rawScore));
           formattedResults.push({
             file,
-            score: normalizeRerankScore(Number(item.score) || 0),
+            score: normalizeRerankScore(clampedScore),
             index: item.index,
           });
         }
       }
     } catch {
-      // If parsing fails, fall back to sequential scoring
+      // Fallback handled below if formattedResults is empty
+    }
+
+    if (formattedResults.length === 0) {
+      // Fallback: preserve original candidate ordering with default score
       documents.forEach((d, i) => {
         const file = typeof d === "string" ? d : d.file;
         formattedResults.push({ file, score: 0.5, index: i });

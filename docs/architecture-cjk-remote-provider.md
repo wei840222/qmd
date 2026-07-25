@@ -1,4 +1,4 @@
-# QMD CJK Search and OpenAI Embedding Architecture
+# QMD CJK Search and Remote Provider Architecture
 
 This document explains QMD's CJK lexical search pipeline, embedding identity state machine, and data disclosure boundaries for remote embedding providers. It describes the current implementation rather than a future proposal.
 
@@ -29,7 +29,8 @@ flowchart LR
 - Each channel ranks candidates independently before weighted Reciprocal Rank Fusion (RRF) combines them. Use `--explain` to inspect channel contributions and tie-breakers.
 - The original query runs through all available lexical and vector paths, with each ranked list assigned a ×2 RRF weight multiplier.
 - Query expansion produces zero or more typed variants, with each ranked list assigned a ×1 RRF weight multiplier. `lex` variants search lexical channels only; `vec` and `hyde` search vector space only.
-- The shared expansion policy is used across CLI, SDK, and MCP. Callers can explicitly specify `auto`, `force`, or `skip`; selecting `skip` suppresses typed variant generation.
+- The shared expansion policy is used across CLI, SDK, and MCP. Callers can explicitly specify `auto`, `force`, or `skip`; selecting `skip` suppresses typed variant generation. Under `auto`, CJK queries automatically expand when a remote LLM (`generate_api_url`) is configured, and prompt rules enforce language and script consistency (e.g. Traditional Chinese queries produce Traditional Chinese variations).
+- Remote LLM Reranking supports both dedicated Cross-Encoder endpoints (`/v1/rerank`) and general LLM Chat Completions endpoints (`/v1/chat/completions`). For Chat Completions reranking, QMD uses prompt-tail Recency Enforcement, codeblock stripping, duplicate filtering, float clamping `[0.0, 1.0]`, and automatic fallback to guarantee system resilience with any remote LLM.
 - If Jieba or published word/bigram indexes are unavailable, search degrades gracefully to the character channel only. Word and bigram channels remain marked unavailable until a successful rebuild. Diagnostics report `unavailable` or `stale` states alongside actionable remediation instructions rather than silently failing or pretending to be complete.
 
 ## CJK Index Publishing

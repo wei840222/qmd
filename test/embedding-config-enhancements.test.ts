@@ -75,6 +75,23 @@ describe("Embedding Config Enhancements (TODO 2, 3, 4)", () => {
       });
       expect(resolved.source).toBe("legacy-models");
     });
+
+    test("parses custom embed_api_url or embed_url aliases", () => {
+      const resolved = resolveEmbeddingConfig({
+        config: {
+          models: {
+            embed_api_url: "https://api.example.com/openai/v1",
+          },
+        },
+        defaultLocalModel,
+      });
+
+      expect(resolved.canonical.provider).toBe("openai");
+      if (resolved.canonical.provider === "openai") {
+        expect(resolved.canonical.baseUrl).toBe("https://api.example.com/openai/v1");
+      }
+      expect(resolved.credentialAvailable).toBe(true);
+    });
   });
 
   describe("Option A: models.embed_base_url unified models block", () => {
