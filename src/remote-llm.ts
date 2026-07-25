@@ -187,7 +187,6 @@ Return only the prefix lines specified in the output format.
             { role: "system", content: systemPrompt },
             { role: "user", content: userPrompt },
           ],
-          reasoning_effort: "none",
           temperature: 0.3,
         }),
       });
@@ -376,7 +375,6 @@ Return raw JSON only: start with { and end with }. No Markdown fences.
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
-        reasoning_effort: "none",
         temperature: 0.1,
       }),
     });

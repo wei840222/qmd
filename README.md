@@ -622,9 +622,26 @@ MCP. Precedence is: explicit skip or `lex:` skips expansion; explicit force,
 `expand:`, or `--expand` forces it; under `auto`, CJK queries skip local model expansion (0ms bypass) but automatically expand when a remote LLM (`generate_api_url`) is configured; strong lexical
 signals skip expansion, and remaining queries expand. Expanded queries automatically maintain language consistency with the user query.
 
-For CJK dictionary maintenance and candidate synchronization, QMD provides two npm scripts:
-- `npm run dict:refresh` — Compares upstream Traditional Chinese technical dictionary candidates and reports diffs.
-- `npm run dict:sync` — Automatically syncs unreviewed candidates and rebuilds the embedded CJK dictionary module.
+QMD ships `zh-dict`, a single Jieba dictionary containing both Traditional and
+Simplified Chinese entries. It deterministically combines the upstream
+`@node-rs/jieba` dictionary, APCLab's `jieba-tw` dictionary, and selected
+technical terminology from zhtw-mcp. A configured user dictionary is loaded
+after `zh-dict`, so user entries retain the highest priority.
+
+The runtime, build, and package installation never download dictionary sources.
+Maintainers can regenerate the checked-in asset from the fixed source pins and
+content hashes in `src/search/zh-dict.sources.json`:
+
+```sh
+# Verify every pinned source and regenerate src/search/zh-dict.txt
+pnpm dict:sync
+
+# Intentionally advance the configured upstream branch pins, then regenerate
+pnpm dict:sync -- --update-pins
+```
+
+`dict:sync` records the generated asset's SHA-256 in the source configuration.
+Review the resulting pin and dictionary diff before committing an update.
 
 ## Installation
 

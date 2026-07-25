@@ -4,6 +4,10 @@
 
 ### Added
 
+- Added a bundled Traditional Chinese Jieba dictionary that deterministically
+  combines the node-rs base dictionary, APCLab's Taiwan dictionary, and
+  zhtw-mcp technical terms. `pnpm dict:sync` verifies pinned source hashes;
+  `pnpm dict:sync --update-pins` refreshes the upstream pins.
 - Added CJK-aware lexical retrieval with independent character, Jieba word, and
   bigram FTS5 channels, versioned rank fusion and explain traces. The bundled
   reviewed Traditional Chinese technical dictionary records its pinned source
@@ -26,10 +30,10 @@
 - Remote query expansion and chat-completions reranking now use a consistent
   Gemini-style XML prompt structure in both system and user messages, separating
   role, instructions, constraints, output format, context, task, and final
-  instruction. Their OpenAI-compatible chat requests now set
-  `reasoning_effort: "none"`.
+  instruction. Their OpenAI-compatible chat requests omit provider-specific
+  reasoning controls so each configured model uses its default behavior.
 - Remote expansion and chat reranking now escape untrusted prompt data, use
-  leaner instructions for `reasoning_effort: "none"`, preserve established
+  leaner instructions without requiring a reasoning mode, preserve established
   cross-language technical terms, and discard chat rerank scores below `0.1`.
 - Remote query expansion now requests concise, backend-specific variations with
   a short example and conservative handling for ambiguous queries. Remote output

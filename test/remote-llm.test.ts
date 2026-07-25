@@ -87,7 +87,7 @@ describe("TODO 1: RemoteLLM & HybridLLM Integration", () => {
       expect(result[2]).toEqual({ type: "hyde", text: "Connection pool exhaustion occurs when..." });
 
       expect(lastRequestBody.model).toBe("gpt-4o-mini");
-      expect(lastRequestBody.reasoning_effort).toBe("none");
+      expect(lastRequestBody).not.toHaveProperty("reasoning_effort");
       const systemPrompt = lastRequestBody.messages[0].content as string;
       const userPrompt = lastRequestBody.messages[1].content as string;
       expect(systemPrompt).toContain("<role>");
@@ -233,7 +233,7 @@ describe("TODO 1: RemoteLLM & HybridLLM Integration", () => {
       expect(res.results).toHaveLength(2);
       expect(res.results[0]).toEqual({ file: "doc1.md", score: 0.92, index: 0 });
       expect(res.results[1]).toEqual({ file: "doc2.md", score: 0.15, index: 1 });
-      expect(lastRequestBody.reasoning_effort).toBe("none");
+      expect(lastRequestBody).not.toHaveProperty("reasoning_effort");
     });
 
     test("chat reranking prompt prioritizes explicit query constraints", async () => {

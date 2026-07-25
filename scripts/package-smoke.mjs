@@ -64,6 +64,12 @@ function assertPath(path, label = path) {
   return full;
 }
 
+function assertMissing(path, label = path) {
+  if (existsSync(join(root, path))) {
+    throw new PackageSmokeError(`Package smoke failed: unexpected ${label} (${path})`);
+  }
+}
+
 function main() {
 run("build compiled package", process.execPath, ["scripts/build.mjs"]);
 run("AST grammar runtime packages", process.execPath, ["scripts/check-package-grammars.mjs"]);
@@ -85,9 +91,9 @@ assertPath("dist/index.d.ts", "compiled type export");
 assertPath("dist/cli/qmd.js", "compiled CLI");
 assertPath("dist/search/jieba-loader.js", "compiled jieba capability loader");
 assertPath("dist/search/cjk-analyzer.js", "compiled CJK analyzer");
-assertPath("dist/search/zh-tw-tech-dictionary.js", "compiled zh-TW dictionary");
-assertPath("data/zh-tw-tech-dictionary.meta.json", "zh-TW dictionary source metadata");
-assertPath("data/zh-tw-tech-dictionary.reviewed.json", "zh-TW reviewed dictionary input");
+assertPath("dist/search/zh-dict.txt", "compiled Chinese dictionary asset");
+assertMissing("dist/search/zh-tw-dictionary.txt", "renamed Chinese dictionary asset");
+assertMissing("dist/search/zh-tw-tech-dictionary.js", "legacy zh-TW dictionary module");
 assertPath("THIRD_PARTY_NOTICES.md", "third-party notices");
 
 run("compiled CLI under Node", process.execPath, ["dist/cli/qmd.js", "--help"], { quiet: true });
@@ -135,14 +141,10 @@ try {
   const analyzerUrl = pathToFileURL(
     join(consumerDir, "node_modules", "@tobilu", "qmd", "dist", "search", "cjk-analyzer.js"),
   ).href;
-  const dictionaryUrl = pathToFileURL(
-    join(consumerDir, "node_modules", "@tobilu", "qmd", "dist", "search", "zh-tw-tech-dictionary.js"),
-  ).href;
   const installedRoot = join(consumerDir, "node_modules", "@tobilu", "qmd");
   for (const path of [
     "THIRD_PARTY_NOTICES.md",
-    "data/zh-tw-tech-dictionary.meta.json",
-    "data/zh-tw-tech-dictionary.reviewed.json",
+    "dist/search/zh-dict.txt",
   ]) {
     if (!existsSync(join(installedRoot, path))) {
       throw new Error(`Packed package is missing ${path}`);
@@ -153,23 +155,21 @@ try {
     const capability = await loadJiebaCapability();
     if (!capability.available) throw new Error(capability.diagnostic.code);
     const actual = capability.cut("我們使用記憶體快取資料", false);
-    const expected = ["我", "們", "使用", "記憶體", "快取", "資", "料"];
+    const expected = ["我們", "使用", "記憶體", "快取", "資料"];
     if (JSON.stringify(actual) !== JSON.stringify(expected)) {
       throw new Error("Unexpected jieba golden tokens");
     }
     const { analyzeCjk } = await import(process.env.QMD_CJK_ANALYZER_URL);
     const analyzed = await analyzeCjk("相依性雜湊佇列");
     if (analyzed.word !== "相依性 雜湊 佇列") throw new Error("Unexpected analyzer dictionary tokens");
-    const dictionary = await import(process.env.QMD_ZHTW_DICTIONARY_URL);
-    if (!dictionary.ZH_TW_TECH_DICTIONARY_TERMS.includes("記憶體")) {
-      throw new Error("Compiled zh-TW dictionary is incomplete");
+    if (JSON.stringify(capability.cut("CC霜", false)) !== JSON.stringify(["CC霜"])) {
+      throw new Error("Bundled Chinese dictionary is incomplete");
     }
   `;
   const smokeEnv = {
     ...process.env,
     QMD_JIEBA_LOADER_URL: loaderUrl,
     QMD_CJK_ANALYZER_URL: analyzerUrl,
-    QMD_ZHTW_DICTIONARY_URL: dictionaryUrl,
   };
 
   run(
