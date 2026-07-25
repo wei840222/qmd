@@ -70,7 +70,13 @@ describe("security boundaries", () => {
     process.env.OPENAI_API_KEY = secret;
     const store = await createSdkStore({
       dbPath,
-      config: { collections: {}, embedding: { provider: "openai" } },
+      config: {
+        collections: {},
+        models: {
+          embed_api_url: "https://api.openai.com/v1",
+          embed_api_model: "text-embedding-3-small",
+        },
+      },
     });
 
     try {

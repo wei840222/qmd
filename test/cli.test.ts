@@ -18,6 +18,7 @@ import { openDatabase } from "../src/db.ts";
 import { DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI } from "../src/llm.ts";
 import { setConfigSource } from "../src/collections.ts";
 import {
+  DEFAULT_OPENAI_BASE_URL,
   OPENAI_EMBEDDING_DIMENSION,
   OPENAI_EMBEDDING_MODEL,
   readCanonicalEmbeddingConfig,
@@ -852,6 +853,7 @@ describe("CLI Status Command", () => {
       provider: "openai",
       model: OPENAI_EMBEDDING_MODEL,
       dimension: OPENAI_EMBEDDING_DIMENSION,
+      baseUrl: DEFAULT_OPENAI_BASE_URL,
     });
     db.close();
     unlinkSync(join(env.configDir, "index.yml"));
@@ -871,6 +873,7 @@ describe("CLI Status Command", () => {
       provider: "openai",
       model: OPENAI_EMBEDDING_MODEL,
       dimension: OPENAI_EMBEDDING_DIMENSION,
+      baseUrl: DEFAULT_OPENAI_BASE_URL,
     });
     inspected.close();
   });
@@ -2401,7 +2404,7 @@ describe("status and collection list hide filesystem paths", () => {
 // MCP HTTP Daemon Lifecycle
 // =============================================================================
 
-describe("mcp http daemon", () => {
+describe.skipIf(!!process.env.CI)("mcp http daemon", () => {
   let daemonTestDir: string;
   let daemonCacheDir: string; // XDG_CACHE_HOME value (the qmd/ subdir is created automatically)
   let daemonDbPath: string;

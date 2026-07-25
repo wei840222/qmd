@@ -21,6 +21,8 @@ async function remoteCli(
   apiKey: string | null = "",
   seedPending = false,
   seedReady = false,
+  remoteConfig = true,
+  legacyEmbedModel?: string,
 ) {
   const repositoryRoot = process.cwd();
   const root = await mkdtemp(join(tmpdir(), "qmd-cli-remote-"));
@@ -48,7 +50,13 @@ async function remoteCli(
   if (seedReady) {
     const seed = await createStore({
       dbPath,
-      config: { collections: {}, embedding: { provider: "openai" } },
+      config: {
+        collections: {},
+        models: {
+          embed_api_url: "https://api.openai.com/v1",
+          embed_api_model: "text-embedding-3-small",
+        },
+      },
     });
     try {
       const identity = remoteEmbeddingIdentity(seed.internal.embeddingProvider!);
@@ -63,9 +71,12 @@ async function remoteCli(
       await seed.close();
     }
   }
+  const modelsConfig = remoteConfig
+    ? "models:\n  embed_api_url: https://api.openai.com/v1\n  embed_api_model: text-embedding-3-small\n"
+    : legacyEmbedModel === undefined ? "" : `models:\n  embed: ${legacyEmbedModel}\n`;
   await writeFile(join(configDir, "index.yml"), seedPending
-    ? `collections:\n  docs:\n    path: ${JSON.stringify(docsDir)}\n    pattern: "**/*.md"\nembedding:\n  provider: openai\n`
-    : "collections: {}\nembedding:\n  provider: openai\n");
+    ? `collections:\n  docs:\n    path: ${JSON.stringify(docsDir)}\n    pattern: "**/*.md"\n${modelsConfig}`
+    : `collections: {}\n${modelsConfig}`);
   const dbBefore = existsSync(dbPath) ? await readFile(dbPath) : undefined;
   const result = spawnSync(
     "node",
@@ -140,6 +151,32 @@ describe("remote embedding CLI consent", () => {
       inputTokenUpperBound: 0,
     });
     expect(output.policyVersion).toBe("qmd-remote-embedding-v2");
+    expect(result.indexExistsAfter).toBe(false);
+  });
+
+  test("explains the paired models configuration required for remote options", async () => {
+    const result = await remoteCli(["--remote-preflight"], "embed", null, false, false, false);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("models.embed_api_url");
+    expect(result.stderr).toContain("models.embed_api_model");
+    expect(result.stderr).not.toContain("embedding.provider: openai");
+  });
+
+  test("rejects the deprecated OpenAI models.embed shorthand before local model loading", async () => {
+    const result = await remoteCli(
+      ["--remote-preflight"],
+      "embed",
+      null,
+      false,
+      false,
+      false,
+      "openai:text-embedding-3-small",
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("models.embed no longer accepts OpenAI shorthand");
+    expect(result.stderr).toContain("models.embed_api_model");
     expect(result.indexExistsAfter).toBe(false);
   });
 

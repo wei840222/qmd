@@ -208,7 +208,13 @@ describe("createStore", () => {
   test("drains active Llama sessions before disposing an OpenAI store runtime", async () => {
     const store = await createStore({
       dbPath: freshDbPath(),
-      config: { collections: {}, embedding: { provider: "openai" } },
+      config: {
+        collections: {},
+        models: {
+          embed_api_url: "https://api.openai.com/v1",
+          embed_api_model: "text-embedding-3-small",
+        },
+      },
     });
     const providerClose = vi.spyOn(store.internal.embeddingProvider!, "close");
     const llmDispose = vi.spyOn(store.internal.llm!, "dispose");

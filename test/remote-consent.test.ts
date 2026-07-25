@@ -82,7 +82,13 @@ describe("remote embedding preflight and consent", () => {
 
     const preflight = await preflightRemoteEmbedding({
       dbPath,
-      config: { collections: {}, embedding: { provider: "openai" } },
+      config: {
+        collections: {},
+        models: {
+          embed_api_url: "https://api.openai.com/v1",
+          embed_api_model: "text-embedding-3-small",
+        },
+      },
     });
 
     expect(preflight).toMatchObject({ providerId: "openai", pendingDocuments: 0 });
@@ -381,7 +387,10 @@ describe("remote embedding preflight and consent", () => {
       dbPath: join(root, "remote-index.sqlite"),
       config: {
         collections: { docs: { path: documents, pattern: "**/*.md" } },
-        embedding: { provider: "openai" },
+        models: {
+          embed_api_url: "https://api.openai.com/v1",
+          embed_api_model: "text-embedding-3-small",
+        },
       },
     });
 
@@ -442,7 +451,10 @@ describe("remote embedding preflight and consent", () => {
       dbPath: join(root, "authorized-remote-index.sqlite"),
       config: {
         collections: { docs: { path: documents, pattern: "**/*.md" } },
-        embedding: { provider: "openai" },
+        models: {
+          embed_api_url: "https://api.openai.com/v1",
+          embed_api_model: "text-embedding-3-small",
+        },
       },
     });
 
@@ -542,7 +554,10 @@ describe("remote embedding preflight and consent", () => {
       dbPath: join(root, "destructive-probe-index.sqlite"),
       config: {
         collections: { docs: { path: documents, pattern: "**/*.md" } },
-        embedding: { provider: "openai" },
+        models: {
+          embed_api_url: "https://api.openai.com/v1",
+          embed_api_model: "text-embedding-3-small",
+        },
       },
     });
 
