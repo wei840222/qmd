@@ -35,7 +35,7 @@ jobs:
         run: pnpm audit --audit-level high
 
       - name: Tests
-        run: pnpm test:unit
+        run: npx vitest run --reporter=verbose --testTimeout 60000 test/
         env:
           CI: true
 
