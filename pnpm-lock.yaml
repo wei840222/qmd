@@ -10,7 +10,7 @@ overrides:
   fast-uri: 3.1.4
   hono: 4.12.25
   path-to-regexp: 8.4.0
-  postcss: 8.5.12
+  postcss: 8.5.22
   qs: 6.15.3
   rollup: 4.59.0
   simple-git: 3.36.0
@@ -1402,8 +1402,8 @@ packages:
     resolution: {integrity: sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ==}
     engines: {node: '>=16.20.0'}
 
-  postcss@8.5.12:
-    resolution: {integrity: sha512-W62t/Se6rA0Az3DfCL0AqJwXuKwBeYg6nOaIgzP+xZ7N5BFCI7DYi1qs6ygUYT6rvfi6t9k65UMLJC+PHZpDAA==}
+  postcss@8.5.22:
+    resolution: {integrity: sha512-I5g553z628w/yFuh1V3J38Z0cbgRzFst3W2uX/T4M9fI/jYnSPhC5s/2fSblBZsC23+s5tT4iF7e4M2Fj94sQA==}
     engines: {node: ^10 || ^12 || >=14}
 
   prebuild-install@7.1.3:
@@ -3020,7 +3020,7 @@ snapshots:
 
   pkce-challenge@5.0.1: {}
 
-  postcss@8.5.12:
+  postcss@8.5.22:
     dependencies:
       nanoid: 3.3.16
       picocolors: 1.1.1
@@ -3470,7 +3470,7 @@ snapshots:
       esbuild: 0.27.7
       fdir: 6.5.0(picomatch@4.0.5)
       picomatch: 4.0.5
-      postcss: 8.5.12
+      postcss: 8.5.22
       rollup: 4.59.0
       tinyglobby: 0.2.15
     optionalDependencies:

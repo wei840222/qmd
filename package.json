@@ -101,6 +101,7 @@
     "hono": "4.12.25",
     "path-to-regexp": "8.4.0",
     "postcss": "8.5.22",
+    "vite>postcss": "8.5.22",
     "qs": "6.15.3",
     "rollup": "4.59.0",
     "simple-git": "3.36.0",
