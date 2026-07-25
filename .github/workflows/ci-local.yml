@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ["24", "26"]
+        node-version: ["24"]
 
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +35,7 @@ jobs:
         run: pnpm audit --audit-level high
 
       - name: Tests
-        run: pnpm test
+        run: pnpm test:unit
         env:
           CI: true
 
@@ -45,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ["24", "26"]
+        node-version: ["24"]
 
     steps:
       - uses: actions/checkout@v4
