@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,10 +23,7 @@ import {
 } from "../src/search/cjk-index.js";
 import type { JiebaCapabilityLoader } from "../src/search/cjk-analyzer.js";
 import { createJiebaUnavailableCapability } from "../src/search/jieba-loader.js";
-import {
-  ZH_TW_TECH_DICTIONARY_SHA256,
-  ZH_TW_TECH_DICTIONARY_VERSION,
-} from "../src/search/zh-tw-tech-dictionary.js";
+
 
 const now = "2026-01-01T00:00:00.000Z";
 const tempDirs: string[] = [];
@@ -155,8 +154,10 @@ describe("CJK lexical shadow schema", () => {
   });
 
   test("fingerprint covers every analyzer policy and the versioned dictionary", () => {
-    expect(CJK_ANALYZER_FINGERPRINT_SOURCE.dictionaryVersion).toBe(ZH_TW_TECH_DICTIONARY_VERSION);
-    expect(CJK_ANALYZER_FINGERPRINT_SOURCE.dictionarySha256).toBe(ZH_TW_TECH_DICTIONARY_SHA256);
+    const dictionary = readFileSync(join(process.cwd(), "src", "search", "zh-dict.txt"));
+    expect(CJK_ANALYZER_FINGERPRINT_SOURCE.dictionaryVersion).toBe("zh-dict-v1");
+    expect(CJK_ANALYZER_FINGERPRINT_SOURCE.dictionarySha256)
+      .toBe(createHash("sha256").update(dictionary).digest("hex"));
     expect(getCjkAnalyzerFingerprint()).toBe(computeCjkAnalyzerFingerprint(CJK_ANALYZER_FINGERPRINT_SOURCE));
 
     for (const key of Object.keys(CJK_ANALYZER_FINGERPRINT_SOURCE) as (keyof typeof CJK_ANALYZER_FINGERPRINT_SOURCE)[]) {

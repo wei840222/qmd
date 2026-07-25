@@ -14,10 +14,6 @@ import {
   loadJiebaCapabilitySync,
   type JiebaCapability,
 } from "./jieba-loader.js";
-import {
-  ZH_TW_TECH_DICTIONARY_SHA256,
-  ZH_TW_TECH_DICTIONARY_VERSION,
-} from "./zh-tw-tech-dictionary.js";
 import { openDatabase, type Database } from "../db.js";
 
 const CJK_INDEX_SCHEMA_VERSION = "3";
@@ -25,6 +21,10 @@ const DEFAULT_LEASE_MS = 60_000;
 const BUILD_BATCH_SIZE = 200;
 const BUILD_BATCH_BYTE_BUDGET = 8 * 1024 * 1024;
 const IDENTIFIER_PATTERN = /^[a-z][a-z0-9_]*$/;
+const ZH_DICTIONARY_VERSION = "zh-dict-v1";
+const ZH_DICTIONARY_SHA256 = createHash("sha256")
+  .update(readFileSync(new URL("./zh-dict.txt", import.meta.url)))
+  .digest("hex");
 
 export interface CjkAnalyzerFingerprintSource {
   analyzerVersion: string;
@@ -59,8 +59,8 @@ export const CJK_ANALYZER_FINGERPRINT_SOURCE: Readonly<CjkAnalyzerFingerprintSou
   jiebaPackage: "@node-rs/jieba",
   jiebaVersion: resolveJiebaVersion(),
   jiebaHmm: "false",
-  dictionaryVersion: ZH_TW_TECH_DICTIONARY_VERSION,
-  dictionarySha256: ZH_TW_TECH_DICTIONARY_SHA256,
+  dictionaryVersion: ZH_DICTIONARY_VERSION,
+  dictionarySha256: ZH_DICTIONARY_SHA256,
   userDictionarySha256: "none",
 });
 

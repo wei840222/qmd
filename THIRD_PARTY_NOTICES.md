@@ -1,8 +1,14 @@
 # Third-Party Notices
 
-## zhtw-mcp
+## Bundled Traditional Chinese dictionary sources
 
-The reviewed Traditional Chinese technical dictionary candidates in this package were derived from selected entries in `sysprog21/zhtw-mcp` at commit `2e0f4e4912a8ffdacf7fa3a155cb20c29cba043b`. qmd does not include the complete upstream ruleset and has no runtime dependency on it.
+The bundled Traditional Chinese Jieba dictionary combines the following MIT-licensed sources:
+
+- `@node-rs/jieba` 2.0.1 (`dict.txt`), Copyright (c) LongYinan.
+- `APCLab/jieba-tw` (`jieba/dict.txt`) at commit `2bd4c0913cdadc865879b21a00c78e28ef1ba2c5`, Copyright (c) 2013 Sun Junyi.
+- `sysprog21/zhtw-mcp` (`assets/ruleset.json`) at commit `2e0f4e4912a8ffdacf7fa3a155cb20c29cba043b`, Copyright (c) 2026 National Cheng Kung University, Taiwan.
+
+The source pins and content fingerprints are recorded in `src/search/zh-dict.sources.json` in the qmd source distribution. qmd has no runtime source dependency on these upstream repositories.
 
 Copyright (c) 2026 National Cheng Kung University, Taiwan
 

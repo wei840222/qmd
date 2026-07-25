@@ -45,13 +45,11 @@ describe("jieba capability loader", () => {
     const capability = expectAvailable(await loadJiebaCapability());
 
     expect(capability.cut("我們使用記憶體快取資料", false)).toEqual([
-      "我",
-      "們",
+      "我們",
       "使用",
       "記憶體",
       "快取",
-      "資",
-      "料",
+      "資料",
     ]);
   });
 
@@ -78,17 +76,14 @@ describe("jieba capability loader", () => {
       if (specifier === "@node-rs/jieba") {
         return { Jieba: { withDict: () => ({ cut, loadDict: (value: Uint8Array) => loadedDictionaries.push(value) }) } };
       }
-      if (specifier === "@node-rs/jieba/dict.js") {
-        return { dict: new Uint8Array([1]) };
-      }
       throw new Error("unexpected module");
     });
 
     const [first, second] = await Promise.all([loader(), loader()]);
 
     expect(first).toBe(second);
-    expect(imported).toEqual(["@node-rs/jieba", "@node-rs/jieba/dict.js"]);
-    expect(loadedDictionaries).toHaveLength(1);
+    expect(imported).toEqual(["@node-rs/jieba"]);
+    expect(loadedDictionaries).toHaveLength(0);
     expect(expectAvailable(first).cut("test", false)).toEqual(["test"]);
   });
 

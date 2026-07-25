@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { chmodSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +19,17 @@ function run(command, args, options = {}) {
 }
 
 run(process.execPath, [join(root, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.build.json"]);
+copyFileSync(
+  join(root, "src", "search", "zh-dict.txt"),
+  join(root, "dist", "search", "zh-dict.txt"),
+);
+for (const path of [
+  "zh-tw-dictionary.txt",
+  "zh-tw-tech-dictionary.js",
+  "zh-tw-tech-dictionary.d.ts",
+]) {
+  rmSync(join(root, "dist", "search", path), { force: true });
+}
 
 const cliPath = join(root, "dist", "cli", "qmd.js");
 const tmpPath = `${cliPath}.tmp`;

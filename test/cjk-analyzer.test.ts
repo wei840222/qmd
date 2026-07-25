@@ -22,7 +22,7 @@ describe("CJK analyzer", () => {
   test("uses the default jieba capability for eligible Han segments", async () => {
     const result = await analyzeCjk("我們使用記憶體快取資料");
 
-    expect(result.word).toBe("我 們 使用 記憶體 快取 資 料");
+    expect(result.word).toBe("我們 使用 記憶體 快取 資料");
     expect(result.wordCapability).toEqual({ available: true });
   });
 

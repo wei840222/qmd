@@ -4,6 +4,10 @@
 
 ### Added
 
+- Added a bundled Traditional Chinese Jieba dictionary that deterministically
+  combines the node-rs base dictionary, APCLab's Taiwan dictionary, and
+  zhtw-mcp technical terms. `pnpm dict:sync` verifies pinned source hashes;
+  `pnpm dict:sync --update-pins` refreshes the upstream pins.
 - Added CJK-aware lexical retrieval with independent character, Jieba word, and
   bigram FTS5 channels, versioned rank fusion and explain traces. The bundled
   reviewed Traditional Chinese technical dictionary records its pinned source

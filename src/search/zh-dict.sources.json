@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "output": {
+    "sha256": "6c54a0860970098925f09392d481cef10e91273da9cd065864b47afa42bd51bd"
+  },
+  "nodeRs": {
+    "package": "@node-rs/jieba",
+    "version": "2.0.1",
+    "path": "dict.txt",
+    "gitBlobSha": "8a9837551ef4f0833835565b5ca654bd6d786a42",
+    "sha256": "139519822fe8ab9e10d9d07e68ea0451045380aedaf54ecc51e2a28c6b42a13f"
+  },
+  "apclab": {
+    "repository": "https://github.com/APCLab/jieba-tw",
+    "branch": "master",
+    "commit": "2bd4c0913cdadc865879b21a00c78e28ef1ba2c5",
+    "path": "jieba/dict.txt",
+    "gitBlobSha": "2c2a895205ef20c86cc1d06b4a500c99902281d0",
+    "sha256": "72250ef62afd80f56044befbcaaa39a8450c4efbf61ca1f70f45cc92fb654ac5"
+  },
+  "zhtwMcp": {
+    "repository": "https://github.com/sysprog21/zhtw-mcp",
+    "branch": "main",
+    "commit": "2e0f4e4912a8ffdacf7fa3a155cb20c29cba043b",
+    "path": "assets/ruleset.json",
+    "gitBlobSha": "f0a4b271b2d34725517b5626bede1192951abdcf",
+    "sha256": "2d43bf2f84a0a842911b216dc61b63d1f194509f396c64dc11a56748de9b657a"
+  },
+  "technicalTerms": {
+    "frequency": 1000000,
+    "tag": "nz",
+    "domains": [
+      "IT",
+      "程式",
+      "資料庫",
+      "網路",
+      "硬體",
+      "UI",
+      "資安",
+      "作業系統",
+      "資料結構"
+    ]
+  }
+}

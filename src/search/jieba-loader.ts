@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { ZH_TW_TECH_DICTIONARY_BYTES } from "./zh-tw-tech-dictionary.js";
+import { readFileSync } from "node:fs";
 
 export interface JiebaDiagnostic {
   readonly code: "JIEBA_NATIVE_UNAVAILABLE";
@@ -50,23 +50,19 @@ export function createJiebaUnavailableCapability(): Extract<JiebaCapability, { a
 
 function initializeCapability(
   packageModule: unknown,
-  dictionaryModule: unknown,
   userDictionary?: Uint8Array,
 ): JiebaCapability {
   const packageRecord = asRecord(packageModule);
-  const dictionaryRecord = asRecord(dictionaryModule);
   const Jieba = asRecord(packageRecord?.Jieba) as unknown as JiebaConstructorLike | null;
-  const dictionary = dictionaryRecord?.dict;
 
   if (
     !Jieba
     || typeof Jieba.withDict !== "function"
-    || !(dictionary instanceof Uint8Array)
   ) {
     return createJiebaUnavailableCapability();
   }
 
-  const instance = Jieba.withDict(dictionary);
+  const instance = Jieba.withDict(readFileSync(new URL("./zh-dict.txt", import.meta.url)));
   if (
     !instance
     || typeof instance.cut !== "function"
@@ -74,7 +70,6 @@ function initializeCapability(
   ) {
     return createJiebaUnavailableCapability();
   }
-  instance.loadDict(ZH_TW_TECH_DICTIONARY_BYTES);
   if (userDictionary && userDictionary.byteLength > 0) {
     instance.loadDict(userDictionary);
   }
@@ -90,11 +85,8 @@ async function loadCapability(
   userDictionary?: Uint8Array,
 ): Promise<JiebaCapability> {
   try {
-    const [packageModule, dictionaryModule] = await Promise.all([
-      importModule("@node-rs/jieba"),
-      importModule("@node-rs/jieba/dict.js"),
-    ]);
-    return initializeCapability(packageModule, dictionaryModule, userDictionary);
+    const packageModule = await importModule("@node-rs/jieba");
+    return initializeCapability(packageModule, userDictionary);
   } catch {
     return createJiebaUnavailableCapability();
   }
@@ -129,7 +121,6 @@ export function loadJiebaCapabilitySync(userDictionary?: Uint8Array): JiebaCapab
   try {
     const cap = initializeCapability(
       require("@node-rs/jieba"),
-      require("@node-rs/jieba/dict.js"),
       userDictionary,
     );
     if (!userDictionary) synchronousCapability = cap;
