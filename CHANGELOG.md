@@ -19,6 +19,22 @@
 
 ### Changed
 
+- Chat-completions reranking now prioritizes explicit query constraints such as
+  entities, locations, versions, time, and negations. Valid empty rerank results
+  no longer fall back to neutral scores, and parsed chat rerank output is sorted
+  by descending relevance score.
+- Remote query expansion and chat-completions reranking now use a consistent
+  Gemini-style XML prompt structure in both system and user messages, separating
+  role, instructions, constraints, output format, context, task, and final
+  instruction. Their OpenAI-compatible chat requests now set
+  `reasoning_effort: "none"`.
+- Remote expansion and chat reranking now escape untrusted prompt data, use
+  leaner instructions for `reasoning_effort: "none"`, preserve established
+  cross-language technical terms, and discard chat rerank scores below `0.1`.
+- Remote query expansion now requests concise, backend-specific variations with
+  a short example and conservative handling for ambiguous queries. Remote output
+  is capped at one expansion per type, and `includeLexical: false` suppresses
+  `lex:` output both in the request and parser.
 - Provider failures no longer retain native error causes, preventing nested
   runtime errors from exposing document content, headers, credentials, or stacks.
 - CLI and SDK local embedding now share the same provider-qualified identity.
