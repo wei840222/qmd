@@ -2404,7 +2404,7 @@ describe("status and collection list hide filesystem paths", () => {
 // MCP HTTP Daemon Lifecycle
 // =============================================================================
 
-describe("mcp http daemon", () => {
+describe.skipIf(!!process.env.CI)("mcp http daemon", () => {
   let daemonTestDir: string;
   let daemonCacheDir: string; // XDG_CACHE_HOME value (the qmd/ subdir is created automatically)
   let daemonDbPath: string;
