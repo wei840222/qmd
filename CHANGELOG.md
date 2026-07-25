@@ -26,10 +26,10 @@
 - Remote query expansion and chat-completions reranking now use a consistent
   Gemini-style XML prompt structure in both system and user messages, separating
   role, instructions, constraints, output format, context, task, and final
-  instruction. Their OpenAI-compatible chat requests now set
-  `reasoning_effort: "none"`.
+  instruction. Their OpenAI-compatible chat requests omit provider-specific
+  reasoning controls so each configured model uses its default behavior.
 - Remote expansion and chat reranking now escape untrusted prompt data, use
-  leaner instructions for `reasoning_effort: "none"`, preserve established
+  leaner instructions without requiring a reasoning mode, preserve established
   cross-language technical terms, and discard chat rerank scores below `0.1`.
 - Remote query expansion now requests concise, backend-specific variations with
   a short example and conservative handling for ambiguous queries. Remote output
