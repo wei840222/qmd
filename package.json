@@ -42,6 +42,7 @@
     "test:package": "node scripts/package-smoke.mjs",
     "smoke:package-grammars": "node scripts/check-package-grammars.mjs",
     "dict:sync": "node scripts/sync-zh-dict.mjs",
+    "measure:cjk": "bun scripts/measure-cjk.ts",
     "inspector": "bunx @modelcontextprotocol/inspector tsx src/cli/qmd.ts mcp",
     "release": "./scripts/release.sh",
     "qmd": "tsx src/cli/qmd.ts",

@@ -7,7 +7,7 @@ import {
   getCjkAnalyzerFingerprint,
 } from "../src/search/cjk-index.js";
 
-describe("TODO 5: Custom User Dictionary Support", () => {
+describe("CJK Custom User Dictionary Support", () => {
   const customDictContent = `抗重力 10 n
 異步佇列 10 n
 超大型機器學習 10 n`;
