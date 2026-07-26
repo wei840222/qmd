@@ -16,9 +16,8 @@ import type { Database } from "./db.js";
 import type { EmbeddingProvider } from "./embedding/provider.js";
 import { chunkRemoteDocumentByUtf8Bytes } from "./embedding/remote-chunking.js";
 import {
-  probeRemoteEmbeddingDimension,
-  RemoteEmbeddingConsentError,
-} from "./embedding/remote-consent.js";
+  RemoteEmbeddingAuthorizationError,
+} from "./embedding/remote-embedding.js";
 import {
   abandonEmbeddingBuild,
   beginEmbeddingBuild,
@@ -188,8 +187,8 @@ function authorizeEmbeddingProviderRequest(
 ): void {
   if (!provider.remote) return;
   if (!authorize) {
-    throw new RemoteEmbeddingConsentError(
-      "CONSENT_REQUIRED",
+    throw new RemoteEmbeddingAuthorizationError(
+      "PURPOSE_NOT_ALLOWED",
       "Remote embedding requests require an authorization hook.",
     );
   }
@@ -2483,14 +2482,7 @@ export async function generateEmbeddings(
   let fingerprint = getEmbeddingFingerprint(model);
   let embeddingLease: EmbeddingBuildLease | undefined;
   let embeddingIdentity: EmbeddingIdentity | undefined;
-  const embeddingStateToken = (identity: EmbeddingIdentity): string => {
-    const state = inspectEmbeddingIndexState(db, identity);
-    return JSON.stringify({
-      status: state.status,
-      fingerprint: state.identity?.fingerprint ?? null,
-      generation: state.generation ?? null,
-    });
-  };
+
   const acquireProviderLease = async (
     dimension: number,
     canonicalMaterial?: string,
@@ -2519,48 +2511,16 @@ export async function generateEmbeddings(
         "Remote destructive embedding rebuilds cannot be collection-scoped.",
       );
     }
-    const destructiveRemoteRebuild = provider.remote
-      && options?.force === true
-      && options.allowDestructiveRebuild === true
-      && !options.collection;
-    let stateBeforeProbe: string | undefined;
-    if (destructiveRemoteRebuild) {
-      stateBeforeProbe = embeddingStateToken(identity);
-      const probe = await probeRemoteEmbeddingDimension(db, provider, { chunkStrategy });
-      if (probe.fingerprint !== identity.fingerprint || probe.dimension !== identity.dimension) {
-        throw new EmbeddingIdentityStateError(
-          "IDENTITY_MISMATCH",
-          "Remote capability probe does not match the requested embedding identity.",
-        );
-      }
-    }
     embeddingLease = beginEmbeddingBuild(db, identity, {
       ownerId: randomUUID(),
       now: Date.now(),
       leaseMs: EMBEDDING_BUILD_LEASE_MS,
       allowDestructiveRebuild: provider.remote
-        ? options?.allowDestructiveRebuild === true
+        ? options?.force === true
         : true,
       forceRebuild: options?.force === true && !options.collection,
       requireForceForIdentityChange: provider.remote,
-      beforeMutation: provider.remote
-        ? () => {
-            if (stateBeforeProbe !== undefined
-                && embeddingStateToken(identity) !== stateBeforeProbe) {
-              throw new EmbeddingIdentityStateError(
-                "IDENTITY_MISMATCH",
-                "Embedding index state changed after the remote capability probe.",
-              );
-            }
-            if (!store.authorizeRemoteBuildStart) {
-              throw new RemoteEmbeddingConsentError(
-                "CONSENT_REQUIRED",
-                "Remote embedding builds require an authorization hook.",
-              );
-            }
-            store.authorizeRemoteBuildStart(identity);
-          }
-        : undefined,
+
     });
     embeddingIdentity = identity;
     fingerprint = identity.fingerprint;

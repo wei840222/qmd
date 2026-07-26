@@ -42,15 +42,16 @@
     "test:package": "node scripts/package-smoke.mjs",
     "smoke:package-grammars": "node scripts/check-package-grammars.mjs",
     "dict:sync": "node scripts/sync-zh-dict.mjs",
-    "inspector": "npx @modelcontextprotocol/inspector tsx src/cli/qmd.ts mcp",
+    "measure:cjk": "bun scripts/measure-cjk.ts",
+    "inspector": "bunx @modelcontextprotocol/inspector tsx src/cli/qmd.ts mcp",
     "release": "./scripts/release.sh",
     "qmd": "tsx src/cli/qmd.ts",
-    "bench": "bun src/cli/qmd.ts bench",
     "index": "tsx src/cli/qmd.ts index",
     "vector": "tsx src/cli/qmd.ts vector",
     "search": "tsx src/cli/qmd.ts search",
     "vsearch": "tsx src/cli/qmd.ts vsearch",
-    "rerank": "tsx src/cli/qmd.ts rerank"
+    "rerank": "tsx src/cli/qmd.ts rerank",
+    "bench": "bun src/cli/qmd.ts bench"
   },
   "publishConfig": {
     "access": "public"

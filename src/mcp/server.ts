@@ -594,25 +594,6 @@ Intent-aware lex (C++ performance, not sports):
     }
   );
 
-  server.registerTool(
-    "remote_embedding_preflight",
-    {
-      title: "Remote Embedding Preflight",
-      description: "Return the conservative, side-effect-free remote embedding consent document. This never sends document content or credentials to a provider.",
-      annotations: { readOnlyHint: true, openWorldHint: false },
-      inputSchema: {},
-    },
-    async () => {
-      const preflight = await store.preflightRemoteEmbedding();
-      return {
-        content: [{
-          type: "text",
-          text: `Remote embedding preflight ${preflight.fingerprint} for ${preflight.pendingDocuments} pending documents.`,
-        }],
-        structuredContent: { ...preflight },
-      };
-    },
-  );
 
   return server;
 }

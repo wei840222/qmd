@@ -140,13 +140,20 @@ bun src/cli/qmd.ts <command>   # Run from source
 bun link               # Install globally as 'qmd'
 ```
 
-## Tests
+## Tests & Benchmarks
 
 All tests live in `test/`. Run everything:
 
 ```sh
 npx vitest run --reporter=verbose test/
 bun test --preload ./src/test-preload.ts test/
+```
+
+Run CJK evaluation & benchmarks:
+
+```sh
+bun run test:quality   # Run CJK search retrieval quality tests (test/eval-cjk.test.ts)
+bun run measure:cjk    # Measure CJK rebuild latency, DB payload size, and recall/MRR
 ```
 
 ## Architecture

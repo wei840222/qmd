@@ -105,8 +105,7 @@
 
 - `vectors_vec` still supports one embedding dimension at a time. Switching
   provider, model, dimension, formatter, or chunk profile requires a full vector
-  rebuild; remote rebuilds additionally require exact consent and
-  `qmd embed --force --allow-remote`.
+  rebuild with `qmd embed --force`.
 - Back up an index before opening it with this version if it must later be used by
   an older QMD release. Schema migration has no in-place downgrade, and once an
   authorized vector reset starts there is no rollback to the deleted vectors;

@@ -8,7 +8,6 @@ import {
 } from "./config.js";
 import {
   EmbeddingProviderError,
-  REMOTE_CAPABILITY_PROBE_SENTINEL,
   type EmbeddingOperationOptions,
   type EmbeddingProvider,
   type RemoteEmbeddingRequestGuard,
@@ -408,22 +407,12 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
       );
     }
     const inputs = Object.freeze([...texts]);
-    const validPurposeKindPair = (options.purpose === "capability-probe" && options.kind === "document")
-      || (options.purpose === "index-build" && options.kind === "document")
+    const validPurposeKindPair = (options.purpose === "index-build" && options.kind === "document")
       || (options.purpose === "query-embedding" && options.kind === "query");
     if (!validPurposeKindPair) {
       throw new EmbeddingProviderError(
         "REMOTE_AUTHORIZATION_REQUIRED",
         "Remote embedding request purpose does not match its input kind.",
-      );
-    }
-    if (options.purpose === "capability-probe" && (
-      inputs.length !== 1
-      || inputs[0] !== REMOTE_CAPABILITY_PROBE_SENTINEL
-    )) {
-      throw new EmbeddingProviderError(
-        "REMOTE_AUTHORIZATION_REQUIRED",
-        "Remote capability probes must use the fixed versioned sentinel.",
       );
     }
 
