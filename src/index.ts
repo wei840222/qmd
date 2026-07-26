@@ -18,7 +18,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { openReadOnlyDatabase } from "./db.js";
+
 import {
   createStore as createStoreInternal,
   hybridQuery,
@@ -81,15 +81,9 @@ import {
   UnavailableOpenAIEmbeddingProvider,
 } from "./embedding/openai.js";
 import {
-  acceptRemoteEmbeddingPreflight as acceptRemotePreflight,
-  authorizeRemoteEmbeddingPurpose,
-  createRemoteEmbeddingPreflight,
-  probeRemoteEmbeddingDimension,
+  authorizeRemoteEmbeddingRequest,
   remoteEmbeddingIdentity,
-  type RemoteConsentSurface,
-  type RemoteEmbeddingPreflight,
-  type RemoteEmbeddingProbeResult,
-} from "./embedding/remote-consent.js";
+} from "./embedding/remote-embedding.js";
 import { readStoredEmbeddingIdentity } from "./embedding/identity.js";
 import { inspectIndexDiagnostics } from "./diagnostics.js";
 import {
@@ -342,24 +336,9 @@ export interface QMDStore {
     maxDocsPerBatch?: number;
     maxBatchBytes?: number;
     chunkStrategy?: ChunkStrategy;
-    /** Required separately from force when a remote identity rebuild is destructive. */
-    allowDestructiveRebuild?: boolean;
     onProgress?: (info: EmbedProgress) => void;
   }): Promise<EmbedResult>;
 
-  /** Compute a side-effect-free remote document embedding preflight. */
-  preflightRemoteEmbedding(options?: { chunkStrategy?: ChunkStrategy }): Promise<RemoteEmbeddingPreflight>;
-
-  /** Probe remote capability with one fixed sentinel and no persistent writes. */
-  probeRemoteEmbedding(options?: { chunkStrategy?: ChunkStrategy }): Promise<RemoteEmbeddingProbeResult>;
-
-  /** Accept the exact current remote embedding preflight. */
-  acceptRemoteEmbeddingPreflight(input: {
-    preflightId: string;
-    fingerprint: string;
-    policyVersion: string;
-    surface?: RemoteConsentSurface;
-  }): Promise<void>;
 
   // ── Index Health ────────────────────────────────────────────────────
 
@@ -400,49 +379,6 @@ export interface QMDStore {
  * await store.close()
  * ```
  */
-/**
- * Compute remote disclosure/consent data without creating or mutating the target index.
- * Use this entry point when no QMDStore has been opened yet.
- */
-export async function preflightRemoteEmbedding(
-  options: StoreOptions,
-): Promise<RemoteEmbeddingPreflight> {
-  if (!options.dbPath) throw new Error("dbPath is required");
-  if (options.configPath && options.config) {
-    throw new Error("Provide either configPath or config, not both");
-  }
-  const externalConfigSource: CollectionConfigSource | undefined = options.configPath
-    ? createCollectionConfigSource({ configPath: options.configPath })
-    : options.config
-      ? createCollectionConfigSource({ config: options.config })
-      : undefined;
-  const config = externalConfigSource ? loadConfig(externalConfigSource) : undefined;
-
-  const temporaryStore = existsSync(options.dbPath)
-    ? undefined
-    : createStoreInternal(":memory:");
-  const db = temporaryStore?.db ?? openReadOnlyDatabase(options.dbPath);
-  try {
-    const hasStoreConfig = db.prepare(`
-      SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'store_config'
-    `).get() != null;
-    const embedding = resolveEmbeddingConfig({
-      config,
-      dbConfig: hasStoreConfig ? readCanonicalEmbeddingConfig(db) : undefined,
-      defaultLocalModel: DEFAULT_EMBED_MODEL_URI,
-    });
-    if (embedding.canonical.provider !== "openai") {
-      throw new EmbeddingConfigError(
-        "Remote embedding preflight requires an OpenAI embedding configuration.",
-      );
-    }
-    return createRemoteEmbeddingPreflight(db, new UnavailableOpenAIEmbeddingProvider());
-  } finally {
-    temporaryStore?.close();
-    if (!temporaryStore) db.close();
-  }
-}
-
 export async function createStore(options: StoreOptions): Promise<QMDStore> {
   if (!options.dbPath) {
     throw new Error("dbPath is required");
@@ -451,8 +387,8 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     throw new Error("Provide either configPath or config, not both");
   }
 
-  // A missing read-only index uses an initialized in-memory store so status and
-  // preflight remain available without creating the requested on-disk file.
+  // A missing read-only index uses an initialized in-memory store without
+  // creating the requested on-disk file.
   const useTemporaryStore = options.readOnly === true && !existsSync(options.dbPath);
   const internal = createStoreInternal(
     useTemporaryStore ? ":memory:" : options.dbPath,
@@ -552,7 +488,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
             if (!requestIdentity) {
               throw new EmbeddingConfigError("Remote request fingerprint does not match an active embedding identity.");
             }
-            authorizeRemoteEmbeddingPurpose(
+            authorizeRemoteEmbeddingRequest(
               db,
               requestIdentity,
               request.purpose,
@@ -582,19 +518,12 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     if (!activeProvider?.remote) {
       throw new EmbeddingConfigError("Remote embedding provider is not active.");
     }
-    authorizeRemoteEmbeddingPurpose(
+    authorizeRemoteEmbeddingRequest(
       db,
       context.identity ?? remoteEmbeddingIdentity(activeProvider),
       purpose,
       { lease: context.lease },
     );
-  };
-  internal.authorizeRemoteBuildStart = identity => {
-    const activeProvider = internal.embeddingProvider;
-    if (!activeProvider?.remote) {
-      throw new EmbeddingConfigError("Remote embedding provider is not active.");
-    }
-    authorizeRemoteEmbeddingPurpose(db, identity, "capability-probe");
   };
   let closePromise: Promise<void> | undefined;
 
@@ -763,11 +692,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     embed: async (embedOpts) => {
       const provider = internal.embeddingProvider;
       if (provider?.remote) {
-        if (embedOpts?.force && embedOpts.allowDestructiveRebuild !== true) {
-          throw new EmbeddingConfigError(
-            "Remote --force embedding requires explicit destructive rebuild authorization.",
-          );
-        }
+
         if (embedOpts?.force && embedOpts.collection) {
           throw new EmbeddingConfigError(
             "Remote destructive embedding rebuilds cannot be collection-scoped.",
@@ -796,40 +721,11 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         maxDocsPerBatch: embedOpts?.maxDocsPerBatch,
         maxBatchBytes: embedOpts?.maxBatchBytes,
         chunkStrategy: embedOpts?.chunkStrategy,
-        allowDestructiveRebuild: embedOpts?.allowDestructiveRebuild,
+
         onProgress: embedOpts?.onProgress,
       });
     },
 
-    preflightRemoteEmbedding: async preflightOptions => {
-      const provider = internal.embeddingProvider;
-      if (!provider?.remote) {
-        throw new EmbeddingConfigError("Remote embedding preflight requires an OpenAI embedding configuration.");
-      }
-      return createRemoteEmbeddingPreflight(db, provider, preflightOptions);
-    },
-
-    probeRemoteEmbedding: async probeOptions => {
-      const provider = internal.embeddingProvider;
-      if (!provider?.remote) {
-        throw new EmbeddingConfigError("Remote embedding probe requires an OpenAI embedding configuration.");
-      }
-      if (!embedding.credentialAvailable) {
-        throw new EmbeddingConfigError("Remote capability probe requires OPENAI_API_KEY.");
-      }
-      return probeRemoteEmbeddingDimension(db, provider, probeOptions);
-    },
-
-    acceptRemoteEmbeddingPreflight: async (input) => {
-      const provider = internal.embeddingProvider;
-      if (!provider?.remote) {
-        throw new EmbeddingConfigError("Remote embedding acknowledgement requires an OpenAI embedding configuration.");
-      }
-      acceptRemotePreflight(db, provider, {
-        ...input,
-        surface: input.surface ?? "sdk",
-      });
-    },
 
     // Index Health
     getStatus: async () => {

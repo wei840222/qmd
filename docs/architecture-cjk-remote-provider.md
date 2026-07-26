@@ -91,40 +91,11 @@ Identity incompatibilities require clearing embedding metadata and vector tables
 
 Build leases use owner IDs and generation sequence numbers to prevent concurrent writer collisions. Interrupted builds with matching identities retain successfully committed chunks and resume by requesting only metadata-only, vector-only, missing, or layout-incomplete chunks. Vector search queries only `ready` vectors with compatible fingerprints.
 
-## Remote Embedding Disclosure & Consent
+## Remote Embedding
 
-```mermaid
-sequenceDiagram
-  participant U as User
-  participant Q as QMD
-  participant D as SQLite consent/state
-  participant P as Remote provider
+Remote embedding providers are selected explicitly through `index.yml`; local providers remain the default. `qmd embed` sends deterministic UTF-8 document chunks to the configured provider. `qmd embed --force` resets vectors when an embedding identity changes.
 
-  U->>Q: qmd embed --remote-preflight
-  Q->>D: Read-only check of document generation & pending counts
-  Q-->>U: Disclosure, token/cost upper bound, fingerprint
-  Note over Q,P: No remote request sent in preflight step
-  U->>Q: --remote-accept + exact id/fingerprint/policy
-  Q->>D: Store minimal durable acknowledgement
-  U->>Q: --remote-probe
-  Q->>D: Validate acknowledgement & document generation
-  Q->>P: Send fixed, versioned capability sentinel
-  P-->>Q: Return dimension
-  U->>Q: qmd embed
-  loop Every document batch
-    Q->>D: Validate consent, generation, & identity lease owner
-    Q->>P: Send UTF-8 bounded document chunks
-    P-->>Q: Return vectors
-  end
-```
-
-Remote embedding providers require explicit opt-in; local providers remain the default.
-
-Preflight calculations compute conservative token and cost upper bounds without transmitting document content, queries, API keys, or sentinels. Acknowledgements bind policy versions, embedding fingerprints, and document generations; changes to any parameter invalidate consent and require a new preflight.
-
-Capability probes send fixed, non-sensitive sentinels only after durable acknowledgement is recorded.
-
-API keys are read strictly from process environment variables and are never stored in SQLite, diagnostics, log output, or error messages. Remote API errors expose only allowlisted status codes and messages, redacting response bodies, request payloads, credentials, and sensitive URLs. Destructive identity rebuilds require independent `--force --allow-remote` authorization flags, and generation guards revalidate authorization within SQLite write locks before clearing existing vectors.
+API keys are read strictly from process environment variables and are never stored in SQLite, diagnostics, log output, or error messages. Remote API errors expose only allowlisted status codes and messages, redacting response bodies, request payloads, credentials, and sensitive URLs. Embedding identity and build leases are revalidated within SQLite write locks before clearing or publishing vectors.
 
 Document indexing transmits deterministic UTF-8 chunks to the remote provider; vector and hybrid search queries transmit formatted query text to the same provider. Destructive identity resets cannot be rolled back once old vectors are purged, though lexical search indexes remain operational throughout.
 
@@ -133,7 +104,7 @@ Document indexing transmits deterministic UTF-8 chunks to the remote provider; v
 `qmd status`, `qmd doctor`, SDK `getStatus()`, and MCP `status` share a unified, read-only diagnostics model providing:
 
 - Provider, model, dimension, short fingerprint, and API key configuration status (as boolean flags only);
-- Embedding state, lease details, pending/inconsistent chunk counts, consent acknowledgements, and pricing timestamp (`checkedAt`);
+- Embedding state, lease details, and pending/inconsistent chunk counts;
 - Jieba capability status, analyzer fingerprint, channel readiness (`char`/`word`/`bigram`), and dirty/rebuild reasons;
 - Corresponding actionable remediation commands.
 

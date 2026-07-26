@@ -5,11 +5,7 @@ import { createEmbeddingIdentity, type EmbeddingIdentity } from "./embedding/ide
 import { canonicalLocalEmbeddingIdentityMaterial } from "./embedding/local-identity.js";
 import { canonicalOpenAIEmbeddingIdentityMaterial } from "./embedding/openai.js";
 import type { OpenAIEmbeddingModel } from "./embedding/config.js";
-import {
-  hasRemoteEmbeddingConsent,
-  OPENAI_EMBEDDING_PRICING,
-  REMOTE_EMBEDDING_POLICY_VERSION,
-} from "./embedding/remote-consent.js";
+
 import { getCjkAnalyzerFingerprint } from "./search/cjk-index.js";
 import { canonicalEmbeddingBuildMaterial } from "./store.js";
 
@@ -47,11 +43,7 @@ export interface EmbeddingDiagnostics {
     vectorOnly: number;
     incompleteLayouts: number;
   };
-  remote: {
-    acknowledgement: boolean;
-    policyVersion: string;
-    pricingCheckedAt: string;
-  };
+
   repairCommand: string | null;
 }
 
@@ -272,9 +264,6 @@ function inspectEmbeddingDiagnostics(
   }
 
   const effectiveRemote = provider?.remote ?? configured?.remote ?? false;
-  const acknowledgement = effectiveRemote
-    && fingerprint != null
-    && hasRemoteEmbeddingConsent(db, fingerprint, REMOTE_EMBEDDING_POLICY_VERSION);
 
   return {
     provider: {
@@ -297,13 +286,8 @@ function inspectEmbeddingDiagnostics(
       leaseExpiresAt: stored?.lease_expires_at == null ? null : Number(stored.lease_expires_at),
     },
     chunks: { pendingDocuments, metadataOnly, vectorOnly, incompleteLayouts },
-    remote: {
-      acknowledgement,
-      policyVersion: REMOTE_EMBEDDING_POLICY_VERSION,
-      pricingCheckedAt: OPENAI_EMBEDDING_PRICING.checkedAt,
-    },
     repairCommand: buildState === "ready" || buildState === "empty" ? null : effectiveRemote
-      ? "qmd embed --force --allow-remote"
+      ? "qmd embed --force"
       : "qmd embed --force",
   };
 }

@@ -1,4 +1,4 @@
-import { isBun, openDatabase, openReadOnlyDatabase } from "../db.js";
+import { isBun, openDatabase } from "../db.js";
 import type { Database, SQLiteValue } from "../db.js";
 import fastGlob from "fast-glob";
 import { execSync, spawn as nodeSpawn } from "child_process";
@@ -101,12 +101,9 @@ import type { EmbeddingProviderOwner } from "../embedding/provider.js";
 import { createCliEmbeddingProviderOwner } from "./embedding-owner.js";
 import { readStoredEmbeddingIdentity } from "../embedding/identity.js";
 import {
-  acceptRemoteEmbeddingPreflight,
-  authorizeRemoteEmbeddingPurpose,
-  createRemoteEmbeddingPreflight,
-  probeRemoteEmbeddingDimension,
+  authorizeRemoteEmbeddingRequest,
   remoteEmbeddingIdentity,
-} from "../embedding/remote-consent.js";
+} from "../embedding/remote-embedding.js";
 import { inspectIndexDiagnostics } from "../diagnostics.js";
 import {
   formatSearchResults,
@@ -204,7 +201,7 @@ function getStore(): ReturnType<typeof createStore> {
                   "Remote request fingerprint does not match an active embedding identity.",
                 );
               }
-              authorizeRemoteEmbeddingPurpose(store!.db, requestIdentity, request.purpose, {
+              authorizeRemoteEmbeddingRequest(store!.db, requestIdentity, request.purpose, {
                 lease: request.buildLease,
                 requestFingerprint: request.fingerprint,
               });
@@ -218,7 +215,7 @@ function getStore(): ReturnType<typeof createStore> {
       );
       store.embeddingProvider = provider;
       store.authorizeRemoteRequest = (purpose, context) => {
-        authorizeRemoteEmbeddingPurpose(
+        authorizeRemoteEmbeddingRequest(
           store!.db,
           context.identity ?? remoteEmbeddingIdentity(provider!),
           purpose,
@@ -226,7 +223,7 @@ function getStore(): ReturnType<typeof createStore> {
         );
       };
       store.authorizeRemoteBuildStart = identity => {
-        authorizeRemoteEmbeddingPurpose(store!.db, identity, "capability-probe");
+        authorizeRemoteEmbeddingRequest(store!.db, identity, "capability-probe");
       };
     } else {
       cliEmbeddingOwner = createCliEmbeddingProviderOwner(embedding.canonical, cliLlama);
@@ -702,11 +699,6 @@ async function showStatus(): Promise<void> {
   console.log(`  Dimension: ${diagnostics.embedding.provider.dimension ?? "unknown"}`);
   console.log(`  Identity: ${diagnostics.embedding.identity.shortFingerprint ?? "unknown"} (${diagnostics.embedding.build.state})`);
   console.log(`  Pending:  ${diagnostics.embedding.chunks.pendingDocuments}; metadata-only=${diagnostics.embedding.chunks.metadataOnly}, vector-only=${diagnostics.embedding.chunks.vectorOnly}`);
-  if (diagnostics.embedding.provider.remote) {
-    console.log(`  API key:  ${diagnostics.embedding.provider.keyConfigured ? "configured" : "not configured"}`);
-    console.log(`  Consent:  ${diagnostics.embedding.remote.acknowledgement ? "accepted" : "required"}`);
-    console.log(`  Pricing:  checked ${diagnostics.embedding.remote.pricingCheckedAt}`);
-  }
   if (diagnostics.embedding.repairCommand) console.log(`  Repair:   ${diagnostics.embedding.repairCommand}`);
 
   console.log(`\n${c.bold}CJK Lexical${c.reset}`);
@@ -2095,81 +2087,13 @@ async function vectorIndex(
     chunkStrategy?: ChunkStrategy;
     collection?: string;
     maxDurationMs?: number;
-    remotePreflight?: boolean;
-    remoteProbe?: boolean;
-    remoteAccept?: { preflightId: string; fingerprint: string; policyVersion: string };
-    allowDestructiveRebuild?: boolean;
+
   },
 ): Promise<void> {
-  if (batchOptions?.remotePreflight) {
-    const config = loadConfig();
-    const dbPath = getDbPath();
-    const temporaryStore = existsSync(dbPath) ? undefined : createStore(":memory:");
-    const db = temporaryStore?.db ?? openReadOnlyDatabase(dbPath);
-    try {
-      const hasStoreConfig = db.prepare(`
-        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'store_config'
-      `).get() != null;
-      const embedding = resolveEmbeddingConfig({
-        config,
-        dbConfig: hasStoreConfig ? readCanonicalEmbeddingConfig(db) : undefined,
-        env: process.env,
-        defaultLocalModel: config.models?.embed ?? DEFAULT_EMBED_MODEL,
-      });
-      if (embedding.canonical.provider !== "openai") {
-        throw new EmbeddingConfigError(
-          "Remote embedding options require models.embed_api_url (or models.embed_url/models.embed_base_url) and models.embed_api_model.",
-        );
-      }
-      console.log(JSON.stringify(createRemoteEmbeddingPreflight(
-        db,
-        new UnavailableOpenAIEmbeddingProvider({
-          model: embedding.canonical.model,
-          dimension: embedding.canonical.dimension ?? undefined,
-          baseUrl: embedding.canonical.baseUrl,
-        }),
-        { chunkStrategy: batchOptions.chunkStrategy },
-      ), null, 2));
-    } finally {
-      temporaryStore?.close();
-      if (!temporaryStore) db.close();
-    }
-    return;
-  }
   const storeInstance = getStore();
   const db = storeInstance.db;
   const provider = storeInstance.embeddingProvider;
-  const remoteAction = batchOptions?.remoteProbe
-    || batchOptions?.remoteAccept !== undefined;
-  if (remoteAction && !provider?.remote) {
-    throw new EmbeddingConfigError(
-      "Remote embedding options require models.embed_api_url (or models.embed_url/models.embed_base_url) and models.embed_api_model.",
-    );
-  }
   if (provider?.remote) {
-    if (batchOptions?.remoteProbe) {
-      if (provider instanceof UnavailableOpenAIEmbeddingProvider) {
-        throw new EmbeddingConfigError("Remote capability probe requires OPENAI_API_KEY.");
-      }
-      console.log(JSON.stringify(await probeRemoteEmbeddingDimension(db, provider, {
-        chunkStrategy: batchOptions.chunkStrategy,
-      }), null, 2));
-      closeDb();
-      return;
-    }
-    if (batchOptions?.remoteAccept) {
-      acceptRemoteEmbeddingPreflight(db, provider, {
-        ...batchOptions.remoteAccept,
-        surface: "cli",
-      });
-      console.log(`${c.green}✓ Remote embedding preflight accepted.${c.reset}`);
-      closeDb();
-      return;
-    }
-
-    if (force && batchOptions?.allowDestructiveRebuild !== true) {
-      throw new EmbeddingConfigError("Remote --force embedding requires --allow-remote.");
-    }
     if (force && batchOptions?.collection) {
       throw new EmbeddingConfigError("Remote destructive embedding rebuilds cannot be collection-scoped.");
     }
@@ -2231,7 +2155,7 @@ async function vectorIndex(
     maxBatchBytes: batchOptions?.maxBatchBytes,
     chunkStrategy: batchOptions?.chunkStrategy,
     maxDurationMs: batchOptions?.maxDurationMs,
-    allowDestructiveRebuild: batchOptions?.allowDestructiveRebuild,
+
     onProgress: (info) => {
       if (info.totalBytes === 0) return;
       // Progress is measured by input bytes, not by chunks. The final chunk
@@ -3077,12 +3001,7 @@ function parseCLI() {
       "max-docs-per-batch": { type: "string" },
       "max-batch-mb": { type: "string" },
       timeout: { type: "string" },  // embed session cap in minutes (0 = no limit; default 30)
-      "remote-preflight": { type: "boolean" },
-      "remote-probe": { type: "boolean" },
-      "remote-accept": { type: "string" },
-      "remote-fingerprint": { type: "string" },
-      "remote-policy": { type: "string" },
-      "allow-remote": { type: "boolean" },
+
       // Update options
       pull: { type: "boolean" },  // git pull before update
       refresh: { type: "boolean" },
@@ -3624,12 +3543,7 @@ function showHelp(): void {
   console.log("    --max-docs-per-batch <n>    - Cap docs loaded into memory per embedding batch");
   console.log("    --max-batch-mb <n>          - Cap UTF-8 MB loaded into memory per embedding batch");
   console.log("    --timeout <minutes>         - Embed session cap in minutes (0 = no limit; default 30)");
-  console.log("    --remote-preflight         - Print remote disclosure/cost preflight (no request)");
-  console.log("    --remote-probe             - Probe remote dimension with one versioned sentinel (requires consent)");
-  console.log("    --remote-accept <id>       - Accept exact preflight (requires fingerprint + policy)");
-  console.log("    --remote-fingerprint <fp>  - Fingerprint paired with --remote-accept");
-  console.log("    --remote-policy <version>  - Policy version paired with --remote-accept");
-  console.log("    --allow-remote             - Separately authorize remote destructive rebuild (also requires --force)");
+
   console.log("  qmd cleanup                   - Clear caches, vacuum DB");
   console.log("");
   console.log("Query syntax (qmd query):");
@@ -3707,8 +3621,7 @@ function showHelp(): void {
   console.log("Embedding providers & disclosure:");
   console.log("  - Local embedding is the default. OpenAI requires explicit provider configuration and OPENAI_API_KEY.");
   console.log("  - Remote document builds send titles and deterministic UTF-8 document chunks; vector/hybrid queries send formatted query text.");
-  console.log("  - --remote-preflight computes a conservative token/cost upper bound and sends no remote request.");
-  console.log("  - --force and --allow-remote are independent approvals; both are required for a remote destructive identity rebuild.");
+
   console.log("  - Deleting old vectors has no vector rollback; lexical search remains available while rebuilding.");
   console.log("  - If Jieba or the analyzed index is unavailable, CJK search omits word and bigram channels and uses character-only fallback.");
   console.log("");
@@ -4736,31 +4649,7 @@ if (isMain) {
         const maxBatchMb = parseEmbedBatchOption("maxBatchBytes", cli.values["max-batch-mb"]);
         const embedChunkStrategy = parseChunkStrategy(cli.values["chunk-strategy"]);
         const embedMaxDurationMs = parseEmbedTimeoutOption(cli.values["timeout"]);
-        const remotePreflight = cli.values["remote-preflight"] === true;
-        const remoteProbe = cli.values["remote-probe"] === true;
-        const remoteAcceptId = typeof cli.values["remote-accept"] === "string"
-          ? cli.values["remote-accept"]
-          : undefined;
-        const remoteFingerprint = typeof cli.values["remote-fingerprint"] === "string"
-          ? cli.values["remote-fingerprint"]
-          : undefined;
-        const remotePolicy = typeof cli.values["remote-policy"] === "string"
-          ? cli.values["remote-policy"]
-          : undefined;
-        const allowRemote = cli.values["allow-remote"] === true;
-        if (allowRemote && cli.values.force !== true) {
-          throw new Error("--allow-remote requires --force.");
-        }
-        const remoteControlCount = Number(remotePreflight) + Number(remoteProbe) + Number(remoteAcceptId !== undefined);
-        if (remoteControlCount > 1) {
-          throw new Error("Use only one of --remote-preflight, --remote-probe, or --remote-accept.");
-        }
-        if (remoteAcceptId !== undefined && (!remoteFingerprint || !remotePolicy)) {
-          throw new Error("--remote-accept requires --remote-fingerprint and --remote-policy.");
-        }
-        if (remoteAcceptId === undefined && (remoteFingerprint !== undefined || remotePolicy !== undefined)) {
-          throw new Error("--remote-fingerprint and --remote-policy require --remote-accept.");
-        }
+
         // Validate -c against configured collections before dispatching, so a
         // typo errors with "Collection not found: X" instead of silently
         // reporting success because no pending docs match a nonexistent name.
@@ -4776,14 +4665,7 @@ if (isMain) {
           chunkStrategy: embedChunkStrategy,
           collection: embedCollection,
           maxDurationMs: embedMaxDurationMs,
-          remotePreflight,
-          remoteProbe,
-          remoteAccept: remoteAcceptId === undefined ? undefined : {
-            preflightId: remoteAcceptId,
-            fingerprint: remoteFingerprint!,
-            policyVersion: remotePolicy!,
-          },
-            allowDestructiveRebuild: cli.values.force === true && allowRemote,
+
           },
         );
       } catch (error) {

@@ -1186,8 +1186,6 @@ describe("embed", () => {
 
     try {
       await store.update();
-      const preflight = await store.preflightRemoteEmbedding();
-      await store.acceptRemoteEmbeddingPreflight(preflight);
       const result = await store.embed();
 
       expect(result.docsProcessed).toBe(1);
@@ -1228,8 +1226,6 @@ describe("embed", () => {
 
     try {
       await store.update();
-      const preflight = await store.preflightRemoteEmbedding();
-      await store.acceptRemoteEmbeddingPreflight(preflight);
       await expect(store.embed()).rejects.toMatchObject({ code: "RETRY_EXHAUSTED" });
       expect(fakeProvider.embedBatchCalls).toHaveLength(0);
       expect(singleCalls).toBe(0);

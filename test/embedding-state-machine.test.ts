@@ -14,7 +14,7 @@ import {
   vectorSearchQuery,
 } from "../src/store.js";
 import type { EmbeddingProvider } from "../src/embedding/provider.js";
-import { remoteEmbeddingIdentity } from "../src/embedding/remote-consent.js";
+import { remoteEmbeddingIdentity } from "../src/embedding/remote-embedding.js";
 import {
   EmbeddingIdentityStateError,
   abandonEmbeddingBuild,
@@ -114,15 +114,15 @@ describe("embedding identity state machine", () => {
       completeEmbeddingBuild(store.db, lease, 1_100);
 
       await expect(store.searchVec("private query", provider.model)).rejects.toMatchObject({
-        name: "RemoteEmbeddingConsentError",
-        code: "CONSENT_REQUIRED",
+        name: "RemoteEmbeddingAuthorizationError",
+        code: "PURPOSE_NOT_ALLOWED",
       });
       await expect(hybridQuery(store, "private query", {
         expansion: "skip",
         skipRerank: true,
       })).rejects.toMatchObject({
-        name: "RemoteEmbeddingConsentError",
-        code: "CONSENT_REQUIRED",
+        name: "RemoteEmbeddingAuthorizationError",
+        code: "PURPOSE_NOT_ALLOWED",
       });
       expect(embed).not.toHaveBeenCalled();
       expect(embedBatch).not.toHaveBeenCalled();

@@ -12,10 +12,6 @@ import {
 } from "../src/embedding/identity.js";
 import { UnavailableOpenAIEmbeddingProvider } from "../src/embedding/openai.js";
 import { canonicalEmbeddingBuildMaterial } from "../src/store.js";
-import {
-  acceptRemoteEmbeddingPreflight,
-  createRemoteEmbeddingPreflight,
-} from "../src/embedding/remote-consent.js";
 
 const roots: string[] = [];
 const stores: QMDStore[] = [];
@@ -74,7 +70,7 @@ describe("index diagnostics", () => {
       dimension: 3,
       keyConfigured: true,
     });
-    expect(diagnostics.embedding.remote.pricingCheckedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(diagnostics.embedding).not.toHaveProperty("remote");
     expect(JSON.stringify(diagnostics)).not.toContain("apiKey");
     expect(JSON.stringify(diagnostics)).not.toContain("OPENAI_API_KEY");
     expect(diagnostics.lexical.channels).toEqual({
@@ -177,27 +173,6 @@ describe("index diagnostics", () => {
     expect(diagnostics.embedding.chunks.pendingDocuments).toBe(0);
   });
 
-  test("reports acknowledgement recorded by the canonical consent schema", async () => {
-    const root = await mkdtemp(join(tmpdir(), "qmd-consent-status-"));
-    roots.push(root);
-    const store = await createStore({ dbPath: join(root, "index.sqlite") });
-    stores.push(store);
-    const provider = remoteProvider();
-    const preflight = createRemoteEmbeddingPreflight(store.internal.db, provider);
-    acceptRemoteEmbeddingPreflight(store.internal.db, provider, {
-      preflightId: preflight.preflightId,
-      fingerprint: preflight.fingerprint,
-      policyVersion: preflight.policyVersion,
-      surface: "sdk",
-    });
-
-    const diagnostics = inspectIndexDiagnostics(store.internal.db, {
-      fallbackModel: provider.model,
-      provider,
-    });
-
-    expect(diagnostics.embedding.remote.acknowledgement).toBe(true);
-  });
 
   test("reports dirty lexical state with per-channel readiness and repair reason", async () => {
     const root = await mkdtemp(join(tmpdir(), "qmd-dirty-status-"));

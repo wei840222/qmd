@@ -1076,7 +1076,7 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
     return { status: res.status, json, contentType: res.headers.get("content-type") };
   }
 
-  test("startup, status, and remote preflight leave the SQLite file byte-identical", async () => {
+  test("startup and status leave the SQLite file byte-identical", async () => {
     sessionId = null;
     try {
       await mcpRequest({
@@ -1086,10 +1086,6 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
       await mcpRequest({
         jsonrpc: "2.0", id: 101, method: "tools/call",
         params: { name: "status", arguments: {} },
-      });
-      await mcpRequest({
-        jsonrpc: "2.0", id: 102, method: "tools/call",
-        params: { name: "remote_embedding_preflight", arguments: {} },
       });
 
       expect(readFileSync(httpTestDbPath)).toEqual(httpDbBeforeStartup);
@@ -1133,7 +1129,7 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
     expect(toolNames).toContain("query");
     expect(toolNames).toContain("get");
     expect(toolNames).toContain("status");
-    expect(toolNames).toContain("remote_embedding_preflight");
+    expect(toolNames).not.toContain("remote_embedding_preflight");
 
     const queryTool = json.result.tools.find((tool: any) => tool.name === "query");
     expect(queryTool.inputSchema.properties.expansion.enum).toEqual(["auto", "force", "skip"]);

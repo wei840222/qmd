@@ -78,7 +78,6 @@ Although the tool works perfectly fine when you just tell your agent to use it o
 - `get` — Retrieve a document by path or docid (with fuzzy matching suggestions)
 - `multi_get` — Batch retrieve by glob pattern, comma-separated list, or docids
 - `status` — Index health and collection info
-- `remote_embedding_preflight` — Read-only remote embedding disclosure and conservative cost upper bound
 
 **Claude Desktop configuration** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
@@ -575,39 +574,26 @@ dictionary: ~/.config/qmd/dictionary.txt
 
 > **CLI, SDK & MCP Integration:** Remote LLM query expansion and LLM Chat Reranking are automatically wired into CLI (`qmd query`), SDK (`createStore`), and MCP. Query expansion automatically enforces query language & script consistency (e.g., Traditional Chinese queries generate Traditional Chinese `lex`, `vec`, and `hyde` variations). LLM Chat Reranking features prompt-tail Recency Enforcement and strict JSON sanitization to ensure safe execution with any remote LLM backend.
 
-`qmd init` writes local defaults only; it does not prompt for or generate a remote embedding configuration. To use a remote endpoint, edit `index.yml` manually, set credentials (if required), and complete preflight below.
+`qmd init` writes local defaults only; it does not prompt for or generate a remote embedding configuration. To use a remote endpoint, edit `index.yml` manually and set credentials when required.
 
 > **API Key Note:** Remote embeddings require both an embedding endpoint (`embed_url`, `embed_base_url`, or `embed_api_url`) and `embed_api_model`. When using official OpenAI (`api.openai.com`), set `OPENAI_API_KEY="..."`. For self-hosted proxies or keyless local servers, `OPENAI_API_KEY` is optional. QMD never writes keys to SQLite, diagnostics, logs, or error messages.
 
 ```sh
 export OPENAI_API_KEY="..." # Required for api.openai.com; optional for self-hosted proxies
 
-# 1. Print the exact disclosure and conservative token/cost upper bound.
-#    This is side-effect free and sends no remote request.
-qmd embed --remote-preflight
-
-# 2. Accept the exact values printed above.
-qmd embed \
-  --remote-accept '<preflightId>' \
-  --remote-fingerprint '<fingerprint>' \
-  --remote-policy '<policyVersion>'
-
-# 3. Optional: verify provider capability/dimension with one versioned sentinel.
-qmd embed --remote-probe
-
-# 4. Send pending document chunks and build the vector index.
+# Send pending document chunks and build the vector index.
 qmd embed
 ```
 
-Configure `embed_url`, `embed_base_url`, or `embed_api_url` together with `embed_api_model` to select the OpenAI-compatible embedding provider; QMD sends `POST /embeddings` requests. Changing the endpoint or model changes the remote embedding identity, so QMD requires a new preflight and consent before sending document content to that destination.
+Configure `embed_url`, `embed_base_url`, or `embed_api_url` together with `embed_api_model` to select the OpenAI-compatible embedding provider; QMD sends `POST /embeddings` requests. Changing the endpoint or model changes the remote embedding identity and requires a vector rebuild.
 
-The acknowledgement is bound to the policy version, embedding identity, and current document generation. If documents, provider, model, dimension, chunk profile, or policy change, QMD stops and requires a new preflight. A dimension or identity change also requires separate destructive authorization because `vectors_vec` can store only one dimension:
+`vectors_vec` can store only one dimension. A dimension or identity change requires a forced rebuild:
 
 ```sh
-qmd embed --force --allow-remote
+qmd embed --force
 ```
 
-Remote document chunks use deterministic UTF-8 byte windows. Query embedding is allowed only when the same identity is `ready` and compatible vectors exist; a vector or hybrid query then sends the formatted query text to the configured remote provider. After an authorized identity reset deletes the old vectors, there is no vector rollback; lexical search remains available while rebuilding. `qmd status` and `qmd doctor` report provider/model/dimension, short fingerprint, key presence as a boolean, acknowledgement, pending/inconsistent chunks, CJK channel readiness, and actionable repair commands. See `docs/architecture-cjk-remote-provider.md` for the state machines and data-disclosure boundary.
+Remote document chunks use deterministic UTF-8 byte windows. Query embedding is allowed only when the same identity is `ready` and compatible vectors exist; a vector or hybrid query then sends the formatted query text to the configured remote provider. After a vector reset deletes the old vectors, there is no vector rollback; lexical search remains available while rebuilding. `qmd status` and `qmd doctor` report provider/model/dimension, short fingerprint, key presence as a boolean, pending/inconsistent chunks, CJK channel readiness, and actionable repair commands. See `docs/architecture-cjk-remote-provider.md` for the state machines and data-disclosure boundary.
 
 ### CJK Lexical Search, Expansion, and Dictionary Maintenance
 
