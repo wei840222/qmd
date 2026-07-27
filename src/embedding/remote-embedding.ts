@@ -101,7 +101,7 @@ export function authorizeRemoteEmbeddingRequest(
   if (purpose === "index-build") {
     const now = context.now ?? Date.now();
     if (!context.lease
-      || state?.status !== "building"
+      || (state?.status !== "building" && state?.status !== "ready")
       || state.fingerprint !== identity.fingerprint
       || state.generation !== context.lease.generation
       || state.lease_owner !== context.lease.ownerId

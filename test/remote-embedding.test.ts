@@ -57,8 +57,11 @@ describe("remote embeddings without consent gates", () => {
       expect(store).not.toHaveProperty("probeRemoteEmbedding");
 
       await expect(store.embed()).resolves.toMatchObject({ docsProcessed: 1, errors: 0 });
-      await expect(store.embed({ force: true })).resolves.toMatchObject({ docsProcessed: 1, errors: 0 });
-      expect(fetch).toHaveBeenCalledTimes(2);
+      await writeFile(join(documents, "guide2.md"), "# Remote guide 2\n\nMore remote content.");
+      await store.update();
+      await expect(store.embed()).resolves.toMatchObject({ docsProcessed: 1, errors: 0 });
+      await expect(store.embed({ force: true })).resolves.toMatchObject({ docsProcessed: 2, errors: 0 });
+      expect(fetch).toHaveBeenCalledTimes(3);
       expect(store.internal.db.prepare(`
         SELECT name FROM sqlite_master WHERE name = 'remote_embedding_consents'
       `).get()).toBeFalsy();

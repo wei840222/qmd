@@ -2483,6 +2483,39 @@ export async function generateEmbeddings(
   let embeddingLease: EmbeddingBuildLease | undefined;
   let embeddingIdentity: EmbeddingIdentity | undefined;
 
+  const acquireEmbeddingLease = (
+    identity: EmbeddingIdentity,
+    policy: {
+      allowDestructiveRebuild: boolean;
+      requireForceForIdentityChange?: boolean;
+    },
+  ): void => {
+    if (embeddingLease) return;
+    const indexStatus = inspectEmbeddingIndexState(db, identity).status;
+    if (options?.collection && (indexStatus === "mismatch" || indexStatus === "incompatible")) {
+      throw new EmbeddingIdentityStateError(
+        "IDENTITY_MISMATCH",
+        "Embedding identity changes cannot be collection-scoped because the vector payload is global.",
+      );
+    }
+    if (identity.remote && options?.collection && options.force) {
+      throw new EmbeddingIdentityStateError(
+        "IDENTITY_MISMATCH",
+        "Remote destructive embedding rebuilds cannot be collection-scoped.",
+      );
+    }
+    embeddingLease = beginEmbeddingBuild(db, identity, {
+      ownerId: randomUUID(),
+      now: Date.now(),
+      leaseMs: EMBEDDING_BUILD_LEASE_MS,
+      allowDestructiveRebuild: policy.allowDestructiveRebuild,
+      forceRebuild: options?.force === true && !options.collection,
+      requireForceForIdentityChange: policy.requireForceForIdentityChange,
+
+    });
+    embeddingIdentity = identity;
+    fingerprint = identity.fingerprint;
+  };
   const acquireProviderLease = async (
     dimension: number,
     canonicalMaterial?: string,
@@ -2498,32 +2531,10 @@ export async function generateEmbeddings(
         chunkStrategy,
       ),
     });
-    const indexStatus = inspectEmbeddingIndexState(db, identity).status;
-    if (options?.collection && (indexStatus === "mismatch" || indexStatus === "incompatible")) {
-      throw new EmbeddingIdentityStateError(
-        "IDENTITY_MISMATCH",
-        "Embedding identity changes cannot be collection-scoped because the vector payload is global.",
-      );
-    }
-    if (provider.remote && options?.collection && options.force) {
-      throw new EmbeddingIdentityStateError(
-        "IDENTITY_MISMATCH",
-        "Remote destructive embedding rebuilds cannot be collection-scoped.",
-      );
-    }
-    embeddingLease = beginEmbeddingBuild(db, identity, {
-      ownerId: randomUUID(),
-      now: Date.now(),
-      leaseMs: EMBEDDING_BUILD_LEASE_MS,
-      allowDestructiveRebuild: provider.remote
-        ? options?.force === true
-        : true,
-      forceRebuild: options?.force === true && !options.collection,
+    acquireEmbeddingLease(identity, {
+      allowDestructiveRebuild: provider.remote ? options?.force === true : true,
       requireForceForIdentityChange: provider.remote,
-
     });
-    embeddingIdentity = identity;
-    fingerprint = identity.fingerprint;
   };
   const acquireLocalLease = (dimension: number): void => {
     if (provider || embeddingLease) return;
@@ -2537,22 +2548,7 @@ export async function generateEmbeddings(
         chunkStrategy,
       ),
     });
-    const indexStatus = inspectEmbeddingIndexState(db, identity).status;
-    if (options?.collection && (indexStatus === "mismatch" || indexStatus === "incompatible")) {
-      throw new EmbeddingIdentityStateError(
-        "IDENTITY_MISMATCH",
-        "Embedding identity changes cannot be collection-scoped because the vector payload is global.",
-      );
-    }
-    embeddingLease = beginEmbeddingBuild(db, identity, {
-      ownerId: randomUUID(),
-      now: Date.now(),
-      leaseMs: EMBEDDING_BUILD_LEASE_MS,
-      allowDestructiveRebuild: true,
-      forceRebuild: options?.force === true && !options.collection,
-    });
-    embeddingIdentity = identity;
-    fingerprint = identity.fingerprint;
+    acquireEmbeddingLease(identity, { allowDestructiveRebuild: true });
   };
   if (provider?.dimension === null && provider.canonicalIdentityMaterialForDimension) {
     const storedIdentity = readStoredEmbeddingIdentity(db);
@@ -3380,12 +3376,13 @@ export type IndexStatus = {
 // Index health
 // =============================================================================
 
-export function getHashesNeedingEmbedding(db: Database, collection?: string, model: string = DEFAULT_EMBED_MODEL): number {
+export function getHashesNeedingEmbedding(db: Database, collection?: string, model?: string): number {
   const collectionFilter = collection ? `AND d.collection = ?` : ``;
   const storedIdentity = readStoredEmbeddingIdentity(db);
-  const fingerprint = storedIdentity?.model === model
+  const effectiveModel = model ?? storedIdentity?.model ?? DEFAULT_EMBED_MODEL;
+  const fingerprint = storedIdentity?.model === effectiveModel
     ? storedIdentity.fingerprint
-    : getEmbeddingFingerprint(model);
+    : getEmbeddingFingerprint(effectiveModel);
   return withLazyContentVectorMigration(db, () => {
     const stmt = db.prepare(`
       SELECT COUNT(DISTINCT d.hash) as count
@@ -3400,7 +3397,7 @@ export function getHashesNeedingEmbedding(db: Database, collection?: string, mod
         AND (v.hash IS NULL OR v.chunk_count < v.expected_chunks)
         ${collectionFilter}
     `);
-    const result = (collection ? stmt.get(model, fingerprint, collection) : stmt.get(model, fingerprint)) as { count: number };
+    const result = (collection ? stmt.get(effectiveModel, fingerprint, collection) : stmt.get(effectiveModel, fingerprint)) as { count: number };
     return result.count;
   });
 }
