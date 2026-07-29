@@ -342,9 +342,13 @@ export function writeCanonicalEmbeddingConfig(
     "canonical embedding config",
     true,
   );
+  const newValue = JSON.stringify(canonical);
+  const existing = db.prepare(`SELECT value FROM store_config WHERE key = ?`).get(EMBEDDING_CONFIG_DB_KEY) as { value: string } | undefined;
+  if (existing?.value === newValue) return;
+
   db.prepare(`
     INSERT INTO store_config(key, value)
     VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
-  `).run(EMBEDDING_CONFIG_DB_KEY, JSON.stringify(canonical));
+  `).run(EMBEDDING_CONFIG_DB_KEY, newValue);
 }

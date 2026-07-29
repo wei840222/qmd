@@ -1619,6 +1619,29 @@ export function syncConfigToDb(db: Database, config: CollectionConfig): ConfigSy
   const configJson = JSON.stringify(config);
   const hash = createHash('sha256').update(configJson).digest('hex');
 
+  // Avoid write transaction if DB collections and global context already match external config
+  const existingHash = db.prepare(`SELECT value FROM store_config WHERE key = 'config_hash'`).get() as { value: string } | null | undefined;
+  if (existingHash?.value === hash) {
+    const dbRows = db.prepare(`SELECT * FROM store_collections`).all() as StoreCollectionRow[];
+    const configNames = Object.keys(config.collections);
+    if (dbRows.length === configNames.length) {
+      const rowsByName = new Map(dbRows.map(row => [row.name, row]));
+      const allMatch = configNames.every(name => {
+        const row = rowsByName.get(name);
+        return row && storeCollectionMatchesConfig(row, config.collections[name]!);
+      });
+      const currentGlobalContext = getStoreGlobalContext(db);
+      if (allMatch && currentGlobalContext === config.global_context) {
+        return {
+          configHashChanged: false,
+          reconciled: false,
+          collections: { added: [], updated: [], removed: [] },
+          globalContextUpdated: false,
+        };
+      }
+    }
+  }
+
   const reconcile = db.transaction((): ConfigSyncDiagnostic => {
     const existingHash = db.prepare(`SELECT value FROM store_config WHERE key = 'config_hash'`).get() as { value: string } | null | undefined;
     const dbRows = db.prepare(`SELECT * FROM store_collections`).all() as StoreCollectionRow[];
