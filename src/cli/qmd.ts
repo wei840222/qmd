@@ -2038,20 +2038,24 @@ function parseEmbedTimeoutOption(value: unknown): number | undefined {
 function ensureModelsConfiguredForCli(): { embed: string; generate: string; rerank: string } {
   try {
     const config = loadConfig();
-    const models = resolveModels(config.models);
     const current = config.models ?? {};
-    if (current.embed !== models.embed || current.generate !== models.generate || current.rerank !== models.rerank) {
+    const defaultLocalModels = {
+      embed: current.embed || process.env.QMD_EMBED_MODEL || DEFAULT_EMBED_MODEL,
+      generate: current.generate || process.env.QMD_GENERATE_MODEL || DEFAULT_QUERY_MODEL,
+      rerank: current.rerank || process.env.QMD_RERANK_MODEL || DEFAULT_RERANK_MODEL,
+    };
+    if (current.embed !== defaultLocalModels.embed || current.generate !== defaultLocalModels.generate || current.rerank !== defaultLocalModels.rerank) {
       saveConfig({
         ...config,
         models: {
           ...current,
-          embed: models.embed,
-          generate: models.generate,
-          rerank: models.rerank,
+          embed: defaultLocalModels.embed,
+          generate: defaultLocalModels.generate,
+          rerank: defaultLocalModels.rerank,
         },
       });
     }
-    return models;
+    return resolveModels(config.models);
   } catch {
     return resolveModels();
   }
@@ -3862,6 +3866,11 @@ function checkModelCache(activeModels: { embed: string; generate: string; rerank
   const invalid: string[] = [];
   for (const [model, roles] of unique) {
     const label = `${roles.join("+")}: ${model}`;
+    const isRemoteApi = !model.startsWith("hf:") && !existsSync(model) && !model.endsWith(".gguf");
+    if (isRemoteApi) {
+      cached.push(`${label} (remote API)`);
+      continue;
+    }
     const inspection = findCachedModelInspection(model);
     invalid.push(...inspection.invalid.map(detail => `${label} (${detail})`));
     if (inspection.path) {

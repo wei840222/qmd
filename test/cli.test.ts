@@ -644,6 +644,17 @@ describe("CLI Status Command", () => {
     expect(stdout).toContain("qmd pull --refresh");
   }, 20000);
 
+  test("qmd status displays configured API models for embedding, reranking, and generation", async () => {
+    const env = await createIsolatedTestEnv("status-api-models");
+    await writeFile(join(env.configDir, "index.yml"), `collections: {}\nmodels:\n  embed_api_url: https://api.example.com/v1\n  embed_api_model: text-embedding-3-small\n  generate_api_url: https://api.example.com/v1\n  generate_api_model: gemini-2.5-flash-lite\n  rerank_api_url: https://api.example.com/v1\n  rerank_api_model: gemini-2.5-flash-lite\n`);
+
+    const { stdout, exitCode } = await runQmd(["status"], { dbPath: env.dbPath, configDir: env.configDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Embedding:   text-embedding-3-small");
+    expect(stdout).toContain("Reranking:   gemini-2.5-flash-lite");
+    expect(stdout).toContain("Generation:  gemini-2.5-flash-lite");
+  }, 20000);
+
   test("qmd doctor ignores .etag sidecars beside a valid cached model", async () => {
     // `qmd pull` writes a `<filename>.etag` HTTP sidecar next to each model
     // blob. That sidecar matches the model-cache lookup's `includes(filename)`

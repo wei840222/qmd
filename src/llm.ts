@@ -270,21 +270,35 @@ export type ModelResolutionConfig = {
   embed?: string;
   generate?: string;
   rerank?: string;
+  embed_api_model?: string;
+  generate_api_model?: string;
+  rerank_api_model?: string;
+  embed_api_url?: string;
+  generate_api_url?: string;
+  generate_url?: string;
+  generate_base_url?: string;
+  rerank_api_url?: string;
+  rerank_url?: string;
+  rerank_base_url?: string;
+  [key: string]: any;
 };
 
 export function resolveEmbedModel(config?: ModelResolutionConfig): string {
+  if (config?.embed_api_model) return config.embed_api_model;
   return config?.embed || process.env.QMD_EMBED_MODEL || DEFAULT_EMBED_MODEL;
 }
 
 export function resolveGenerateModel(config?: ModelResolutionConfig): string {
+  if (config?.generate_api_model) return config.generate_api_model;
   return config?.generate || process.env.QMD_GENERATE_MODEL || DEFAULT_GENERATE_MODEL;
 }
 
 export function resolveRerankModel(config?: ModelResolutionConfig): string {
+  if (config?.rerank_api_model) return config.rerank_api_model;
   return config?.rerank || process.env.QMD_RERANK_MODEL || DEFAULT_RERANK_MODEL;
 }
 
-export function resolveModels(config?: ModelResolutionConfig): Required<ModelResolutionConfig> {
+export function resolveModels(config?: ModelResolutionConfig): Required<Pick<ModelResolutionConfig, "embed" | "generate" | "rerank">> {
   return {
     embed: resolveEmbedModel(config),
     generate: resolveGenerateModel(config),
