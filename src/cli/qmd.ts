@@ -647,7 +647,11 @@ async function showStatus(): Promise<void> {
   const diagnostics = inspectIndexDiagnostics(db, {
     fallbackModel: statusEmbedding.model,
     provider: statusEmbedding.provider === "openai"
-      ? new UnavailableOpenAIEmbeddingProvider()
+      ? new UnavailableOpenAIEmbeddingProvider({
+          model: statusEmbedding.model as any,
+          dimension: statusEmbedding.dimension ?? undefined,
+          baseUrl: statusEmbedding.baseUrl,
+        })
       : undefined,
     keyConfigured: Boolean(process.env.OPENAI_API_KEY?.trim()),
     configuredProvider: {
@@ -4175,7 +4179,11 @@ async function showDoctor(): Promise<void> {
   const diagnostics = inspectIndexDiagnostics(db, {
     fallbackModel: embedModel,
     provider: doctorEmbedding.provider === "openai"
-      ? new UnavailableOpenAIEmbeddingProvider()
+      ? new UnavailableOpenAIEmbeddingProvider({
+          model: doctorEmbedding.model as any,
+          dimension: doctorEmbedding.dimension ?? undefined,
+          baseUrl: doctorEmbedding.baseUrl,
+        })
       : undefined,
     keyConfigured: Boolean(process.env.OPENAI_API_KEY?.trim()),
     configuredProvider: {
