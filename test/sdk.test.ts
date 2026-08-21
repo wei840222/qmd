@@ -1366,8 +1366,8 @@ describe("embed", () => {
       await store.update();
       await store.embed();
       store.internal.db.prepare(`
-        INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)
-      `).run("orphan_0", new Float32Array(initialProvider.dimension));
+        INSERT INTO vectors_vec (hash_seq, collection, embedding) VALUES (?, ?, ?)
+      `).run("orphan_0", "docs", new Float32Array(initialProvider.dimension));
 
       const repairProvider = createFakeEmbedProvider();
       store.internal.embeddingProvider = repairProvider;
@@ -1420,8 +1420,8 @@ describe("embed", () => {
         VALUES (?, 1, 0, ?, ?, 1, ?)
       `).run(row.hash, row.model, row.fingerprint, row.embeddedAt);
       store.internal.db.prepare(`
-        INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)
-      `).run(`${row.hash}_1`, new Float32Array(initialProvider.dimension));
+        INSERT INTO vectors_vec (hash_seq, collection, embedding) VALUES (?, ?, ?)
+      `).run(`${row.hash}_1`, "docs", new Float32Array(initialProvider.dimension));
 
       const repairProvider = createFakeEmbedProvider();
       store.internal.embeddingProvider = repairProvider;

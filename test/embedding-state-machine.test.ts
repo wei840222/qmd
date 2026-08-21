@@ -56,8 +56,9 @@ function insertCorruptEmbedding(
     INSERT INTO content_vectors(hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
     VALUES (?, 0, 0, ?, ?, 1, ?)
   `).run(hash, model, fingerprint, embeddedAt);
-  store.db.prepare(`INSERT INTO vectors_vec(hash_seq, embedding) VALUES (?, ?)`)
-    .run(`${hash}_0`, vector);
+  const collection = (store.db.prepare(`SELECT collection FROM documents WHERE hash = ? AND active = 1 LIMIT 1`).get(hash) as { collection?: string } | undefined)?.collection ?? "";
+  store.db.prepare(`INSERT INTO vectors_vec(hash_seq, collection, embedding) VALUES (?, ?, ?)`)
+    .run(`${hash}_0`, collection, vector);
 }
 
 function remoteIdentity(model = "text-embedding-3-small", dimension = 1_536) {

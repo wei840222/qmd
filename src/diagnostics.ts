@@ -206,18 +206,16 @@ function inspectEmbeddingDiagnostics(
   let pendingDocuments = activeDocs;
   if (hasMetadata) {
     if (vectorsReadable) {
-      metadataOnly = Number((db.prepare(`
-        SELECT COUNT(*) AS count
-        FROM content_vectors cv
-        LEFT JOIN vectors_vec vv ON vv.hash_seq = cv.hash || '_' || cv.seq
-        WHERE vv.hash_seq IS NULL
-      `).get() as { count: number }).count);
-      vectorOnly = Number((db.prepare(`
-        SELECT COUNT(*) AS count
-        FROM vectors_vec vv
-        LEFT JOIN content_vectors cv ON vv.hash_seq = cv.hash || '_' || cv.seq
-        WHERE cv.hash IS NULL
-      `).get() as { count: number }).count);
+      const cvRows = db.prepare(`SELECT hash, seq FROM content_vectors`).all() as Array<{ hash: string; seq: number }>;
+      const vvRows = db.prepare(`SELECT hash_seq FROM vectors_vec`).all() as Array<{ hash_seq: string }>;
+      const vvKeys = new Set(vvRows.map(r => r.hash_seq));
+      const cvKeys = new Set(cvRows.map(r => `${r.hash}_${r.seq}`));
+      for (const cv of cvRows) {
+        if (!vvKeys.has(`${cv.hash}_${cv.seq}`)) metadataOnly++;
+      }
+      for (const vv of vvRows) {
+        if (!cvKeys.has(vv.hash_seq)) vectorOnly++;
+      }
     }
     if (hasLayouts) {
       incompleteLayouts = Number((db.prepare(`
@@ -236,7 +234,6 @@ function inspectEmbeddingDiagnostics(
         LEFT JOIN (
           SELECT cv.hash
           FROM content_vectors cv
-          ${vectorsReadable ? "JOIN vectors_vec vv ON vv.hash_seq = cv.hash || '_' || cv.seq" : ""}
           WHERE cv.model = ? AND cv.embed_fingerprint = ?
           GROUP BY cv.hash
           HAVING COUNT(*) = MAX(cv.total_chunks)

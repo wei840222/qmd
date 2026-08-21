@@ -619,8 +619,8 @@ describe.skipIf(!!process.env.CI)("Store embedding provider seam", () => {
         ) VALUES (?, 0, 0, ?, 'stale-fingerprint', 1, ?)
       `).run("hash-stale", provider.model, now);
       store.db.prepare(`
-        INSERT INTO vectors_vec(hash_seq, embedding) VALUES (?, ?)
-      `).run("hash-stale_0", new Float32Array([0.1, 0.2, 0.3]));
+        INSERT INTO vectors_vec(hash_seq, collection, embedding) VALUES (?, ?, ?)
+      `).run("hash-stale_0", "docs", new Float32Array([0.1, 0.2, 0.3]));
       embed.mockClear();
       const vectorResults = await store.searchVec("cache invalidation", provider.model);
       const activeIdentity = store.db.prepare(`

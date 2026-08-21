@@ -165,8 +165,9 @@ function insertCorruptEmbeddingFixture(
       (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
     VALUES (?, 0, 0, ?, ?, 1, ?)
   `).run(hash, model, fingerprint, embeddedAt);
-  store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`)
-    .run(`${hash}_0`, embedding);
+  const collection = (store.db.prepare(`SELECT collection FROM documents WHERE hash = ? AND active = 1 LIMIT 1`).get(hash) as { collection?: string } | undefined)?.collection ?? "";
+  store.db.prepare(`INSERT INTO vectors_vec (hash_seq, collection, embedding) VALUES (?, ?, ?)`)
+    .run(`${hash}_0`, collection, embedding);
 }
 
 function publishVectorFixtures(
@@ -3552,11 +3553,11 @@ describe("Vector Table", () => {
     const now = new Date().toISOString();
     const { identity, lease } = beginEmbeddingFixture(store, "test-model", 2);
 
-    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, first);
+    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, collection, embedding) VALUES (?, ?, ?)`).run(`${hash}_0`, "test", first);
 
     // Reproduces sqlite-vec's broken conflict handling: vec0 does not honor OR REPLACE.
     expect(() => {
-      store.db.prepare(`INSERT OR REPLACE INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, second);
+      store.db.prepare(`INSERT OR REPLACE INTO vectors_vec (hash_seq, collection, embedding) VALUES (?, ?, ?)`).run(`${hash}_0`, "test", second);
     }).toThrow(/UNIQUE constraint failed/i);
 
     // QMD must therefore use DELETE + INSERT when upserting the vector row.

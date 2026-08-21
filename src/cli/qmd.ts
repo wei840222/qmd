@@ -760,7 +760,12 @@ async function showStatus(): Promise<void> {
   if (diagnostics.embedding.repairCommand) console.log(`  Repair:   ${diagnostics.embedding.repairCommand}`);
 
   console.log(`\n${c.bold}CJK Lexical${c.reset}`);
-  console.log(`  Jieba:    ${diagnostics.lexical.jiebaCapability}`);
+  const jiebaDisplay = diagnostics.lexical.jiebaCapability === "available"
+    ? `${c.green}active${c.reset}`
+    : diagnostics.lexical.jiebaCapability === "unavailable"
+      ? `${c.yellow}unavailable${c.reset}`
+      : `${c.dim}${diagnostics.lexical.jiebaCapability}${c.reset}`;
+  console.log(`  Jieba:    ${jiebaDisplay}`);
   console.log(`  Analyzer: ${diagnostics.lexical.analyzerFingerprint.slice(0, 12)} (${diagnostics.lexical.state})`);
   console.log(`  Channels: char=${diagnostics.lexical.channels.char}, word=${diagnostics.lexical.channels.word}, bigram=${diagnostics.lexical.channels.bigram}`);
   if (diagnostics.lexical.rebuildReason) console.log(`  Reason:   ${diagnostics.lexical.rebuildReason}`);
@@ -4152,15 +4157,40 @@ function checkEnvironmentOverrides(activeModels: { embed: string; generate: stri
   }
 }
 
-function checkModelDefaults(activeModels: { embed: string; generate: string; rerank: string }, configModels: ModelsConfig = {}): void {
+function checkModelDefaults(
+  activeModels: { embed: string; generate: string; rerank: string },
+  configModels: ModelsConfig = {},
+  doctorEmbedding?: { provider: string },
+): void {
+  const isRemoteEmbed = Boolean(
+    doctorEmbedding?.provider === "openai"
+    || configModels.embed_api_url
+    || configModels.embed_base_url
+    || configModels.embed_url
+    || configModels.embed_api_model,
+  );
+  const isRemoteGen = Boolean(
+    configModels.generate_api_url
+    || configModels.generate_base_url
+    || configModels.generate_url
+    || configModels.generate_api_model,
+  );
+  const isRemoteRerank = Boolean(
+    configModels.rerank_api_url
+    || configModels.rerank_base_url
+    || configModels.rerank_url
+    || configModels.rerank_api_model,
+  );
+
   const checks = [
-    { role: "embedding", key: "embed", active: activeModels.embed, configured: configModels.embed, defaultModel: DEFAULT_EMBED_MODEL, envName: "QMD_EMBED_MODEL", envValue: process.env.QMD_EMBED_MODEL },
-    { role: "generation", key: "generate", active: activeModels.generate, configured: configModels.generate, defaultModel: DEFAULT_QUERY_MODEL, envName: "QMD_GENERATE_MODEL", envValue: process.env.QMD_GENERATE_MODEL },
-    { role: "reranking", key: "rerank", active: activeModels.rerank, configured: configModels.rerank, defaultModel: DEFAULT_RERANK_MODEL, envName: "QMD_RERANK_MODEL", envValue: process.env.QMD_RERANK_MODEL },
+    { role: "embedding", key: "embed", isRemote: isRemoteEmbed, active: activeModels.embed, configured: configModels.embed, defaultModel: DEFAULT_EMBED_MODEL, envName: "QMD_EMBED_MODEL", envValue: process.env.QMD_EMBED_MODEL },
+    { role: "generation", key: "generate", isRemote: isRemoteGen, active: activeModels.generate, configured: configModels.generate, defaultModel: DEFAULT_QUERY_MODEL, envName: "QMD_GENERATE_MODEL", envValue: process.env.QMD_GENERATE_MODEL },
+    { role: "reranking", key: "rerank", isRemote: isRemoteRerank, active: activeModels.rerank, configured: configModels.rerank, defaultModel: DEFAULT_RERANK_MODEL, envName: "QMD_RERANK_MODEL", envValue: process.env.QMD_RERANK_MODEL },
   ] as const;
 
   const notes: string[] = [];
   for (const check of checks) {
+    if (check.isRemote) continue;
     const envValue = check.envValue?.trim();
     if (envValue && check.active === envValue) {
       notes.push(`${check.role}: env ${check.envName}=${check.active} (default ${check.defaultModel}; might be ok)`);
@@ -4510,8 +4540,54 @@ async function showDoctor(): Promise<void> {
   }
   const configModels = configCheck.config?.models ?? {};
   checkEnvironmentOverrides(activeModels, configModels);
-  checkModelDefaults(activeModels, configModels);
+  checkModelDefaults(activeModels, configModels, doctorEmbedding);
   checkModelCache(activeModels, nextSteps);
+
+  const isRemoteEmbed = Boolean(
+    doctorEmbedding.provider === "openai"
+    || configModels.embed_api_url
+    || configModels.embed_base_url
+    || configModels.embed_url
+    || configModels.embed_api_model,
+  );
+  if (isRemoteEmbed) {
+    const embedEndpoint = (doctorEmbedding.provider === "openai" ? doctorEmbedding.baseUrl : undefined)
+      ?? configModels.embed_api_url
+      ?? configModels.embed_base_url
+      ?? configModels.embed_url
+      ?? (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1");
+    doctorCheck("openai embedding", true, `${doctorEmbedding.model} (endpoint: ${embedEndpoint})`);
+  }
+
+  const isRemoteGen = Boolean(
+    configModels.generate_api_url
+    || configModels.generate_base_url
+    || configModels.generate_url
+    || configModels.generate_api_model,
+  );
+  if (isRemoteGen) {
+    const genEndpoint = configModels.generate_api_url
+      ?? configModels.generate_base_url
+      ?? configModels.generate_url
+      ?? (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1");
+    const genModel = configModels.generate_api_model ?? activeModels.generate;
+    doctorCheck("query expansion", true, `${genModel} (endpoint: ${genEndpoint})`);
+  }
+
+  const isRemoteRerank = Boolean(
+    configModels.rerank_api_url
+    || configModels.rerank_base_url
+    || configModels.rerank_url
+    || configModels.rerank_api_model,
+  );
+  if (isRemoteRerank) {
+    const rerankEndpoint = configModels.rerank_api_url
+      ?? configModels.rerank_base_url
+      ?? configModels.rerank_url
+      ?? (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1");
+    const rerankModel = configModels.rerank_api_model ?? activeModels.rerank;
+    doctorCheck("reranking model", true, `${rerankModel} (endpoint: ${rerankEndpoint})`);
+  }
 
   await runDoctorDeviceChecks(nextSteps);
 

@@ -12,7 +12,7 @@
  */
 
 import { openDatabase, openReadOnlyDatabase, loadSqliteVec } from "./db.js";
-import type { Database } from "./db.js";
+import type { Database, SQLiteValue } from "./db.js";
 import type { EmbeddingProvider } from "./embedding/provider.js";
 import { chunkRemoteDocumentByUtf8Bytes } from "./embedding/remote-chunking.js";
 import {
@@ -1950,18 +1950,48 @@ function ensureVecTableInternal(db: Database, dimensions: number): void {
   if (tableInfo) {
     const match = tableInfo.sql.match(/float\[(\d+)\]/);
     const hasHashSeq = tableInfo.sql.includes('hash_seq');
+    const hasCollection = tableInfo.sql.includes('collection');
     const hasCosine = tableInfo.sql.includes('distance_metric=cosine');
     const existingDims = match?.[1] ? parseInt(match[1], 10) : null;
-    if (existingDims === dimensions && hasHashSeq && hasCosine) return;
+    if (existingDims === dimensions && hasHashSeq && hasCollection && hasCosine) return;
     if (existingDims !== null && existingDims !== dimensions) {
       throw new Error(
         `Embedding dimension mismatch: existing vectors are ${existingDims}d but the current model produces ${dimensions}d. ` +
         `Run 'qmd embed -f' to re-embed with the new model.`
       );
     }
-    db.exec("DROP TABLE IF EXISTS vectors_vec");
+    // Auto-migrate if collection column is missing
+    if (!hasCollection && existingDims === dimensions && hasHashSeq) {
+      try {
+        db.exec("CREATE TEMP TABLE _qmd_migrate_vecs (hash_seq TEXT, embedding BLOB)");
+        db.exec("INSERT INTO _qmd_migrate_vecs SELECT hash_seq, embedding FROM vectors_vec");
+        db.exec("DROP TABLE vectors_vec");
+        db.exec(`CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, collection TEXT, embedding float[${dimensions}] distance_metric=cosine)`);
+        db.exec(`
+          INSERT INTO vectors_vec (hash_seq, collection, embedding)
+          SELECT
+            t.hash_seq,
+            COALESCE((
+              SELECT d.collection
+              FROM content_vectors cv
+              JOIN documents d ON d.hash = cv.hash AND d.active = 1
+              WHERE (cv.hash || '_' || cv.seq) = t.hash_seq
+              LIMIT 1
+            ), ''),
+            t.embedding
+          FROM _qmd_migrate_vecs t
+        `);
+        db.exec("DROP TABLE IF EXISTS _qmd_migrate_vecs");
+        return;
+      } catch {
+        db.exec("DROP TABLE IF EXISTS _qmd_migrate_vecs");
+        db.exec("DROP TABLE IF EXISTS vectors_vec");
+      }
+    } else {
+      db.exec("DROP TABLE IF EXISTS vectors_vec");
+    }
   }
-  db.exec(`CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[${dimensions}] distance_metric=cosine)`);
+  db.exec(`CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, collection TEXT, embedding float[${dimensions}] distance_metric=cosine)`);
 }
 
 // =============================================================================
@@ -2391,15 +2421,6 @@ export function getPendingEmbeddingDocs(
 ): PendingEmbeddingDoc[] {
   const collectionFilter = collection ? `AND d.collection = ?` : ``;
   return withLazyContentVectorMigration(db, () => {
-    const hasVectorTable = db.prepare(`
-      SELECT 1
-      FROM sqlite_master
-      WHERE type = 'table' AND name = 'vectors_vec'
-    `).get() != null;
-    const vectorJoin = hasVectorTable
-      ? `LEFT JOIN vectors_vec vv ON vv.hash_seq = (cv.hash || '_' || cv.seq)`
-      : ``;
-    const pairedVectorCount = hasVectorTable ? `COUNT(vv.hash_seq)` : `0`;
     const stmt = db.prepare(`
       SELECT d.hash, MIN(d.path) as path, length(CAST(c.doc AS BLOB)) as bytes
       FROM documents d
@@ -2408,13 +2429,11 @@ export function getPendingEmbeddingDocs(
         SELECT
           cv.hash,
           COUNT(*) AS metadata_count,
-          ${pairedVectorCount} AS vector_count,
           MIN(cv.total_chunks) AS min_expected_chunks,
           MAX(cv.total_chunks) AS max_expected_chunks,
           MIN(cv.seq) AS min_seq,
           MAX(cv.seq) AS max_seq
         FROM content_vectors cv
-        ${vectorJoin}
         WHERE cv.model = ? AND cv.embed_fingerprint = ?
         GROUP BY cv.hash
       ) v ON d.hash = v.hash
@@ -2424,7 +2443,6 @@ export function getPendingEmbeddingDocs(
           OR v.min_expected_chunks IS NULL
           OR v.min_expected_chunks != v.max_expected_chunks
           OR v.metadata_count != v.max_expected_chunks
-          OR v.vector_count != v.max_expected_chunks
           OR v.min_seq != 0
           OR v.max_seq != v.max_expected_chunks - 1
         )
@@ -2462,26 +2480,16 @@ export function getPendingEmbeddingDocsReadOnly(
   }
 
   const collectionFilter = collection ? `AND d.collection = ?` : ``;
-  const hasVectorTable = db.prepare(`
-    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vectors_vec'
-  `).get() != null;
-  if (hasVectorTable) loadSqliteVec(db);
-  const vectorJoin = hasVectorTable
-    ? `LEFT JOIN vectors_vec vv ON vv.hash_seq = (cv.hash || '_' || cv.seq)`
-    : ``;
-  const pairedVectorCount = hasVectorTable ? `COUNT(vv.hash_seq)` : `0`;
   const stmt = db.prepare(`
     SELECT d.hash, MIN(d.path) as path, length(CAST(c.doc AS BLOB)) as bytes
     FROM documents d
     JOIN content c ON d.hash = c.hash
     LEFT JOIN (
       SELECT cv.hash, COUNT(*) AS metadata_count,
-        ${pairedVectorCount} AS vector_count,
         MIN(cv.total_chunks) AS min_expected_chunks,
         MAX(cv.total_chunks) AS max_expected_chunks,
         MIN(cv.seq) AS min_seq, MAX(cv.seq) AS max_seq
       FROM content_vectors cv
-      ${vectorJoin}
       WHERE cv.model = ? AND cv.embed_fingerprint = ?
       GROUP BY cv.hash
     ) v ON d.hash = v.hash
@@ -2490,7 +2498,6 @@ export function getPendingEmbeddingDocsReadOnly(
         v.hash IS NULL OR v.min_expected_chunks IS NULL
         OR v.min_expected_chunks != v.max_expected_chunks
         OR v.metadata_count != v.max_expected_chunks
-        OR v.vector_count != v.max_expected_chunks
         OR v.min_seq != 0 OR v.max_seq != v.max_expected_chunks - 1
       )
       ${collectionFilter}
@@ -2724,20 +2731,26 @@ export function finalizeEmbeddingBuild(
       WHERE model != ? OR embed_fingerprint != ?
       LIMIT 1
     `).get(model, fingerprint) != null;
-    const hasMetadataOnly = !vectorTableExists || db.prepare(`
-      SELECT 1
-      FROM content_vectors cv
-      LEFT JOIN vectors_vec vv ON vv.hash_seq = (cv.hash || '_' || cv.seq)
-      WHERE cv.model = ? AND cv.embed_fingerprint = ? AND vv.hash_seq IS NULL
-      LIMIT 1
-    `).get(model, fingerprint) != null;
-    const hasVectorOnly = vectorTableExists && db.prepare(`
-      SELECT 1
-      FROM vectors_vec vv
-      LEFT JOIN content_vectors cv ON vv.hash_seq = (cv.hash || '_' || cv.seq)
-      WHERE cv.hash IS NULL
-      LIMIT 1
-    `).get() != null;
+    let hasMetadataOnly = !vectorTableExists;
+    let hasVectorOnly = false;
+    if (vectorTableExists) {
+      const cvRows = db.prepare(`SELECT hash, seq FROM content_vectors WHERE model = ? AND embed_fingerprint = ?`).all(model, fingerprint) as Array<{ hash: string; seq: number }>;
+      const vvRows = db.prepare(`SELECT hash_seq FROM vectors_vec`).all() as Array<{ hash_seq: string }>;
+      const vvKeys = new Set(vvRows.map(r => r.hash_seq));
+      const cvKeys = new Set(cvRows.map(r => `${r.hash}_${r.seq}`));
+      for (const cv of cvRows) {
+        if (!vvKeys.has(`${cv.hash}_${cv.seq}`)) {
+          hasMetadataOnly = true;
+          break;
+        }
+      }
+      for (const vv of vvRows) {
+        if (!cvKeys.has(vv.hash_seq)) {
+          hasVectorOnly = true;
+          break;
+        }
+      }
+    }
     const hasPendingDocuments = getPendingEmbeddingDocs(
       db,
       undefined,
@@ -5595,112 +5608,90 @@ export async function searchVec(
 
   const collections = normalizeCollectionFilter(collectionFilter);
   const queryVec = embedding instanceof Float32Array ? embedding : new Float32Array(embedding);
-  const VEC_CHUNK = 400;
   const SQLITE_VEC_MAX_K = 4096;
 
-  let rankedDocs: Array<VectorMetaRow & { distance: number }>;
+  let collectionFilterSql = "";
+  const queryParams: SQLiteValue[] = [queryVec];
+  if (collections.length === 1) {
+    collectionFilterSql = "AND collection = ?";
+    queryParams.push(collections[0]!);
+  } else if (collections.length > 1) {
+    const placeholders = collections.map(() => "?").join(", ");
+    collectionFilterSql = `AND collection IN (${placeholders})`;
+    queryParams.push(...collections);
+  }
 
-  if (collections.length > 0) {
-    // 1. Scoped search: index-fetch only hash_seqs belonging to requested active collections and fingerprint
-    const collectionPlaceholders = collections.map(() => "?").join(", ");
-    const metaRows = withLazyContentVectorMigration(db, () => db.prepare(`
-      SELECT
-        cv.hash || '_' || cv.seq AS hash_seq,
-        cv.hash,
-        cv.pos,
-        'qmd://' || d.collection || '/' || d.path AS filepath,
-        d.collection || '/' || d.path AS display_path,
-        d.title,
-        d.collection
-      FROM content_vectors cv
-      JOIN documents d ON d.hash = cv.hash AND d.active = 1
-      WHERE cv.model = ?
-        AND cv.embed_fingerprint = ?
-        AND d.collection IN (${collectionPlaceholders})
-    `).all(model, activeFingerprint, ...collections) as VectorMetaRow[]);
+  // Request generous k to account for multi-chunk deduplication per document
+  const fetchK = Math.min(SQLITE_VEC_MAX_K, Math.max(limit * 15, 60));
+  queryParams.push(fetchK);
 
-    if (metaRows.length === 0) return [];
-
-    // 2. Exact-scan only the scoped keys in chunks (no JOIN with content or documents during distance calculation)
-    const distMap = new Map<string, number>();
-    for (let i = 0; i < metaRows.length; i += VEC_CHUNK) {
-      const chunk = metaRows.slice(i, i + VEC_CHUNK);
-      const keys = chunk.map(r => r.hash_seq);
-      const placeholders = keys.map(() => "?").join(", ");
-      const rows = db.prepare(`
-        SELECT hash_seq, vec_distance_cosine(embedding, ?) AS distance
+  let vecRows: Array<{ hash_seq: string; collection?: string; distance: number }>;
+  try {
+    vecRows = withLazyContentVectorMigration(db, () =>
+      db.prepare(`
+        SELECT hash_seq, collection, distance
         FROM vectors_vec
-        WHERE hash_seq IN (${placeholders})
-      `).all(queryVec, ...keys) as Array<{ hash_seq: string; distance: number }>;
-      for (const r of rows) {
-        distMap.set(r.hash_seq, r.distance);
-      }
-    }
+        WHERE embedding MATCH ?
+          ${collectionFilterSql}
+          AND k = ?
+      `).all(...queryParams) as Array<{ hash_seq: string; collection: string; distance: number }>
+    );
+  } catch {
+    // Fallback if table lacks collection column before migration
+    vecRows = withLazyContentVectorMigration(db, () =>
+      db.prepare(`
+        SELECT hash_seq, distance
+        FROM vectors_vec
+        WHERE embedding MATCH ?
+          AND k = ?
+      `).all(queryVec, fetchK) as Array<{ hash_seq: string; distance: number }>
+    );
+  }
 
-    // 3. Deduplicate by filepath keeping the best chunk (lowest distance)
-    const byFile = new Map<string, VectorMetaRow & { distance: number }>();
-    for (const m of metaRows) {
-      const dist = distMap.get(m.hash_seq);
-      if (dist === undefined) continue;
-      const prev = byFile.get(m.filepath);
-      if (!prev || dist < prev.distance || (dist === prev.distance && m.pos < prev.pos)) {
-        byFile.set(m.filepath, { ...m, distance: dist });
-      }
-    }
+  if (vecRows.length === 0) return [];
 
-    rankedDocs = Array.from(byFile.values())
-      .sort((a, b) => a.distance - b.distance || a.filepath.localeCompare(b.filepath))
-      .slice(0, limit);
-  } else {
-    // Global search: fast ANN match index scan with generous k
-    const annK = Math.max(limit * 30, 200);
-    const annRows = db.prepare(`
-      SELECT hash_seq, distance
-      FROM vectors_vec
-      WHERE embedding MATCH ? AND k = ?
-    `).all(queryVec, Math.min(SQLITE_VEC_MAX_K, annK)) as Array<{ hash_seq: string; distance: number }>;
+  const keys = vecRows.map(r => r.hash_seq);
+  const distMap = new Map(vecRows.map(r => [r.hash_seq, r.distance]));
+  const placeholders = keys.map(() => "?").join(", ");
 
-    if (annRows.length > 0) {
-      const distMap = new Map(annRows.map(r => [r.hash_seq, r.distance]));
-      const keys = annRows.map(r => r.hash_seq);
-      const placeholders = keys.map(() => "?").join(", ");
-      const metaRows = withLazyContentVectorMigration(db, () => db.prepare(`
-        SELECT
-          cv.hash || '_' || cv.seq AS hash_seq,
-          cv.hash,
-          cv.pos,
-          'qmd://' || d.collection || '/' || d.path AS filepath,
-          d.collection || '/' || d.path AS display_path,
-          d.title,
-          d.collection
-        FROM content_vectors cv
-        JOIN documents d ON d.hash = cv.hash AND d.active = 1
-        WHERE cv.model = ?
-          AND cv.embed_fingerprint = ?
-          AND (cv.hash || '_' || cv.seq) IN (${placeholders})
-      `).all(model, activeFingerprint, ...keys) as VectorMetaRow[]);
+  const collectionScope = collections.length > 0
+    ? `AND d.collection IN (${collections.map(() => "?").join(", ")})`
+    : "";
 
-      const byFile = new Map<string, VectorMetaRow & { distance: number }>();
-      for (const m of metaRows) {
-        const dist = distMap.get(m.hash_seq);
-        if (dist === undefined) continue;
-        const prev = byFile.get(m.filepath);
-        if (!prev || dist < prev.distance || (dist === prev.distance && m.pos < prev.pos)) {
-          byFile.set(m.filepath, { ...m, distance: dist });
-        }
-      }
+  const metaRows = withLazyContentVectorMigration(db, () => db.prepare(`
+    SELECT
+      cv.hash || '_' || cv.seq AS hash_seq,
+      cv.hash,
+      cv.pos,
+      'qmd://' || d.collection || '/' || d.path AS filepath,
+      d.collection || '/' || d.path AS display_path,
+      d.title,
+      d.collection
+    FROM content_vectors cv
+    JOIN documents d ON d.hash = cv.hash AND d.active = 1
+    WHERE cv.model = ?
+      AND cv.embed_fingerprint = ?
+      ${collectionScope}
+      AND (cv.hash || '_' || cv.seq) IN (${placeholders})
+  `).all(model, activeFingerprint, ...collections, ...keys) as VectorMetaRow[]);
 
-      rankedDocs = Array.from(byFile.values())
-        .sort((a, b) => a.distance - b.distance || a.filepath.localeCompare(b.filepath))
-        .slice(0, limit);
-    } else {
-      rankedDocs = [];
+  const byFile = new Map<string, VectorMetaRow & { distance: number }>();
+  for (const m of metaRows) {
+    const dist = distMap.get(m.hash_seq);
+    if (dist === undefined) continue;
+    const prev = byFile.get(m.filepath);
+    if (!prev || dist < prev.distance || (dist === prev.distance && m.pos < prev.pos)) {
+      byFile.set(m.filepath, { ...m, distance: dist });
     }
   }
 
+  const rankedDocs = Array.from(byFile.values())
+    .sort((a, b) => a.distance - b.distance || a.filepath.localeCompare(b.filepath))
+    .slice(0, limit);
+
   if (rankedDocs.length === 0) return [];
 
-  // 4. Lazy-fetch body content ONLY for the top winning documents
+  // Lazy-fetch body content ONLY for the top winning documents
   const winningHashes = Array.from(new Set(rankedDocs.map(d => d.hash)));
   const hashPlaceholders = winningHashes.map(() => "?").join(", ");
   const bodyMap = new Map(
@@ -5912,9 +5903,17 @@ export function insertEmbedding(
 
       // vec0 virtual tables don't support OR REPLACE — use DELETE + INSERT.
       const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
-      const insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
       deleteVecStmt.run(hashSeq);
-      insertVecStmt.run(hashSeq, embedding);
+
+      const hasCollectionCol = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get() as { sql?: string } | undefined;
+      if (hasCollectionCol?.sql?.includes("collection")) {
+        const docCollection = (db.prepare(`SELECT collection FROM documents WHERE hash = ? AND active = 1 LIMIT 1`).get(hash) as { collection?: string } | undefined)?.collection ?? "";
+        const insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, collection, embedding) VALUES (?, ?, ?)`);
+        insertVecStmt.run(hashSeq, docCollection, embedding);
+      } else {
+        const insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
+        insertVecStmt.run(hashSeq, embedding);
+      }
     })();
   });
 }

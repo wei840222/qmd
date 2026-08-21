@@ -375,8 +375,8 @@ describe("embedding partial resume persistence", () => {
         INSERT INTO content_vectors(hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
         VALUES (?, 0, 0, ?, ?, 1, ?)
       `).run("orphan-hash", "orphan-model", "abcdef", timestamp);
-      store.db.prepare(`INSERT INTO vectors_vec(hash_seq, embedding) VALUES (?, ?)`)
-        .run("orphan-hash_0", new Float32Array([1, 0, 0]));
+      store.db.prepare(`INSERT INTO vectors_vec(hash_seq, collection, embedding) VALUES (?, ?, ?)`)
+        .run("orphan-hash_0", "docs", new Float32Array([1, 0, 0]));
     })();
 
     expect(await searchVec(
