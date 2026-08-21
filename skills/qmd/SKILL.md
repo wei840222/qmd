@@ -184,20 +184,22 @@ output will start at `line`).
 
 ## Discover what is indexed
 
+Run `qmd status` or `qmd ls` to quickly discover available collections, indexed file counts, and model readiness (all run in sub-seconds):
+
 ```bash
-qmd collection list
-qmd ls
-qmd status
+qmd status            # check collection overview, document counts, and model health
+qmd collection list   # list registered collection paths
+qmd ls                # list collection virtual paths
 ```
 
-Add collection filters when broad searches drift into the wrong corpus:
+Always use collection filters (`-c <name>`) when searching specific topics to prevent cross-corpus drift and ensure fast, accurate results:
 
 ```bash
 qmd search "headcount autonomous agents" -c concepts -n 10
 qmd query "merchant support product reality" -c concepts -c sources -n 10
 ```
 
-Omit `-c` to search everything.
+> **Performance Tip for Agents:** Collection filters (`-c`) are natively indexed in both lexical and vector virtual tables. Scoping by collection guarantees millisecond search latency and avoids ranking dilution from unrelated collections. Omit `-c` only when searching across the entire workspace.
 
 ## MCP Tool: `query`
 
@@ -281,6 +283,8 @@ dictionary: ~/.config/qmd/dictionary.txt
 > **Smart URL Resolution & Reranker Endpoints:** Remote LLM URLs support `_url`, `_base_url`, and `_api_url` aliases. Given a Base URL (e.g. `https://api.example.com/v1`), QMD automatically appends `/chat/completions` or `/rerank`. Explicit endpoint URLs are preserved as-is. For reranking, QMD supports both dedicated Cross-Encoder endpoints (`/v1/rerank`) and general LLM endpoints (`/v1/chat/completions`) with strict JSON sanitization and prompt-tail Recency Enforcement.
 
 > **CLI & MCP Integration:** Remote LLM query expansion and LLM Chat Reranking are automatically wired into CLI (`qmd query`) and MCP. Query expansion automatically maintains language & script consistency matching the user query (e.g. Traditional Chinese queries produce Traditional Chinese `lex`, `vec`, and `hyde` variations).
+>
+> **Batch Embedding & Vector Indexing:** Embedding requests for both indexing and query expansion automatically use high-throughput Batch APIs with graceful per-item fallback. Vector search leverages native collection pre-filtering for sub-second query latency across large datasets.
 
 Health and diagnostics:
 

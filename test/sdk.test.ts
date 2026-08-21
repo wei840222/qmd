@@ -1214,7 +1214,7 @@ describe("embed", () => {
     }
   });
 
-  test("store.embed does not fan out a terminal remote batch failure", async () => {
+  test("store.embed falls back to individual items when remote batch fails", async () => {
     const store = await createStore({
       dbPath: freshDbPath(),
       config: {
@@ -1241,9 +1241,9 @@ describe("embed", () => {
 
     try {
       await store.update();
-      await expect(store.embed()).rejects.toMatchObject({ code: "RETRY_EXHAUSTED" });
-      expect(fakeProvider.embedBatchCalls).toHaveLength(0);
-      expect(singleCalls).toBe(0);
+      const result = await store.embed();
+      expect(result.chunksEmbedded).toBe(3);
+      expect(singleCalls).toBe(3);
     } finally {
       setDefaultLlamaCpp(null);
       await store.close();

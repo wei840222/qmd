@@ -260,25 +260,55 @@ async function embedQueriesForStore(
       { identity },
     );
     const formatted = queries.map(query => provider.formatQuery(query));
-    const vectors = await provider.embedBatch(formatted, {
-      purpose: "query-embedding",
-      kind: "query",
-      identityFingerprint: identity.fingerprint,
-    });
-    return {
-      model: provider.model,
-      embeddings: vectors.map(vector => vector.vector),
-    };
+    try {
+      const vectors = await provider.embedBatch(formatted, {
+        purpose: "query-embedding",
+        kind: "query",
+        identityFingerprint: identity.fingerprint,
+      });
+      return {
+        model: provider.model,
+        embeddings: vectors.map(vector => vector.vector),
+      };
+    } catch (batchError) {
+      if (formatted.length <= 1) throw batchError;
+      const embeddings: number[][] = [];
+      for (const query of formatted) {
+        const vector = await provider.embed(query, {
+          purpose: "query-embedding",
+          kind: "query",
+          identityFingerprint: identity.fingerprint,
+        });
+        embeddings.push(vector.vector);
+      }
+      return {
+        model: provider.model,
+        embeddings,
+      };
+    }
   }
 
   const llm = getLlm(store);
   const model = llm.embedModelName;
   const formatted = queries.map(query => formatQueryForEmbedding(query, model));
-  const results = await llm.embedBatch(formatted);
-  return {
-    model,
-    embeddings: results.map(result => result?.embedding ?? []),
-  };
+  try {
+    const results = await llm.embedBatch(formatted);
+    return {
+      model,
+      embeddings: results.map(result => result?.embedding ?? []),
+    };
+  } catch (batchError) {
+    if (formatted.length <= 1) throw batchError;
+    const embeddings: number[][] = [];
+    for (const query of formatted) {
+      const result = await llm.embed(query);
+      embeddings.push(result?.embedding ?? []);
+    }
+    return {
+      model,
+      embeddings,
+    };
+  }
 }
 
 function createBorrowedEmbeddingSession(
@@ -342,15 +372,32 @@ function createBorrowedEmbeddingSession(
         identity,
         lease: requestLease,
       });
-      const results = await provider.embedBatch(texts, {
-        purpose,
-        kind: options?.isQuery ? "query" : "document",
-        signal,
-        deadline: deadlineMs,
-        buildLease: requestLease,
-        identityFingerprint,
-      });
-      return results.map(result => ({ embedding: result.vector, model: result.model }));
+      try {
+        const results = await provider.embedBatch(texts, {
+          purpose,
+          kind: options?.isQuery ? "query" : "document",
+          signal,
+          deadline: deadlineMs,
+          buildLease: requestLease,
+          identityFingerprint,
+        });
+        return results.map(result => ({ embedding: result.vector, model: result.model }));
+      } catch (batchError) {
+        if (texts.length <= 1) throw batchError;
+        const results: Array<{ embedding: number[]; model: string }> = [];
+        for (const text of texts) {
+          const result = await provider.embed(text, {
+            purpose,
+            kind: options?.isQuery ? "query" : "document",
+            signal,
+            deadline: deadlineMs,
+            buildLease: requestLease,
+            identityFingerprint,
+          });
+          results.push({ embedding: result.vector, model: result.model });
+        }
+        return results;
+      }
     },
     expandQuery: async () => {
       throw new Error("Embedding-only provider sessions cannot expand queries.");
@@ -2450,7 +2497,39 @@ export function getPendingEmbeddingDocs(
       GROUP BY d.hash
       ORDER BY MIN(d.path)
     `);
-    return (collection ? stmt.all(model, fingerprint, collection) : stmt.all(model, fingerprint)) as PendingEmbeddingDoc[];
+    const results = (collection ? stmt.all(model, fingerprint, collection) : stmt.all(model, fingerprint)) as PendingEmbeddingDoc[];
+
+    const hasVectorTable = db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vectors_vec'`).get() != null;
+    if (hasVectorTable) {
+      const existingHashes = new Set(results.map(r => r.hash));
+      const cvRows = db.prepare(`SELECT hash, seq FROM content_vectors WHERE model = ? AND embed_fingerprint = ?`).all(model, fingerprint) as Array<{ hash: string; seq: number }>;
+      const vvRows = db.prepare(`SELECT hash_seq FROM vectors_vec`).all() as Array<{ hash_seq: string }>;
+      if (vvRows.length < cvRows.length) {
+        const vvKeys = new Set(vvRows.map(r => r.hash_seq));
+        const missingHashes = new Set<string>();
+        for (const cv of cvRows) {
+          if (!existingHashes.has(cv.hash) && !vvKeys.has(`${cv.hash}_${cv.seq}`)) {
+            missingHashes.add(cv.hash);
+          }
+        }
+        if (missingHashes.size > 0) {
+          const placeholders = Array.from(missingHashes).map(() => "?").join(",");
+          const repairStmt = db.prepare(`
+            SELECT d.hash, MIN(d.path) as path, length(CAST(c.doc AS BLOB)) as bytes
+            FROM documents d
+            JOIN content c ON d.hash = c.hash
+            WHERE d.active = 1 AND d.hash IN (${placeholders}) ${collectionFilter}
+            GROUP BY d.hash
+            ORDER BY MIN(d.path)
+          `);
+          const extraDocs = (collection
+            ? repairStmt.all(...missingHashes, collection)
+            : repairStmt.all(...missingHashes)) as PendingEmbeddingDoc[];
+          results.push(...extraDocs);
+        }
+      }
+    }
+    return results;
   });
 }
 
@@ -2504,7 +2583,39 @@ export function getPendingEmbeddingDocsReadOnly(
     GROUP BY d.hash
     ORDER BY MIN(d.path)
   `);
-  return (collection ? stmt.all(model, fingerprint, collection) : stmt.all(model, fingerprint)) as PendingEmbeddingDoc[];
+  const results = (collection ? stmt.all(model, fingerprint, collection) : stmt.all(model, fingerprint)) as PendingEmbeddingDoc[];
+
+  const hasVectorTable = db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vectors_vec'`).get() != null;
+  if (hasVectorTable) {
+    const existingHashes = new Set(results.map(r => r.hash));
+    const cvRows = db.prepare(`SELECT hash, seq FROM content_vectors WHERE model = ? AND embed_fingerprint = ?`).all(model, fingerprint) as Array<{ hash: string; seq: number }>;
+    const vvRows = db.prepare(`SELECT hash_seq FROM vectors_vec`).all() as Array<{ hash_seq: string }>;
+    if (vvRows.length < cvRows.length) {
+      const vvKeys = new Set(vvRows.map(r => r.hash_seq));
+      const missingHashes = new Set<string>();
+      for (const cv of cvRows) {
+        if (!existingHashes.has(cv.hash) && !vvKeys.has(`${cv.hash}_${cv.seq}`)) {
+          missingHashes.add(cv.hash);
+        }
+      }
+      if (missingHashes.size > 0) {
+        const placeholders = Array.from(missingHashes).map(() => "?").join(",");
+        const repairStmt = db.prepare(`
+          SELECT d.hash, MIN(d.path) as path, length(CAST(c.doc AS BLOB)) as bytes
+          FROM documents d
+          JOIN content c ON d.hash = c.hash
+          WHERE d.active = 1 AND d.hash IN (${placeholders}) ${collectionFilter}
+          GROUP BY d.hash
+          ORDER BY MIN(d.path)
+        `);
+        const extraDocs = (collection
+          ? repairStmt.all(...missingHashes, collection)
+          : repairStmt.all(...missingHashes)) as PendingEmbeddingDoc[];
+        results.push(...extraDocs);
+      }
+    }
+  }
+  return results;
 }
 
 function getReusableEmbeddingSeqs(
@@ -3179,11 +3290,7 @@ export async function generateEmbeddings(
           }
           await retryFailedChunks();
         } catch (error) {
-          // Remote providers own their retry budget and terminal-error contract.
-          // Never fan a failed remote batch out into per-document requests.
-          if (provider?.remote) throw error;
-
-          // Batch failed — try individual embeddings as fallback. If an
+          // Batch failed — try individual embeddings as fallback (逐筆發). If an
           // individual retry succeeds, any prior failure for that chunk is
           // cleared, so the visible error count reflects outstanding failures.
           const batchReason = reasonFromError(error);
