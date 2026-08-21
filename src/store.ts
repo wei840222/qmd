@@ -3267,7 +3267,15 @@ export function createStore(dbPath?: string, options: CreateStoreOptions = {}): 
   const db = options.readOnly
     ? openReadOnlyDatabase(resolvedPath)
     : openDatabase(resolvedPath);
-  if (options.readOnly) readOnlyDatabases.add(db);
+  if (options.readOnly) {
+    readOnlyDatabases.add(db);
+    try {
+      const hasVectorTable = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+      if (hasVectorTable) loadSqliteVec(db);
+    } catch {
+      // sqlite-vec is optional
+    }
+  }
   if (!options.readOnly) initializeDatabase(db);
   const pendingContent = new Map<string, { content: string; createdAt: string }>();
 
@@ -5557,27 +5565,27 @@ export async function searchVec(
     ? providerIdentity.fingerprint
     : storedIdentity!.fingerprint;
 
-  type VectorDocumentRow = {
+  type VectorMetaRow = {
     hash_seq: string;
     hash: string;
     pos: number;
     filepath: string;
     display_path: string;
     title: string;
-    body: string;
+    collection: string;
   };
-  const toSearchResult = (row: VectorDocumentRow, distance: number): SearchResult => {
-    const collectionName = row.filepath.split('//')[1]?.split('/')[0] || "";
+
+  const toSearchResult = (row: VectorMetaRow, body: string, distance: number): SearchResult => {
     return {
       filepath: row.filepath,
       displayPath: row.display_path,
       title: row.title,
       hash: row.hash,
       docid: getDocid(row.hash),
-      collectionName,
+      collectionName: row.collection,
       modifiedAt: "",  // Not available in vec query
-      bodyLength: row.body.length,
-      body: row.body,
+      bodyLength: body.length,
+      body,
       context: getContextForFile(db, row.filepath),
       score: 1 - distance,  // Cosine similarity = 1 - cosine distance
       source: "vec",
@@ -5586,16 +5594,16 @@ export async function searchVec(
   };
 
   const collections = normalizeCollectionFilter(collectionFilter);
-  // vec0 KNN applies relational filters only after its k cutoff, so stale
-  // fingerprints (or another collection) could otherwise starve valid rows.
-  // Use sqlite-vec's documented scalar-distance path so every metadata
-  // predicate is applied before ranking and truncation:
-  // https://alexgarcia.xyz/sqlite-vec/features/knn.html#manually-with-sql-scalar-functions
-  const collectionPredicate = collections.length > 0
-    ? `AND d.collection IN (${collections.map(() => "?").join(", ")})`
-    : "";
-  const filteredRows = withLazyContentVectorMigration(db, () => db.prepare(`
-    WITH filtered_chunks AS (
+  const queryVec = embedding instanceof Float32Array ? embedding : new Float32Array(embedding);
+  const VEC_CHUNK = 400;
+  const SQLITE_VEC_MAX_K = 4096;
+
+  let rankedDocs: Array<VectorMetaRow & { distance: number }>;
+
+  if (collections.length > 0) {
+    // 1. Scoped search: index-fetch only hash_seqs belonging to requested active collections and fingerprint
+    const collectionPlaceholders = collections.map(() => "?").join(", ");
+    const metaRows = withLazyContentVectorMigration(db, () => db.prepare(`
       SELECT
         cv.hash || '_' || cv.seq AS hash_seq,
         cv.hash,
@@ -5603,35 +5611,104 @@ export async function searchVec(
         'qmd://' || d.collection || '/' || d.path AS filepath,
         d.collection || '/' || d.path AS display_path,
         d.title,
-        content.doc AS body,
-        vec_distance_cosine(vv.embedding, ?) AS distance
+        d.collection
       FROM content_vectors cv
-      JOIN vectors_vec vv ON vv.hash_seq = (cv.hash || '_' || cv.seq)
       JOIN documents d ON d.hash = cv.hash AND d.active = 1
-      JOIN content ON content.hash = d.hash
       WHERE cv.model = ?
         AND cv.embed_fingerprint = ?
-        ${collectionPredicate}
-    ), ranked_documents AS (
-      SELECT *, ROW_NUMBER() OVER (
-        PARTITION BY filepath
-        ORDER BY distance ASC, pos ASC, hash_seq ASC
-      ) AS document_rank
-      FROM filtered_chunks
-    )
-    SELECT hash_seq, hash, pos, filepath, display_path, title, body, distance
-    FROM ranked_documents
-    WHERE document_rank = 1
-    ORDER BY distance ASC, filepath ASC
-    LIMIT ?
-  `).all(
-    new Float32Array(embedding),
-    model,
-    activeFingerprint,
-    ...collections,
-    limit,
-  ) as Array<VectorDocumentRow & { distance: number }>);
-  return filteredRows.map(row => toSearchResult(row, row.distance));
+        AND d.collection IN (${collectionPlaceholders})
+    `).all(model, activeFingerprint, ...collections) as VectorMetaRow[]);
+
+    if (metaRows.length === 0) return [];
+
+    // 2. Exact-scan only the scoped keys in chunks (no JOIN with content or documents during distance calculation)
+    const distMap = new Map<string, number>();
+    for (let i = 0; i < metaRows.length; i += VEC_CHUNK) {
+      const chunk = metaRows.slice(i, i + VEC_CHUNK);
+      const keys = chunk.map(r => r.hash_seq);
+      const placeholders = keys.map(() => "?").join(", ");
+      const rows = db.prepare(`
+        SELECT hash_seq, vec_distance_cosine(embedding, ?) AS distance
+        FROM vectors_vec
+        WHERE hash_seq IN (${placeholders})
+      `).all(queryVec, ...keys) as Array<{ hash_seq: string; distance: number }>;
+      for (const r of rows) {
+        distMap.set(r.hash_seq, r.distance);
+      }
+    }
+
+    // 3. Deduplicate by filepath keeping the best chunk (lowest distance)
+    const byFile = new Map<string, VectorMetaRow & { distance: number }>();
+    for (const m of metaRows) {
+      const dist = distMap.get(m.hash_seq);
+      if (dist === undefined) continue;
+      const prev = byFile.get(m.filepath);
+      if (!prev || dist < prev.distance || (dist === prev.distance && m.pos < prev.pos)) {
+        byFile.set(m.filepath, { ...m, distance: dist });
+      }
+    }
+
+    rankedDocs = Array.from(byFile.values())
+      .sort((a, b) => a.distance - b.distance || a.filepath.localeCompare(b.filepath))
+      .slice(0, limit);
+  } else {
+    // Global search: fast ANN match index scan with generous k
+    const annK = Math.max(limit * 30, 200);
+    const annRows = db.prepare(`
+      SELECT hash_seq, distance
+      FROM vectors_vec
+      WHERE embedding MATCH ? AND k = ?
+    `).all(queryVec, Math.min(SQLITE_VEC_MAX_K, annK)) as Array<{ hash_seq: string; distance: number }>;
+
+    if (annRows.length > 0) {
+      const distMap = new Map(annRows.map(r => [r.hash_seq, r.distance]));
+      const keys = annRows.map(r => r.hash_seq);
+      const placeholders = keys.map(() => "?").join(", ");
+      const metaRows = withLazyContentVectorMigration(db, () => db.prepare(`
+        SELECT
+          cv.hash || '_' || cv.seq AS hash_seq,
+          cv.hash,
+          cv.pos,
+          'qmd://' || d.collection || '/' || d.path AS filepath,
+          d.collection || '/' || d.path AS display_path,
+          d.title,
+          d.collection
+        FROM content_vectors cv
+        JOIN documents d ON d.hash = cv.hash AND d.active = 1
+        WHERE cv.model = ?
+          AND cv.embed_fingerprint = ?
+          AND (cv.hash || '_' || cv.seq) IN (${placeholders})
+      `).all(model, activeFingerprint, ...keys) as VectorMetaRow[]);
+
+      const byFile = new Map<string, VectorMetaRow & { distance: number }>();
+      for (const m of metaRows) {
+        const dist = distMap.get(m.hash_seq);
+        if (dist === undefined) continue;
+        const prev = byFile.get(m.filepath);
+        if (!prev || dist < prev.distance || (dist === prev.distance && m.pos < prev.pos)) {
+          byFile.set(m.filepath, { ...m, distance: dist });
+        }
+      }
+
+      rankedDocs = Array.from(byFile.values())
+        .sort((a, b) => a.distance - b.distance || a.filepath.localeCompare(b.filepath))
+        .slice(0, limit);
+    } else {
+      rankedDocs = [];
+    }
+  }
+
+  if (rankedDocs.length === 0) return [];
+
+  // 4. Lazy-fetch body content ONLY for the top winning documents
+  const winningHashes = Array.from(new Set(rankedDocs.map(d => d.hash)));
+  const hashPlaceholders = winningHashes.map(() => "?").join(", ");
+  const bodyMap = new Map(
+    (db.prepare(`SELECT hash, doc FROM content WHERE hash IN (${hashPlaceholders})`).all(...winningHashes) as Array<{ hash: string; doc: string }>)
+      .map(r => [r.hash, r.doc])
+  );
+
+  return rankedDocs.map(doc => toSearchResult(doc, bodyMap.get(doc.hash) || "", doc.distance));
 }
 
 // =============================================================================
@@ -7207,7 +7284,6 @@ export async function vectorSearchQuery(
   const vecExpanded = allExpanded.filter(q => q.type !== 'lex');
   options?.hooks?.onExpand?.(query, vecExpanded, Date.now() - expandStart);
 
-  // Run original + vec/hyde expanded through vector, sequentially — concurrent embed() hangs
   const embedModel = store.embeddingProvider?.model ?? getLlm(store).embedModelName;
   const queryTexts = [query, ...vecExpanded.map(q => q.query)];
   const allResults = new Map<string, VectorSearchResult>();

@@ -1,4 +1,4 @@
-import { isBun, openDatabase } from "../db.js";
+import { isBun, openDatabase, loadSqliteVec } from "../db.js";
 import type { Database, SQLiteValue } from "../db.js";
 import fastGlob from "fast-glob";
 import { spawn as nodeSpawn } from "child_process";
@@ -4468,6 +4468,7 @@ async function showDoctor(): Promise<void> {
   doctorCheck("better-sqlite3 package", true, String(betterSqliteVersion));
 
   try {
+    loadSqliteVec(db);
     const row = db.prepare(`SELECT vec_version() AS version`).get() as { version: string };
     doctorCheck("sqlite-vec", true, row.version);
   } catch (error) {
