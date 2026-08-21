@@ -61,7 +61,7 @@ describe("OpenAIEmbeddingProvider", () => {
     await expect(provider.embed("query", {
       purpose: "query-embedding",
       kind: "query",
-    })).rejects.toMatchObject({ code: "IDENTITY_FINGERPRINT_REQUIRED" });
+    } as any)).rejects.toMatchObject({ code: "IDENTITY_FINGERPRINT_REQUIRED" });
     expect(authorizeRequest).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -377,7 +377,7 @@ describe("OpenAIEmbeddingProvider", () => {
           data: input.map((_value, index) => ({ object: "embedding", index, embedding: vector })),
           usage: { prompt_tokens: 1, total_tokens: 1 },
         }),
-      } as unknown as Response;
+      } as any;
     });
     const provider = new OpenAIEmbeddingProvider({ apiKey: "test-key", fetch, maxAttempts: 1 });
 
@@ -398,10 +398,10 @@ describe("OpenAIEmbeddingProvider", () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     const provider = new OpenAIEmbeddingProvider({ apiKey: "test-key", fetch, maxAttempts: 1 });
 
-    await expect(provider.embedBatch([null] as unknown as string[], DOCUMENT_OPTIONS)).rejects.toMatchObject({
+    await expect(provider.embedBatch([null] as any, DOCUMENT_OPTIONS)).rejects.toMatchObject({
       code: "INPUT_BUDGET_EXCEEDED",
     });
-    await expect(provider.embedBatch([{}] as unknown as string[], DOCUMENT_OPTIONS)).rejects.toMatchObject({
+    await expect(provider.embedBatch([{}] as any, DOCUMENT_OPTIONS)).rejects.toMatchObject({
       code: "INPUT_BUDGET_EXCEEDED",
     });
     expect(fetch).not.toHaveBeenCalled();
@@ -446,7 +446,7 @@ describe("OpenAIEmbeddingProvider", () => {
       status: 503,
       headers: new Headers(),
       body: { cancel },
-    } as unknown as Response);
+    } as any);
     const provider = new OpenAIEmbeddingProvider({
       apiKey: "test-key",
       fetch,
@@ -612,7 +612,7 @@ describe("OpenAIEmbeddingProvider", () => {
           reject(new DOMException("timed out", "TimeoutError"));
         }, { once: true });
       }),
-    } as unknown as Response));
+    } as any));
     const provider = new OpenAIEmbeddingProvider({
       apiKey: "test-key",
       fetch,
@@ -794,7 +794,7 @@ describe("OpenAIEmbeddingProvider", () => {
         controller.abort();
         throw new DOMException("aborted", "AbortError");
       },
-    } as unknown as Response;
+    } as any;
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
     const provider = new OpenAIEmbeddingProvider({ apiKey: "test-key", fetch, maxAttempts: 3 });
 
@@ -822,7 +822,7 @@ describe("OpenAIEmbeddingProvider", () => {
             reject(new DOMException("interrupted", "AbortError"));
           }, { once: true });
         }),
-      } as unknown as Response));
+      } as any));
       return { fetch, bodyStarted };
     };
 
@@ -1338,7 +1338,7 @@ describe("OpenAIEmbeddingProvider", () => {
         data: [{ object: "embedding", index: 0, embedding: vector }],
         usage: { prompt_tokens: 1, total_tokens: 1 },
       }),
-    } as unknown as Response);
+    } as any);
     const provider = new OpenAIEmbeddingProvider({
       apiKey: "test-key",
       fetch,

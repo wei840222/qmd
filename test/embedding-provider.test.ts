@@ -21,8 +21,8 @@ import {
   writeCanonicalEmbeddingConfig,
 } from "../src/embedding/config.js";
 
-const DOCUMENT_OPTIONS = { purpose: "index-build", kind: "document" } as const;
-const QUERY_OPTIONS = { purpose: "query-embedding", kind: "query" } as const;
+const DOCUMENT_OPTIONS = { purpose: "index-build", kind: "document", identityFingerprint: "test-fingerprint" } as const;
+const QUERY_OPTIONS = { purpose: "query-embedding", kind: "query", identityFingerprint: "test-fingerprint" } as const;
 import {
   createStore,
   generateEmbeddings,
@@ -661,7 +661,7 @@ describe("EmbeddingProviderOwner lifecycle", () => {
     const events: string[] = [];
     const runtime = {
       dispose: vi.fn(async () => { events.push("runtime:dispose"); }),
-    } as unknown as LlamaCpp;
+    } as any;
     const remoteProvider: EmbeddingProvider = {
       providerId: "openai",
       model: OPENAI_EMBEDDING_MODEL,
@@ -709,10 +709,10 @@ describe("EmbeddingProviderOwner lifecycle", () => {
     };
     const cliOwner = createCliEmbeddingProviderOwner(
       config,
-      { dispose: cliDispose } as unknown as ConstructorParameters<typeof LocalEmbeddingProviderOwner>[0],
+      { dispose: cliDispose } as any,
     );
     const sdkOwner = new LocalEmbeddingProviderOwner(
-      { dispose: sdkDispose } as unknown as ConstructorParameters<typeof LocalEmbeddingProviderOwner>[0],
+      { dispose: sdkDispose } as any,
       config,
     );
 
@@ -729,7 +729,7 @@ describe("EmbeddingProviderOwner lifecycle", () => {
   test("owns and disposes the high-level store Llama instance exactly once", async () => {
     const dispose = vi.fn(async () => undefined);
     const owner = new LocalEmbeddingProviderOwner(
-      { dispose } as unknown as ConstructorParameters<typeof LocalEmbeddingProviderOwner>[0],
+      { dispose } as any,
       { model: "local-model" },
     );
     const providerClose = vi.spyOn(owner.provider, "close");
@@ -752,7 +752,7 @@ describe("EmbeddingProviderOwner lifecycle", () => {
         return pending.promise;
       }),
       dispose,
-    } as unknown as ConstructorParameters<typeof LocalEmbeddingProviderOwner>[0];
+    } as any;
     const owner = new LocalEmbeddingProviderOwner(llm, { model: "local-model" });
     const operation = owner.provider.embed("input", {
       ...DOCUMENT_OPTIONS,
@@ -781,7 +781,7 @@ describe("EmbeddingProviderOwner lifecycle", () => {
     const events: string[] = [];
     const provider = {
       close: vi.fn(async () => { events.push("provider"); }),
-    } as unknown as EmbeddingProvider;
+    } as any;
     const runtime = {
       dispose: vi.fn(async () => { events.push("runtime"); }),
     };
@@ -798,7 +798,7 @@ describe("EmbeddingProviderOwner lifecycle", () => {
     const runtime = { dispose: vi.fn(async () => undefined) };
     const owner = new CompositeEmbeddingProviderOwner({
       close: vi.fn(async () => { throw new Error("provider close failed"); }),
-    } as unknown as EmbeddingProvider, runtime);
+    } as any, runtime);
 
     await expect(owner.close()).rejects.toThrow("provider close failed");
     expect(runtime.dispose).toHaveBeenCalledTimes(1);

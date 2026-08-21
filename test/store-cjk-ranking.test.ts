@@ -97,7 +97,7 @@ describe("CJK lexical search", () => {
           ],
         },
       },
-    ] as unknown as ReturnType<typeof searchFTS>;
+    ] as any;
 
     const signal = getLexicalStrongSignal(results);
     expect(signal).toMatchObject({

@@ -113,6 +113,7 @@ function countRows(db: Database, table: string): number | null {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (table === "vectors_vec" && /no such module:\s*vec0/i.test(message)) return null;
+    if (table.startsWith("documents_fts") && /no such column/i.test(message)) return null;
     throw error;
   }
 }

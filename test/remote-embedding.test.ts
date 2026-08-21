@@ -36,7 +36,7 @@ describe("remote embeddings without consent gates", () => {
         usage: { prompt_tokens: body.input.length, total_tokens: body.input.length },
       }), { status: 200, headers: { "content-type": "application/json" } });
     });
-    globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
+    globalThis.fetch = fetch as any;
 
     const store = await createStore({
       dbPath: join(root, "index.sqlite"),

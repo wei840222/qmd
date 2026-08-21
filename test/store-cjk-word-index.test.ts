@@ -120,8 +120,8 @@ describe("T7 synchronized CJK word-index mutations", () => {
       deactivateDocument(db, "notes", "guide.md");
       const before = snapshot(db);
       db.exec(`
-        CREATE TRIGGER fail_after_orphan_content_delete
-        AFTER DELETE ON content
+        CREATE TRIGGER fail_after_document_delete
+        AFTER DELETE ON documents
         WHEN OLD.hash = 'seed-hash'
         BEGIN
           SELECT RAISE(ABORT, 'injected hard-delete late failure');

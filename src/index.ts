@@ -171,6 +171,7 @@ export type UpdateResult = {
   updated: number;
   unchanged: number;
   removed: number;
+  skipped: number;
   needsEmbedding: number;
 };
 
@@ -182,7 +183,7 @@ export interface SearchOptions {
   query?: string;
   /** Pre-expanded queries (from expandQuery) — bypasses expansion policy evaluation */
   queries?: ExpandedQuery[];
-  /** Domain intent hint — steers expansion and reranking */
+  /** Domain intent hint — steers reranking and snippet/chunk selection */
   intent?: string;
   /** Rerank results using LLM (default: true) */
   rerank?: boolean;
@@ -211,7 +212,7 @@ export interface SearchOptions {
  */
 export interface LexSearchOptions {
   limit?: number;
-  collection?: string;
+  collection?: string | string[];
 }
 
 /**
@@ -219,13 +220,19 @@ export interface LexSearchOptions {
  */
 export interface VectorSearchOptions {
   limit?: number;
-  collection?: string;
+  collection?: string | string[];
 }
 
 /**
  * Options for expandQuery() — manual query expansion.
  */
 export interface ExpandQueryOptions {
+  /**
+   * @deprecated Ignored. Intent no longer feeds the expansion model — caller
+   * intent is meta-language the model reproduced verbatim as sub-queries.
+   * Pass intent via SearchOptions instead, where it shapes reranking and
+   * snippet selection.
+   */
   intent?: string;
 }
 
@@ -538,7 +545,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
       }
       // Normalize collection/collections
       const collections = [
-        ...(opts.collection ? [opts.collection] : []),
+        ...(typeof opts.collection === "string" ? [opts.collection] : (opts.collection ?? [])),
         ...(opts.collections ?? []),
       ];
       const skipRerank = opts.rerank === false;
@@ -559,7 +566,8 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
 
       // Simple query string — use hybridQuery (expand + search + rerank)
       return hybridQuery(internal, opts.query!, {
-        collections,
+        collections: collections.length > 0 ? collections : undefined,
+        collection: collections.length === 1 ? collections[0] : (collections.length > 0 ? collections : undefined),
         limit: opts.limit,
         minScore: opts.minScore,
         explain: opts.explain,
@@ -576,7 +584,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
       const provider = internal.embeddingProvider;
       return internal.searchVec(
         q,
-        provider?.model ?? DEFAULT_EMBED_MODEL_URI,
+        provider?.model ?? (internal.llm as any)?.embedModelName ?? DEFAULT_EMBED_MODEL_URI,
         opts?.limit,
         opts?.collection,
       );
@@ -662,7 +670,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
 
       internal.clearCache();
 
-      let totalIndexed = 0, totalUpdated = 0, totalUnchanged = 0, totalRemoved = 0;
+      let totalIndexed = 0, totalUpdated = 0, totalUnchanged = 0, totalRemoved = 0, totalSkipped = 0;
 
       for (const col of filtered) {
         const result = await reindexCollection(internal, col.path, col.pattern || "**/*.md", col.name, {
@@ -675,6 +683,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         totalUpdated += result.updated;
         totalUnchanged += result.unchanged;
         totalRemoved += result.removed;
+        totalSkipped += result.skipped;
       }
 
       await rebuildCjkLexicalIndex(options.dbPath);
@@ -685,6 +694,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         updated: totalUpdated,
         unchanged: totalUnchanged,
         removed: totalRemoved,
+        skipped: totalSkipped,
         needsEmbedding: internal.getHashesNeedingEmbedding(),
       };
     },

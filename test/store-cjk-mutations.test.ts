@@ -6,6 +6,7 @@ import { openDatabase, type Database } from "../src/db.js";
 import { createStore as createSdkStore } from "../src/index.js";
 import {
   createStore,
+  cleanupOrphanedContent,
   deactivateDocument,
   deleteInactiveDocuments,
   findOrMigrateLegacyDocument,
@@ -152,6 +153,7 @@ describe("CJK document mutation synchronization", () => {
       expectReadyAtJournalHead(db);
 
       expect(deleteInactiveDocuments(db)).toBe(1);
+      cleanupOrphanedContent(db);
       await expectDocumentSignals(db, inserted.id);
       expect(db.prepare(`SELECT 1 FROM content WHERE hash IN (?, ?) LIMIT 1`).get("hash-v1", "hash-v2") == null).toBe(true);
       expectReadyAtJournalHead(db);
@@ -166,17 +168,17 @@ describe("CJK document mutation synchronization", () => {
     const dbPath = join(directory, "index.sqlite");
     const seed = createStore(dbPath);
     insertContent(seed.db, "legacy-hash", "玉山舊路徑", timestamp);
-    insertDocument(seed.db, "notes", "README.md", "舊指南", "legacy-hash", timestamp, timestamp);
+    insertDocument(seed.db, "notes", "hello-world.md", "舊指南", "legacy-hash", timestamp, timestamp);
     seed.close();
     expect((await rebuildCjkLexicalIndex(dbPath)).status).toBe("ready");
 
     const db = openDatabase(dbPath);
     try {
-      const migrated = findOrMigrateLegacyDocument(db, "notes", "readme.md");
+      const migrated = findOrMigrateLegacyDocument(db, "notes", "hello world.md");
       expect(migrated).not.toBeNull();
       await expectDocumentSignals(db, migrated!.id);
       const charPath = db.prepare(`SELECT filepath FROM documents_fts WHERE rowid = ?`).get(migrated!.id) as { filepath: string };
-      expect(charPath.filepath).toBe(normalizeCjkForFTS("notes/readme.md"));
+      expect(charPath.filepath).toBe(normalizeCjkForFTS("notes/hello world.md"));
       expect(db.prepare(`SELECT rowid FROM documents_fts_words WHERE rowid = ?`).get(migrated!.id) == null).toBe(false);
       expect(db.prepare(`SELECT rowid FROM documents_fts_bigrams WHERE rowid = ?`).get(migrated!.id) == null).toBe(false);
       expectReadyAtJournalHead(db);

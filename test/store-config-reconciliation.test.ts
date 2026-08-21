@@ -44,12 +44,7 @@ describe("config to SQLite reconciliation", () => {
       store.db.prepare(`UPDATE store_collections SET path = ? WHERE name = ?`).run("/drifted/beta", "beta");
       const hashBefore = store.db.prepare(`SELECT value FROM store_config WHERE key = 'config_hash'`).get() as { value: string };
 
-      const diagnostic = syncConfigToDb(store.db, config) as unknown as {
-        configHashChanged: boolean;
-        reconciled: boolean;
-        collections: { added: string[]; updated: string[]; removed: string[] };
-        globalContextUpdated: boolean;
-      };
+      const diagnostic = syncConfigToDb(store.db, config) as any;
 
       expect(diagnostic).toEqual({
         configHashChanged: false,

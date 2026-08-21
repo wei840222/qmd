@@ -88,7 +88,7 @@ function fakeStore(options: {
   const db = {
     prepare: () => ({ get: () => undefined }),
     close: () => undefined,
-  } as unknown as Store["db"];
+  } as any;
   return {
     db,
     searchFTS: (query: string) => {
@@ -97,7 +97,7 @@ function fakeStore(options: {
     },
     expandQuery: options.expandQuery ?? (async () => []),
     getContextForFile: () => null,
-  } as unknown as Store;
+  } as any;
 }
 
 describe("hybrid query expansion integration", () => {
@@ -130,7 +130,7 @@ describe("hybrid query expansion integration", () => {
     store.llm = {
       generateModelName: "fake-expansion-model",
       expandQuery: async () => [],
-    } as unknown as Store["llm"];
+    } as any;
     try {
       await expect(hybridQuery(store, "expand: 資料庫同步", {
         expansion: "auto",
@@ -154,7 +154,7 @@ describe("hybrid query expansion integration", () => {
       expandQuery: async () => {
         throw new Error("provider unavailable");
       },
-    } as unknown as Store["llm"];
+    } as any;
     try {
       await expect(hybridQuery(store, "expand: database migration", {
         hooks: {

@@ -101,7 +101,7 @@ describe("CJK analyzer without jieba", () => {
   ])("treats %s as an analyzer failure", async (_label, tokens) => {
     const loader = async (): Promise<JiebaCapability> => ({
       available: true,
-      cut: () => tokens as unknown as string[],
+      cut: () => tokens as any,
     });
 
     const result = await analyzeCjk("玉山同步器", loader);

@@ -310,26 +310,31 @@ export function resolveEmbeddingModelOverride(
 export function readCanonicalEmbeddingConfig(
   db: Database,
 ): CanonicalEmbeddingConfig | undefined {
-  const row = db.prepare(
-    "SELECT value FROM store_config WHERE key = ?",
-  ).get(EMBEDDING_CONFIG_DB_KEY) as { value?: unknown } | undefined;
-  if (row?.value === undefined) return undefined;
-  if (typeof row.value !== "string") {
-    throw new EmbeddingConfigError("database embedding config must be stored as JSON text.");
-  }
-
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(row.value);
-  } catch {
-    throw new EmbeddingConfigError("database embedding config contains invalid JSON.");
+    const row = db.prepare(
+      "SELECT value FROM store_config WHERE key = ?",
+    ).get(EMBEDDING_CONFIG_DB_KEY) as { value?: unknown } | undefined;
+    if (row?.value === undefined) return undefined;
+    if (typeof row.value !== "string") {
+      throw new EmbeddingConfigError("database embedding config must be stored as JSON text.");
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.value);
+    } catch {
+      throw new EmbeddingConfigError("database embedding config contains invalid JSON.");
+    }
+    return parseEmbeddingBlock(
+      parsed,
+      "unused-for-canonical-config",
+      "database embedding config",
+      true,
+    );
+  } catch (err) {
+    if (err instanceof EmbeddingConfigError) throw err;
+    return undefined;
   }
-  return parseEmbeddingBlock(
-    parsed,
-    "unused-for-canonical-config",
-    "database embedding config",
-    true,
-  );
 }
 
 export function writeCanonicalEmbeddingConfig(

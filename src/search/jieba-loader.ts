@@ -53,7 +53,7 @@ function initializeCapability(
   userDictionary?: Uint8Array,
 ): JiebaCapability {
   const packageRecord = asRecord(packageModule);
-  const Jieba = asRecord(packageRecord?.Jieba) as unknown as JiebaConstructorLike | null;
+  const Jieba = (packageRecord?.Jieba ?? null) as JiebaConstructorLike | null;
 
   if (
     !Jieba
