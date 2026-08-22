@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "fs";
+import { accessSync, constants, chmodSync, mkdirSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -259,6 +259,10 @@ test("direct disposal shares one promise and drains per-Llama sessions", async (
   expect(disposeContext).toHaveBeenCalledTimes(1);
 });
 
+// =============================================================================
+// Unit Tests (Mocked)
+// =============================================================================
+
 describe("canWriteLlamaDir", () => {
   test("returns true when llama/ exists and is writable", () => {
     const dir = mkdtempSync(join(tmpdir(), "qmd-llama-rw-"));
@@ -280,6 +284,17 @@ describe("canWriteLlamaDir", () => {
     mkdirSync(llamaDir, { mode: 0o555 });
     chmodSync(llamaDir, 0o555);
     try {
+      let stillWritable = false;
+      try {
+        accessSync(llamaDir, constants.W_OK);
+        stillWritable = true;
+      } catch {
+        stillWritable = false;
+      }
+      if (stillWritable) {
+        // Mode bits are not enforced (e.g. running as root in CI, or Windows)
+        return;
+      }
       expect(canWriteLlamaDir(dir)).toBe(false);
     } finally {
       chmodSync(llamaDir, 0o755);

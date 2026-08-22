@@ -964,6 +964,7 @@ export async function startMcpHttpServer(
   }
 
   const host = options.host ?? process.env.QMD_HOST ?? "localhost";
+  const bindHost = host === "localhost" ? "127.0.0.1" : host;
   const originGuard = resolveOriginGuard({
     host,
     ...(options.allowedOrigins ? { allowedOrigins: options.allowedOrigins } : {}),
@@ -1106,7 +1107,7 @@ export async function startMcpHttpServer(
 
   await new Promise<void>((resolve, reject) => {
     httpServer.on("error", reject);
-    httpServer.listen(port, host, () => resolve());
+    httpServer.listen(port, bindHost, () => resolve());
   });
 
   const actualPort = (httpServer.address() as import("net").AddressInfo).port;

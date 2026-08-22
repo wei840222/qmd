@@ -1005,7 +1005,7 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
 
     httpDbBeforeStartup = readFileSync(httpTestDbPath);
     handle = await startMcpHttpServer(0, { quiet: true }); // OS-assigned ephemeral port
-    baseUrl = `http://localhost:${handle.port}`;
+    baseUrl = `http://127.0.0.1:${handle.port}`;
   });
 
   afterAll(async () => {
@@ -1315,7 +1315,7 @@ describe("MCP HTTP Transport — 2026-07-28 protocol", () => {
     process.env.INDEX_PATH = dbPath;
     process.env.QMD_CONFIG_DIR = configDir;
     handle = await startMcpHttpServer(0, { quiet: true, dbPath });
-    baseUrl = `http://localhost:${handle.port}`;
+    baseUrl = `http://127.0.0.1:${handle.port}`;
   });
 
   afterAll(async () => {
@@ -1515,7 +1515,7 @@ describe("MCP HTTP Transport — legacy FTS seed (#792)", () => {
       process.env.QMD_CONFIG_DIR = configDir;
 
       handle = await startMcpHttpServer(0, { quiet: true, dbPath });
-      const res = await fetch(`http://localhost:${handle.port}/health`);
+      const res = await fetch(`http://127.0.0.1:${handle.port}/health`);
       expect(res.status).toBe(200);
       const body = await res.json() as { status?: string };
       expect(body.status).toBe("ok");

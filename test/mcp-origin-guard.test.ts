@@ -197,7 +197,7 @@ describe.skipIf(!!process.env.CI)("MCP HTTP server rejects cross-origin requests
 
     const { startMcpHttpServer } = await import("../src/mcp/server.js");
     handle = await startMcpHttpServer(0, { quiet: true });
-    baseUrl = `http://localhost:${handle.port}`;
+    baseUrl = `http://127.0.0.1:${handle.port}`;
   });
 
   afterAll(async () => {
