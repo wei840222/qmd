@@ -102,7 +102,7 @@
     "fast-uri": "3.1.5",
     "hono": "4.12.34",
     "ip-address": "10.3.1",
-    "nanoid": "3.3.17",
+    "nanoid": "3.3.18",
     "path-to-regexp": "8.4.0",
     "postcss": "8.5.23",
     "qs": "6.15.3",
@@ -110,18 +110,6 @@
     "simple-git": "3.36.0",
     "tar": "7.5.21",
     "vite": "7.3.5"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@node-rs/jieba",
-      "better-sqlite3",
-      "esbuild",
-      "node-llama-cpp",
-      "tree-sitter-go",
-      "tree-sitter-python",
-      "tree-sitter-rust",
-      "tree-sitter-typescript"
-    ]
   },
   "peerDependencies": {
     "typescript": "^5.9.3"
