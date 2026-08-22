@@ -20,11 +20,11 @@ describe("remote embeddings without consent gates", () => {
     await mkdir(documents);
     await writeFile(join(documents, "guide.md"), "# Remote guide\n\nRemote content.");
 
-    const previousApiKey = process.env.OPENAI_API_KEY;
     const previousFetch = globalThis.fetch;
-    process.env.OPENAI_API_KEY = "test-key";
+    delete process.env.OPENAI_API_KEY;
     const fetch = vi.fn<typeof globalThis.fetch>(async (_input, init) => {
       const body = JSON.parse(String(init?.body)) as { input: string[]; model: string };
+      expect(init?.headers).toMatchObject({ authorization: "Bearer inline-config-key" });
       return new Response(JSON.stringify({
         object: "list",
         model: body.model,
@@ -45,6 +45,7 @@ describe("remote embeddings without consent gates", () => {
         models: {
           embed_api_url: "https://api.openai.com/v1",
           embed_api_model: "text-embedding-3-small",
+          embed_api_key: "inline-config-key",
         },
       },
     });
@@ -67,8 +68,6 @@ describe("remote embeddings without consent gates", () => {
       `).get()).toBeFalsy();
     } finally {
       globalThis.fetch = previousFetch;
-      if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
-      else process.env.OPENAI_API_KEY = previousApiKey;
     }
   });
 });

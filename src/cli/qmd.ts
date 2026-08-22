@@ -200,7 +200,9 @@ function getStore(): ReturnType<typeof createStore> {
       });
       setDefaultLlamaCpp(cliLlama);
       if (embedding.canonical.provider === "openai") {
-        const apiKey = process.env.OPENAI_API_KEY?.trim();
+        const apiKey =
+          config?.models?.embed_api_key?.trim() ||
+          process.env.OPENAI_API_KEY?.trim();
         const configuredModel = embedding.canonical.model;
         const configuredDimension = embedding.canonical.dimension;
         const configuredBaseUrl = embedding.canonical.baseUrl;

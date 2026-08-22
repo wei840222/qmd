@@ -252,6 +252,8 @@ export interface StoreOptions {
   config?: CollectionConfig;
   /** Open an existing index without persistent schema, config, or data writes. */
   readOnly?: boolean;
+  /** Timeout applied to remote expansion, reranking, and embedding requests. */
+  remoteRequestTimeoutMs?: number;
 }
 
 /**
@@ -453,6 +455,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         rerankApiUrl: config?.models?.rerank_api_url,
         rerankApiModel: config?.models?.rerank_api_model,
         rerankApiKey: config?.models?.rerank_api_key,
+        timeoutMs: options.remoteRequestTimeoutMs,
       })
     : undefined;
 
@@ -468,7 +471,9 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     internal.embeddingProvider = embeddingOwner.provider;
     closeEmbeddingResources = () => embeddingOwner.close();
   } else {
-    const apiKey = process.env.OPENAI_API_KEY?.trim();
+    const apiKey =
+      config?.models?.embed_api_key?.trim() ||
+      process.env.OPENAI_API_KEY?.trim();
     remoteKeyConfigured = apiKey != null && apiKey !== "";
     const configuredModel = embedding.canonical.model;
     const configuredDimension = embedding.canonical.dimension;
@@ -481,6 +486,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
           model: configuredModel,
           dimension: configuredDimension,
           baseUrl: configuredBaseUrl,
+          requestTimeoutMs: options.remoteRequestTimeoutMs,
           authorizeRequest: request => {
             const activeProvider = internal.embeddingProvider;
             if (!activeProvider?.remote) {
@@ -718,7 +724,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         if (pending.length === 0 && !embedOpts?.force) {
           return { docsProcessed: 0, chunksEmbedded: 0, errors: 0, failures: [], durationMs: 0 };
         }
-        if (!embedding.credentialAvailable) {
+        if (!remoteKeyConfigured && !embedding.credentialAvailable) {
           throw new EmbeddingConfigError(
             "OpenAI document embedding is authorized, but OPENAI_API_KEY is not configured.",
           );

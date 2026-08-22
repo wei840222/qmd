@@ -142,7 +142,11 @@ export class RemoteLLM implements LLM {
     this.rerankApiKey = options.rerankApiKey?.trim();
     this.timeZone = options.timeZone?.trim();
     this.fetchImpl = options.fetch ?? globalThis.fetch;
-    this.timeoutMs = options.timeoutMs ?? 30_000;
+    const timeoutMs = options.timeoutMs ?? 30_000;
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      throw new Error("Remote request timeout must be positive.");
+    }
+    this.timeoutMs = timeoutMs;
   }
 
   get supportsExpand(): boolean {
@@ -257,6 +261,7 @@ Return only the prefix lines specified in the output format.
           ],
           temperature: 0.3,
         }),
+        signal: AbortSignal.timeout(this.timeoutMs),
       });
 
       if (!res.ok) {
@@ -327,6 +332,7 @@ Return only the prefix lines specified in the output format.
           query,
           documents: docsPayload,
         }),
+        signal: AbortSignal.timeout(this.timeoutMs),
       });
 
       // If /rerank returns 404 (endpoint not supported), fallback to LLM Chat Reranking
@@ -466,6 +472,7 @@ Return raw JSON only: start with { and end with }. No Markdown fences.
         ],
         temperature: 0.1,
       }),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
 
     if (!res.ok) {

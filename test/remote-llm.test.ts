@@ -72,6 +72,26 @@ describe("RemoteLLM & HybridLLM Integration", () => {
       expect(llm.supportsRerank).toBe(true);
     });
 
+    test("uses the configured timeout for remote requests", async () => {
+      const fetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+        });
+      const llm = new RemoteLLM({
+        generateApiUrl: "https://example.test/v1/chat/completions",
+        generateApiModel: "test-model",
+        timeoutMs: 1,
+        fetch,
+      });
+
+      await expect(llm.expandQuery("timeout test")).rejects.toBeInstanceOf(DOMException);
+      expect(llm.supportsExpand).toBe(false);
+    });
+
+    test("rejects a non-positive remote request timeout", () => {
+      expect(() => new RemoteLLM({ timeoutMs: 0 })).toThrow("Remote request timeout must be positive.");
+    });
+
     test("expandQuery calls chat completions endpoint and parses typed lines", async () => {
       mockResponseBody = {
         choices: [
