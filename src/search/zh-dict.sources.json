@@ -5,7 +5,7 @@
   },
   "nodeRs": {
     "package": "@node-rs/jieba",
-    "version": "2.0.1",
+    "version": "2.0.2",
     "path": "dict.txt",
     "gitBlobSha": "8a9837551ef4f0833835565b5ca654bd6d786a42",
     "sha256": "139519822fe8ab9e10d9d07e68ea0451045380aedaf54ecc51e2a28c6b42a13f"

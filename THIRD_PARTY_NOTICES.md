@@ -4,7 +4,7 @@
 
 The bundled Traditional Chinese Jieba dictionary combines the following MIT-licensed sources:
 
-- `@node-rs/jieba` 2.0.1 (`dict.txt`), Copyright (c) LongYinan.
+- `@node-rs/jieba` 2.0.2 (`dict.txt`), Copyright (c) LongYinan.
 - `APCLab/jieba-tw` (`jieba/dict.txt`) at commit `2bd4c0913cdadc865879b21a00c78e28ef1ba2c5`, Copyright (c) 2013 Sun Junyi.
 - `sysprog21/zhtw-mcp` (`assets/ruleset.json`) at commit `40e669a769bfcafc5f21f9ca6e2f5152b54c8831`, Copyright (c) 2026 National Cheng Kung University, Taiwan.
 
