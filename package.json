@@ -1,6 +1,6 @@
 {
   "name": "@wei840222/qmd",
-  "version": "2026.8.23-1",
+  "version": "2026.8.24",
   "packageManager": "pnpm@11.15.1",
   "description": "Query Markup Documents - On-device hybrid search for markdown files with BM25, vector search, and LLM reranking",
   "type": "module",
