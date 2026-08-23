@@ -52,7 +52,7 @@ jobs:
       - name: Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          token-setup-trivy: ${{ secrets.GITHUB_TOKEN }}
+          token-setup-trivy: ${{ secrets.GH_RATE_LIMIT_PAT || secrets.GITHUB_TOKEN }}
           version: v0.70.0
           scan-type: fs
           scan-ref: .
