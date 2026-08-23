@@ -251,6 +251,8 @@ qmd query $'intent: Find the customer proximity concept, not generic customer de
 qmd search "six-week cadence WhatsApp merchant relationships Shawn Ryan" -c sources -n 10
 ```
 
+For the complete EBNF grammar, search operators, and JSON payload specifications, see [Query Syntax Reference](references/query-syntax.md).
+
 ## Setup and maintenance
 
 Only mutate indexes when the user asked for setup or maintenance. Searching and
@@ -304,7 +306,7 @@ qmd pull
 
 ## MCP setup
 
-See `references/mcp-setup.md` for Claude Desktop, OpenClaw, and HTTP
+See `references/mcp-setup.md` for Claude Code, Claude Desktop, OpenClaw, and HTTP
 server configuration.
 
 ## Pitfalls
