@@ -4,8 +4,8 @@ description: Search local markdown knowledge bases, notes, docs, and wikis with 
 license: MIT
 compatibility: Requires qmd CLI or MCP server. Install via `npm install -g @wei840222/qmd`.
 metadata:
-  author: tobi
-  version: "2.6.3"
+  author: wei840222
+  version: 2026.8.23-1
 allowed-tools: Bash(qmd:*), mcp__qmd__*
 ---
 
@@ -209,8 +209,14 @@ When using the MCP server, prefer structured searches:
 {
   "searches": [
     { "type": "lex", "query": "cockpit OKR Goodhart" },
-    { "type": "vec", "query": "data informed not metric driven product judgment" },
-    { "type": "hyde", "query": "A concept note explains that metrics are useful as instruments, but leaders should not let OKRs or dashboards replace judgment." }
+    {
+      "type": "vec",
+      "query": "data informed not metric driven product judgment"
+    },
+    {
+      "type": "hyde",
+      "query": "A concept note explains that metrics are useful as instruments, but leaders should not let OKRs or dashboards replace judgment."
+    }
   ],
   "intent": "Find the concept note about using metrics as instruments without becoming metric-driven.",
   "collections": ["concepts"],
@@ -264,17 +270,17 @@ Configure models and custom endpoints in `~/.config/qmd/index.yml` under the `mo
 ```yaml
 models:
   embed: hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf
-  embed_api_url: https://api.example.com/v1   # Both embed_api_url and embed_api_model enable remote embeddings
-  embed_api_model: text-embedding-3-small     # or text-embedding-3-large
-  embed_dimension: 1536                       # Optional: expected vector dimension; validates local output
+  embed_api_url: https://api.example.com/v1 # Both embed_api_url and embed_api_model enable remote embeddings
+  embed_api_model: text-embedding-3-small # or text-embedding-3-large
+  embed_dimension: 1536 # Optional: expected vector dimension; validates local output
 
   # Optional: Remote LLM Query Expansion (aliases: generate_url, generate_base_url, generate_api_url)
-  generate_api_url: https://api.example.com/v1    # Base URL (appends /chat/completions) or full endpoint
-  generate_api_model: qwen3-7b-instruct           # or your-model-name
+  generate_api_url: https://api.example.com/v1 # Base URL (appends /chat/completions) or full endpoint
+  generate_api_model: qwen3-7b-instruct # or your-model-name
 
   # Optional: Remote Reranking (supports rerank_url / rerank_base_url / rerank_api_url)
   rerank_api_url: https://api.example.com/v1/chat/completions # Supports both /v1/rerank and /v1/chat/completions LLM endpoints
-  rerank_api_model: bge-reranker-v2-m3        # or gpt-4o-mini / qwen3-7b-instruct
+  rerank_api_model: bge-reranker-v2-m3 # or gpt-4o-mini / qwen3-7b-instruct
 
 # Optional: Custom User Dictionary for CJK segmentation
 dictionary: ~/.config/qmd/dictionary.txt
