@@ -112,7 +112,7 @@
     "vite": "7.3.5"
   },
   "peerDependencies": {
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3 || ^6.0.0-0"
   },
   "engines": {
     "node": ">=22.0.0"
@@ -134,6 +134,6 @@
     "local-ai",
     "llm"
   ],
-  "author": "Tobi Lutke <tobi@lutke.com>",
+  "author": "Wan, Jiun Wei <wei840222@gmail.com>",
   "license": "MIT"
 }
