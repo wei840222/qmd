@@ -1,6 +1,6 @@
 {
-  "name": "@tobilu/qmd",
-  "version": "2.8.3",
+  "name": "@wei840222/qmd",
+  "version": "2026.8.23",
   "packageManager": "pnpm@11.15.1",
   "description": "Query Markup Documents - On-device hybrid search for markdown files with BM25, vector search, and LLM reranking",
   "type": "module",
@@ -59,11 +59,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tobi/qmd.git"
+    "url": "git+https://github.com/wei840222/qmd.git"
   },
-  "homepage": "https://github.com/tobi/qmd#readme",
+  "homepage": "https://github.com/wei840222/qmd#readme",
   "bugs": {
-    "url": "https://github.com/tobi/qmd/issues"
+    "url": "https://github.com/wei840222/qmd/issues"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",

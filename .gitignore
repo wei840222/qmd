@@ -12,7 +12,7 @@ texts/
 *.md
 !THIRD_PARTY_NOTICES.md
 !README.md
-!CLAUDE.md
+!AGENTS.md
 !CHANGELOG.md
 !skills/**/*.md
 !finetune/*.md

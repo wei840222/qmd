@@ -2,7 +2,7 @@
  * QMD SDK - Library mode for programmatic access to QMD search and indexing.
  *
  * Usage:
- *   import { createStore } from '@tobilu/qmd'
+ *   import { createStore } from '@wei840222/qmd'
  *
  *   const store = await createStore({
  *     dbPath: './my-index.sqlite',

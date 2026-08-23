@@ -15,8 +15,8 @@ RUN mise use -g node@latest bun@latest
 
 # Copy the packed tarball and install via both package managers. Keep a stable
 # tarball path for npm-exec/npx-style smoke scenarios.
-COPY tobilu-qmd-*.tgz /tmp/qmd-package.tgz
-RUN cp /tmp/qmd-package.tgz /tmp/tobilu-qmd.tgz
+COPY *-qmd-*.tgz /tmp/qmd-package.tgz
+RUN cp /tmp/qmd-package.tgz /tmp/package.tgz
 RUN mise exec node@latest -- npm install -g /tmp/qmd-package.tgz
 RUN mise exec bun@latest -- bun install -g /tmp/qmd-package.tgz
 

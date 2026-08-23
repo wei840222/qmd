@@ -29,13 +29,13 @@ You can read more about QMD's progress in the [CHANGELOG](CHANGELOG.md).
 
 ```sh
 # Install globally (Node or Bun)
-npm install -g @tobilu/qmd
+npm install -g @wei840222/qmd
 # or
-bun install -g @tobilu/qmd
+bun install -g @wei840222/qmd
 
 # Or run directly
-npx @tobilu/qmd ...
-bunx @tobilu/qmd ...
+npx @wei840222/qmd ...
+bunx @wei840222/qmd ...
 
 # Create collections for your notes, docs, and meeting transcripts
 qmd collection add ~/notes --name notes
@@ -216,13 +216,13 @@ Use QMD as a library in your own Node.js or Bun applications.
 #### Installation
 
 ```sh
-npm install @tobilu/qmd
+npm install @wei840222/qmd
 ```
 
 #### Quick Start
 
 ```typescript
-import { createStore } from '@tobilu/qmd'
+import { createStore } from '@wei840222/qmd'
 
 const store = await createStore({
   dbPath: './my-index.sqlite',
@@ -244,7 +244,7 @@ await store.close()
 `createStore()` accepts three modes:
 
 ```typescript
-import { createStore } from '@tobilu/qmd'
+import { createStore } from '@wei840222/qmd'
 
 // 1. Inline config — no files needed besides the DB
 const store = await createStore({
@@ -429,7 +429,7 @@ import type {
   CollectionConfig,    // Inline config shape
   IndexStatus,         // From getStatus()
   IndexHealthInfo,     // From getIndexHealth()
-} from '@tobilu/qmd'
+} from '@wei840222/qmd'
 ```
 
 Utility exports:
@@ -440,7 +440,7 @@ import {
   addLineNumbers,              // Add line numbers to text
   DEFAULT_MULTI_GET_MAX_BYTES, // Default max file size for multiGet (64KB)
   Maintenance,                 // Database maintenance operations
-} from '@tobilu/qmd'
+} from '@wei840222/qmd'
 ```
 
 #### Lifecycle
@@ -727,9 +727,9 @@ Review the resulting pin and dictionary diff before committing an update.
 ## Installation
 
 ```sh
-npm install -g @tobilu/qmd
+npm install -g @wei840222/qmd
 # or
-bun install -g @tobilu/qmd
+bun install -g @wei840222/qmd
 ```
 
 ### Development

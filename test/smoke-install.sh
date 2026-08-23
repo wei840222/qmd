@@ -79,7 +79,7 @@ build_image() {
   npm run build --silent
 
   echo "==> Packing tarball..."
-  rm -f test/tobilu-qmd-*.tgz
+  rm -f test/*-qmd-*.tgz
   TARBALL=$(npm pack --pack-destination test/ 2>/dev/null | tail -1)
   echo "    $TARBALL"
 
@@ -94,7 +94,7 @@ build_image() {
   echo "==> Building container image ($CTR): $IMAGE"
   $CTR build -f test/Containerfile -t "$IMAGE" test/
 
-  rm -f test/tobilu-qmd-*.tgz
+  rm -f test/*-qmd-*.tgz
   rm -rf test/test-src
   echo "==> Image ready: $IMAGE"
 }

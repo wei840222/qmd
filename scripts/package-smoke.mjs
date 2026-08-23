@@ -135,13 +135,14 @@ try {
     { cwd: consumerDir, quiet: true },
   );
 
+  const installedScopeAndName = pkg.name.split("/");
+  const installedRoot = join(consumerDir, "node_modules", ...installedScopeAndName);
   const loaderUrl = pathToFileURL(
-    join(consumerDir, "node_modules", "@tobilu", "qmd", "dist", "search", "jieba-loader.js"),
+    join(installedRoot, "dist", "search", "jieba-loader.js"),
   ).href;
   const analyzerUrl = pathToFileURL(
-    join(consumerDir, "node_modules", "@tobilu", "qmd", "dist", "search", "cjk-analyzer.js"),
+    join(installedRoot, "dist", "search", "cjk-analyzer.js"),
   ).href;
-  const installedRoot = join(consumerDir, "node_modules", "@tobilu", "qmd");
   for (const path of [
     "THIRD_PARTY_NOTICES.md",
     "dist/search/zh-dict.txt",

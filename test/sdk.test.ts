@@ -1,7 +1,7 @@
 /**
  * sdk.test.ts - Unit tests for the QMD SDK (library mode)
  *
- * Tests the public API exposed via `@tobilu/qmd` (src/index.ts).
+ * Tests the public API exposed via `@wei840222/qmd` (src/index.ts).
  * Uses inline config (no YAML files) to verify the SDK works self-contained.
  */
 
