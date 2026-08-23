@@ -1120,7 +1120,7 @@ export async function rebuildCjkLexicalIndex(
       JOIN content ON content.hash = d.hash
       WHERE d.active = 1
       ORDER BY d.id
-    `).iterate<SourceRow>();
+    `).iterate() as IterableIterator<SourceRow>;
     let batch: AnalyzedRow[] = [];
     for (const row of iterator) {
       batch.push(await analyzeSourceRow(row, fixedLoader));

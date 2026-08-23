@@ -7,9 +7,6 @@ import { findLocalConfigPath, getLocalDbPath } from "../src/collections.js";
 
 function cliCommandArgs(command: string): { bin: string; args: string[] } {
   const cliPath = join(process.cwd(), "src/cli/qmd.ts");
-  if (process.versions.bun) {
-    return { bin: process.execPath, args: [cliPath, command] };
-  }
   return {
     bin: process.execPath,
     args: [join(process.cwd(), "node_modules/tsx/dist/cli.mjs"), cliPath, command],

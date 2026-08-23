@@ -2,38 +2,31 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [local]
   pull_request:
-    branches: [main]
+    branches: [local]
 
 jobs:
   test-node:
-    name: Node ${{ matrix.node-version }} (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # Verified native dependency targets: Linux x64 glibc, macOS arm64.
-        os: [ubuntu-latest, macos-latest]
-        node-version: ["22", "23"]
+        node-version: ["24"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
+          cache: pnpm
 
-      - name: Install SQLite (Ubuntu)
-        if: runner.os == 'Linux'
+      - name: Install SQLite
         run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
-
-      - name: Install SQLite (macOS)
-        if: runner.os == 'macOS'
-        run: brew install sqlite
-
-      - name: Enable Corepack
-        run: corepack enable
 
       - name: Install dependencies from the frozen pnpm lockfile
         run: pnpm install --frozen-lockfile
@@ -42,50 +35,27 @@ jobs:
         run: pnpm audit --audit-level high
 
       - name: Lint
-        run: npx oxlint
+        run: pnpm run lint
+
+      - name: Type Check
+        run: pnpm run test:types
+
+      - name: AST Grammars Smoke
+        run: pnpm run smoke:package-grammars
 
       - name: Tests
-        run: npx vitest run --reporter=verbose --testTimeout 60000 test/
-        env:
-          CI: true
+        run: pnpm run test:unit
 
-  test-bun:
-    name: Bun (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # Verified native dependency targets: Linux x64 glibc, macOS arm64.
-        os: [ubuntu-latest, macos-latest]
+      - name: Packed package smoke
+        run: pnpm run test:package
 
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
+      - name: Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
-          bun-version: latest
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Install SQLite (Ubuntu)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
-
-      - name: Install SQLite (macOS)
-        if: runner.os == 'macOS'
-        run: brew install sqlite
-
-      - name: Verify lockfile is up-to-date
-        run: bun install --frozen-lockfile
-
-      - name: Tests
-        run: bun test --timeout 60000 --preload ./src/test-preload.ts test/
-        env:
-          CI: true
-          DYLD_LIBRARY_PATH: /opt/homebrew/opt/sqlite/lib
-          LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
-
-      - name: Packed package smoke (Node and Bun)
-        run: bun run test:package
+          token-setup-trivy: ${{ secrets.GITHUB_TOKEN }}
+          version: v0.70.0
+          scan-type: fs
+          scan-ref: .
+          format: table
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: true

@@ -76,7 +76,7 @@ export function formatGrammarLoadError(language: SupportedLanguage, err: unknown
   const grammar = GRAMMAR_MAP[language];
   const detail = err instanceof Error ? err.message : String(err);
   return `${grammar.pkg}/${grammar.wasm} failed to load (${detail}); falling back to regex chunking. ` +
-    `Repair a broken global install with: bun add ${grammar.pkg}@${grammar.version}`;
+    `Repair a broken global install with: pnpm add ${grammar.pkg}@${grammar.version}`;
 }
 
 // =============================================================================

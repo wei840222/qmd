@@ -276,9 +276,7 @@ describe("qmd mcp stdio process lifecycle", () => {
     try {
       await writeFile(join(workDir, "index.yml"), "collections: {}\n");
 
-      const runtimeArgs = process.versions.bun
-        ? [cliPath, "mcp"]
-        : ["--import", "tsx", cliPath, "mcp"];
+      const runtimeArgs = ["--import", "tsx", cliPath, "mcp"];
 
       child = spawn(process.execPath, runtimeArgs, {
         cwd: repoRoot,
@@ -346,13 +344,8 @@ describe("qmd mcp stdio process lifecycle", () => {
       // written by registerStdioEofShutdown before teardown starts.
       expect(stderrChunks.join("")).toContain("Shutting down (stdin closed)");
 
-      // Sanity: no WAL sidecar survives a clean database shutdown on the node
-      // child (explicit close or final-connection teardown both checkpoint).
-      // bun:sqlite can retain the sidecar after a clean close depending on
-      // platform, so the bun child is not asserted on.
-      if (!process.versions.bun) {
-        expect(existsSync(join(workDir, "lifecycle.sqlite-wal"))).toBe(false);
-      }
+      // Sanity: no WAL sidecar survives a clean database shutdown.
+      expect(existsSync(join(workDir, "lifecycle.sqlite-wal"))).toBe(false);
     } finally {
       if (child && child.exitCode === null && child.signalCode === null) {
         child.kill("SIGKILL");

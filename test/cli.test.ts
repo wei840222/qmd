@@ -36,11 +36,8 @@ let testCounter = 0; // Unique counter for each test run
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(thisDir, "..");
 const qmdScript = join(projectRoot, "src", "cli", "qmd.ts");
-const isBunRuntime = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
 const tsxCli = join(projectRoot, "node_modules", "tsx", "dist", "cli.mjs");
-const qmdCommand = isBunRuntime
-  ? { command: process.execPath, args: [qmdScript] }
-  : { command: process.execPath, args: [tsxCli, qmdScript] };
+const qmdCommand = { command: process.execPath, args: [tsxCli, qmdScript] };
 
 function qmdRunnerArgs(args: string[]): { command: string; args: string[] } {
   return { command: qmdCommand.command, args: [...qmdCommand.args, ...args] };

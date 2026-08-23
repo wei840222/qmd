@@ -2,7 +2,7 @@ name: Publish
 
 on:
   push:
-    tags: ["v*"]
+    tags: ["*.*.*"]
 
 jobs:
   publish:
@@ -15,29 +15,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install SQLite
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
-
-      - name: Verify lockfile is up-to-date
-        run: bun install --frozen-lockfile
-
-      - run: bun test --timeout 60000 --preload ./src/test-preload.ts test/
-        env:
-          CI: true
-          LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+      - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          package-manager-cache: false
+          cache: pnpm
 
-      - run: npm run build
-      - run: npm publish --provenance --access public
+      - name: Install SQLite
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
+      - name: Verify lockfile is up-to-date
+        run: pnpm install --frozen-lockfile
+
+      - name: Tests
+        run: npx vitest run --reporter=verbose --testTimeout 60000 test/
+        env:
+          CI: true
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish
+        run: npm publish --provenance --access public
 
       - name: Extract release notes
         id: notes

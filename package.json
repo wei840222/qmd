@@ -1,6 +1,6 @@
 {
   "name": "@wei840222/qmd",
-  "version": "2026.8.23",
+  "version": "2026.8.23-1",
   "packageManager": "pnpm@11.15.1",
   "description": "Query Markup Documents - On-device hybrid search for markdown files with BM25, vector search, and LLM reranking",
   "type": "module",
@@ -34,17 +34,15 @@
     "lint": "oxlint",
     "test": "node scripts/test-all.mjs",
     "test:types": "node ./node_modules/typescript/bin/tsc -p tsconfig.build.json --noEmit",
-    "test:node": "bun scripts/test-runtime.mjs node",
-    "test:bun": "bun scripts/test-runtime.mjs bun",
-    "test:models:node": "bun scripts/test-runtime.mjs node --models-only",
-    "test:models:bun": "bun scripts/test-runtime.mjs bun --models-only",
-    "test:unit": "CI=true node ./node_modules/vitest/vitest.mjs run --reporter=verbose --testTimeout 60000 test/ && CI=true bun test --timeout 60000 --preload ./src/test-preload.ts test/",
+    "test:models": "node scripts/test-runtime.mjs",
+    "test:models:only": "node scripts/test-runtime.mjs --models-only",
+    "test:unit": "CI=true node ./node_modules/vitest/vitest.mjs run --reporter=verbose --testTimeout 60000 test/",
     "test:quality": "node ./node_modules/vitest/vitest.mjs run --reporter=verbose test/eval-cjk.test.ts",
     "test:package": "node scripts/package-smoke.mjs",
     "smoke:package-grammars": "node scripts/check-package-grammars.mjs",
     "dict:sync": "node scripts/sync-zh-dict.mjs",
-    "measure:cjk": "bun scripts/measure-cjk.ts",
-    "inspector": "bunx @modelcontextprotocol/inspector tsx src/cli/qmd.ts mcp",
+    "measure:cjk": "tsx scripts/measure-cjk.ts",
+    "inspector": "npx @modelcontextprotocol/inspector tsx src/cli/qmd.ts mcp",
     "release": "./scripts/release.sh",
     "qmd": "tsx src/cli/qmd.ts",
     "index": "tsx src/cli/qmd.ts index",
@@ -52,7 +50,7 @@
     "search": "tsx src/cli/qmd.ts search",
     "vsearch": "tsx src/cli/qmd.ts vsearch",
     "rerank": "tsx src/cli/qmd.ts rerank",
-    "bench": "bun src/cli/qmd.ts bench"
+    "bench": "tsx src/cli/qmd.ts bench"
   },
   "publishConfig": {
     "access": "public"
@@ -67,7 +65,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
-    "@node-rs/jieba": "2.0.1",
+    "@node-rs/jieba": "2.0.2",
     "better-sqlite3": "^13.0.3",
     "fast-glob": "3.3.3",
     "node-llama-cpp": "3.20.0",

@@ -28,17 +28,15 @@ describe("jieba capability loader", () => {
       name.startsWith("@node-rs/jieba-")
     ));
 
-    expect(packageJson.dependencies["@node-rs/jieba"]).toBe("2.0.1");
+    expect(packageJson.dependencies["@node-rs/jieba"]).toBe("2.0.2");
     expect(directPlatformPackages).toEqual([]);
-
-    const lockfile = readFileSync(join(projectRoot, "bun.lock"), "utf8");
-    expect(lockfile).toContain('"@node-rs/jieba-linux-x64-gnu": "2.0.1"');
-    expect(lockfile).toContain('"@node-rs/jieba-darwin-x64": "2.0.1"');
-    expect(lockfile).toContain('"@node-rs/jieba-darwin-arm64": "2.0.1"');
 
     const pnpmLockfile = readFileSync(join(projectRoot, "pnpm-lock.yaml"), "utf8");
     expect(pnpmLockfile).toContain("'@node-rs/jieba':");
-    expect(pnpmLockfile).toContain("specifier: 2.0.1");
+    expect(pnpmLockfile).toContain("specifier: 2.0.2");
+    expect(pnpmLockfile).toContain("'@node-rs/jieba-linux-x64-gnu@2.0.2'");
+    expect(pnpmLockfile).toContain("'@node-rs/jieba-darwin-x64@2.0.2'");
+    expect(pnpmLockfile).toContain("'@node-rs/jieba-darwin-arm64@2.0.2'");
   });
 
   test("loads the native package lazily and returns stable golden tokens", async () => {

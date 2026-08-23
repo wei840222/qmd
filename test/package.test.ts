@@ -12,7 +12,6 @@ describe("package test task", () => {
 
     expect(pkg.scripts["test:types"]).toContain("tsconfig.build.json --noEmit");
     expect(pkg.scripts["test:unit"]).toContain("vitest.mjs");
-    expect(pkg.scripts["test:unit"]).toContain("bun test");
     expect(pkg.scripts["test:unit"]).toContain("CI=true");
 
     expect(pkg.scripts["test:package"]).toContain("scripts/package-smoke.mjs");
@@ -20,19 +19,16 @@ describe("package test task", () => {
     const testAllScript = readFileSync(new URL("scripts/test-all.mjs", root), "utf8");
     expect(testAllScript).toContain("TypeScript build typecheck");
     expect(testAllScript).toContain("Vitest suite under Node");
-    expect(testAllScript).toContain("Bun test suite");
     expect(testAllScript).toContain("Package smoke");
 
     const packageSmokeScript = readFileSync(new URL("scripts/package-smoke.mjs", root), "utf8");
     expect(packageSmokeScript).toContain("scripts/build.mjs");
     expect(packageSmokeScript).toContain("scripts/check-package-grammars.mjs");
     expect(packageSmokeScript).toContain("compiled CLI under Node");
-    expect(packageSmokeScript).toContain("compiled CLI under Bun");
     expect(packageSmokeScript).toContain("package wrapper");
 
     const ciWorkflow = readFileSync(new URL(".github/workflows/ci.yml", root), "utf8");
     expect(ciWorkflow).toContain("pnpm install --frozen-lockfile");
-    expect(ciWorkflow).toContain("bun install --frozen-lockfile");
     expect(ciWorkflow).toContain("pnpm audit --audit-level high");
     expect(ciWorkflow).not.toMatch(/^\s*run:\s+npm install(?:\s|$)/m);
   });

@@ -2,32 +2,68 @@
 
 ## [Unreleased]
 
+## [2026.8.23-1] - 2026-08-23
+
 ### Added
 
-- Added Oxlint lint fence.
-- Added a bundled Traditional Chinese Jieba dictionary that deterministically
-  combines the node-rs base dictionary, APCLab's Taiwan dictionary, and
-  zhtw-mcp technical terms. `pnpm dict:sync` verifies pinned source hashes;
-  `pnpm dict:sync --update-pins` refreshes the upstream pins.
-- Added CJK-aware lexical retrieval with independent character, Jieba word, and
-  bigram FTS5 channels, versioned rank fusion and explain traces. The bundled
-  reviewed Traditional Chinese technical dictionary records its pinned source
-  and MIT attribution in `THIRD_PARTY_NOTICES.md`.
-- Added typed local/OpenAI embedding providers, provider-qualified vector
-  identities, resumable chunk persistence, build leases, remote preflight and
-  acknowledgement, request-purpose guards, safe OpenAI errors, and additive
-  diagnostics in CLI, SDK, and MCP. Local embedding remains the default.
-- Added `OPENAI_BASE_URL` for routing OpenAI-compatible embedding requests
-  through a self-hosted proxy while retaining the existing remote-consent flow.
-- Added the native `@node-rs/jieba` dependency and package smoke coverage for its
-  Node/Bun runtime loading and packaged dictionary data.
+- **Pure Node.js + pnpm Standardized Toolchain**: Completely standardized the project on
+  Node.js (>=22) and pnpm (`pnpm@11.15.1`). Removed all Bun-specific runtime abstractions,
+  lockfile heuristics, and dual-runtime test preloads.
+- **Oxlint & Code Quality Fences**: Added Oxlint static analysis rules (`oxlint`) and anti-slop
+  guardrails across the codebase.
+- **CJK 3-Way Lexical Retrieval**: Added CJK-aware lexical retrieval with independent character,
+  Jieba word, and bigram FTS5 shadow channels, versioned reciprocal rank fusion (RRF), and
+  explain traces.
+- **Bundled Traditional Chinese Jieba Dictionary**: Added a bundled Traditional Chinese dictionary
+  deterministically combining `@node-rs/jieba` (`2.0.2`), APCLab's Taiwan dictionary, and
+  `sysprog21/zhtw-mcp` technical terms. Pinned sources and hashes are recorded in
+  `src/search/zh-dict.sources.json` and `THIRD_PARTY_NOTICES.md`.
+- **Custom User Dictionary Support**: Added `user_dict` configuration supporting custom
+  user dictionaries with automatic analyzer fingerprint updates.
+- **Typed Remote OpenAI-Compatible Embedding Provider**: Added typed `OpenAIEmbeddingProvider`,
+  provider-qualified vector identities, resumable chunk persistence, build leases, remote
+  preflight, chunk byte budgeting, and safe OpenAI error handling.
+- **Remote LLM Query Expansion & Chat Reranking**: Supported OpenAI-compatible
+  `/v1/chat/completions` API endpoints for remote query expansion and reranking with XML-structured
+  prompts and current timestamp injection.
+- **Vector Table Collection Column**: Added `collection` column to vector indexes with automatic
+  schema migration and collection-scoped filtering.
+- **Single-Item Batch Embedding Fallback**: Added single-item fallback to gracefully handle and
+  recover from oversized batch chunks during embedding and vector repair.
+- **Agent Skill Query Syntax Reference**: Added `skills/qmd/references/query-syntax.md` detailing
+  formal EBNF grammar, search operators, and structured MCP JSON payloads, linked directly from
+  `skills/qmd/SKILL.md`.
+- **Automated Jules PR Code Reviews**: Integrated Google Jules PR review GitHub Actions workflow
+  (`.github/workflows/jules-pr-review.yml`) with automatic `git diff` fallback for large diffs (>20k lines).
+- **Trivy Vulnerability Scanner & Fast CI Checks**: Integrated Trivy filesystem and dependency security
+  scanner, TypeScript type checking (`pnpm run test:types`), and Tree-sitter WASM grammars smoke
+  (`pnpm run smoke:package-grammars`) in `.github/workflows/ci.yml`.
 
 ### Changed
 
-- Chat-completions reranking now prioritizes explicit query constraints such as
-  entities, locations, versions, time, and negations. Valid empty rerank results
-  no longer fall back to neutral scores, and parsed chat rerank output is sorted
-  by descending relevance score.
+- **Runtime Standardization & Bun Deprecation**: Standardized database layer on `better-sqlite3`
+  and `sqlite-vec`. Streamlined `bin/qmd` launcher to a pure Node.js / `tsx` trampoline.
+  Replaced all `bun` / `bunx` scripts with `node`, `pnpm`, `tsx`, and `npx`.
+- **Unified `models` Configuration Block**: Replaced disjointed embedding and expand configurations
+  with a unified `models:` configuration block supporting `embed`, `generate`, and `rerank`
+  endpoints/models.
+- **Generic MCP Client Documentation**: Generalized MCP server configuration instructions across
+  `README.md` and `skills/qmd/references/mcp-setup.md` to support all MCP-compatible clients
+  (Cursor, Claude Desktop, Zed, OpenClaw, etc.).
+- **Standardized Multi-Holder MIT License**: Updated `LICENSE` to the standard multi-holder copyright
+  formatting (Tobi Lutke and Wan, Jiun Wei) for full compatibility with automated license scanners.
+- **Test Suite Semver Suffix Support**: Updated CLI `--version` test in `test/esm-ambiguous-module.test.ts`
+  to support Semver prerelease/build suffixes (e.g. `2026.8.23-1`).
+- **Remote LLM Prompt Architecture & Hardening**: Remote query expansion and chat-completions
+  reranking now use consistent XML prompt structures, escape untrusted prompt data, preserve
+  cross-language technical terms, and discard low-confidence chat rerank scores below `0.1`.
+- **Direct Remote Authorization**: Streamlined remote embedding and execution by removing
+  legacy interactive remote consent prompts while enforcing strict identity fingerprinting.
+- **Database Performance Optimizations**: Skipped redundant database write transactions when
+  configuration state remains unchanged.
+- **Dependency Upgrades**: Upgraded `@node-rs/jieba` to `2.0.2` and updated package scope to
+  `@wei840222/qmd`.
+
 - Remote query expansion and chat-completions reranking now use a consistent
   Gemini-style XML prompt structure in both system and user messages, separating
   role, instructions, constraints, output format, context, task, and final
@@ -101,6 +137,18 @@
   atomic path, persist diagnostics for `qmd doctor`, recover YAML/SQLite drift on
   reopen, keep CLI update/include settings synchronized, and use atomic durable
   YAML replacement.
+
+### Removed
+
+- Removed Nix flake configurations (`flake.nix`, `flake.lock`) and related CI jobs.
+- Removed `bun.lock`, `src/test-preload.ts`, and `test/launcher-detection.test.sh`.
+- Removed legacy interactive remote embedding consent workflows in favor of direct configuration-based authorization.
+
+### Security
+
+- Added Trivy filesystem and dependency security scanning in CI workflows.
+- Bound MCP HTTP server explicitly to `127.0.0.1`.
+- Sanitized remote LLM error handling to prevent leaking credentials or headers.
 
 ### Compatibility
 

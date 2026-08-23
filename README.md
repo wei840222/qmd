@@ -28,14 +28,13 @@ You can read more about QMD's progress in the [CHANGELOG](CHANGELOG.md).
 ## Quick Start (Local Embedding Default)
 
 ```sh
-# Install globally (Node or Bun)
+# Install globally
 npm install -g @wei840222/qmd
 # or
-bun install -g @wei840222/qmd
+pnpm add -g @wei840222/qmd
 
 # Or run directly
 npx @wei840222/qmd ...
-bunx @wei840222/qmd ...
 
 # Create collections for your notes, docs, and meeting transcripts
 qmd collection add ~/notes --name notes
@@ -96,27 +95,9 @@ Although the tool works perfectly fine when you just tell your agent to use it o
 - `multi_get` — Batch retrieve by glob pattern, comma-separated list, or docids
 - `status` — Index health and collection info
 
-**Claude Desktop configuration** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+#### Stdio Transport (Default)
 
-```json
-{
-  "mcpServers": {
-    "qmd": {
-      "command": "qmd",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-**Claude Code** — Install the plugin (recommended):
-
-```bash
-claude plugin marketplace add tobi/qmd
-claude plugin install qmd@qmd
-```
-
-Or configure MCP manually in `~/.claude/settings.json`:
+Add QMD to your MCP client configuration (e.g. Cursor, Claude Desktop, Zed, or other MCP-compatible clients):
 
 ```json
 {
@@ -211,7 +192,7 @@ results seem unscoped. The HTTP `/query` and `/search` endpoints return
 
 ### SDK / Library Usage
 
-Use QMD as a library in your own Node.js or Bun applications.
+Use QMD as a library in your own Node.js applications.
 
 #### Installation
 
@@ -552,7 +533,6 @@ The `query` command uses **Reciprocal Rank Fusion (RRF)** with position-aware bl
 ### System Requirements
 
 - **Node.js** >= 22
-- **Bun** >= 1.0.0
 - **macOS**: Homebrew SQLite (for extension support)
   ```sh
   brew install sqlite
@@ -729,16 +709,16 @@ Review the resulting pin and dictionary diff before committing an update.
 ```sh
 npm install -g @wei840222/qmd
 # or
-bun install -g @wei840222/qmd
+pnpm add -g @wei840222/qmd
 ```
 
 ### Development
 
 ```sh
-git clone https://github.com/tobi/qmd
+git clone https://github.com/wei840222/qmd
 cd qmd
-bun install
-bun link
+pnpm install
+npm link
 ```
 
 ## Usage
@@ -811,7 +791,7 @@ opt in. Run `qmd status` to verify which grammars are available.
 
 > **Note:** Tree-sitter grammars are optional dependencies. If they are not
 > installed, `--chunk-strategy auto` falls back to regex-only chunking
-> automatically. Tested on both Node.js and Bun.
+> automatically.
 
 ### Context Management
 

@@ -4050,7 +4050,7 @@ export function countOrphanedVectors(db: Database): number {
  * Returns the number of orphaned embedding chunks deleted.
  */
 export function cleanupOrphanedVectors(db: Database): number {
-  // sqlite-vec may not be loaded (e.g. Bun's bun:sqlite lacks loadExtension).
+  // sqlite-vec may not be loaded if extension failed to initialize.
   // The vectors_vec virtual table can appear in sqlite_master from a prior
   // session, but querying it without the vec0 module loaded will crash (#380).
   if (!isSqliteVecAvailable()) {

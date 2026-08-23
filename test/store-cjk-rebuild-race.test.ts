@@ -35,10 +35,8 @@ const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(thisDir, "..");
 const crashWorker = join(thisDir, "_helpers", "cjk-rebuild-crash-worker.ts");
 const tsxCli = join(projectRoot, "node_modules", "tsx", "dist", "cli.mjs");
-const isBunRuntime = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
-
 function spawnCrashWorker(dbPath: string): ChildProcessWithoutNullStreams {
-  const args = isBunRuntime ? [crashWorker, dbPath] : [tsxCli, crashWorker, dbPath];
+  const args = [tsxCli, crashWorker, dbPath];
   return spawn(process.execPath, args, { stdio: ["pipe", "pipe", "pipe"] });
 }
 

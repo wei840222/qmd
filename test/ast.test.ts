@@ -322,7 +322,7 @@ describe("getASTBreakPoints - error handling", () => {
       new Error("Cannot find module 'tree-sitter-typescript/tree-sitter-typescript.wasm'"),
     );
     expect(msg).toContain("tree-sitter-typescript");
-    expect(msg).toContain("bun add tree-sitter-typescript@0.23.2");
+    expect(msg).toContain("pnpm add tree-sitter-typescript@0.23.2");
     expect(msg).toContain("falling back to regex");
   });
 });
