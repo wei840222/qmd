@@ -35,14 +35,14 @@ try {
 
   // Step 2: Populate collection names from collections table
   console.log(`\n${c.yellow}2. Populating collection names...${c.reset}`);
-  db.exec(`
+  const updateResult = db.prepare(`
     UPDATE documents
     SET collection = (
       SELECT name FROM collections WHERE collections.id = documents.collection_id
     )
     WHERE collection IS NULL
-  `);
-  console.log(`  ${c.green}✓${c.reset} Updated rows`);
+  `).run();
+  console.log(`  ${c.green}✓${c.reset} Updated ${updateResult.changes} rows`);
 
   // Step 3: Verify no NULL values
   const nullCount = db.prepare(
