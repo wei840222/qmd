@@ -148,7 +148,7 @@ const BACKENDS: Backend[] = [
     run: async (store, query, limit, collection) => {
       const structured = parseStructuredQuery(query.query);
       const results = structured
-        ? await store.search({ queries: structured.searches, intent: structured.intent, limit, collection, rerank: false })
+        ? await store.search({ queries: structured.searches, rerankContext: structured.intent, limit, collection, rerank: false })
         : await store.search({ query: query.query, limit, collection, rerank: false });
       return results.map((r: HybridQueryResult) => r.file);
     },
@@ -158,7 +158,7 @@ const BACKENDS: Backend[] = [
     run: async (store, query, limit, collection) => {
       const structured = parseStructuredQuery(query.query);
       const results = structured
-        ? await store.search({ queries: structured.searches, intent: structured.intent, limit, collection, rerank: true })
+        ? await store.search({ queries: structured.searches, rerankContext: structured.intent, limit, collection, rerank: true })
         : await store.search({ query: query.query, limit, collection, rerank: true });
       return results.map((r: HybridQueryResult) => r.file);
     },

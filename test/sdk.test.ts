@@ -796,10 +796,10 @@ describe("search (unified API)", () => {
       expect(results[0]).toHaveProperty("docid");
     }, 90000);
 
-    test("search() with intent and rerank:false returns results", async () => {
+    test("search() with rerankContext and rerank:false returns results", async () => {
       const results = await store.search({
         query: "meeting",
-        intent: "quarterly planning and roadmap",
+        rerankContext: "quarterly planning and roadmap",
         rerank: false,
       });
       expect(results.length).toBeGreaterThan(0);

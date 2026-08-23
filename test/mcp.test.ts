@@ -1151,6 +1151,9 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
 
     const queryTool = json.result.tools.find((tool: any) => tool.name === "query");
     expect(queryTool.inputSchema.properties.expansion.enum).toEqual(["auto", "force", "skip"]);
+    expect(queryTool.inputSchema.properties.intent).toBeUndefined();
+    expect(queryTool.inputSchema.properties.expansionContext.type).toBe("string");
+    expect(queryTool.inputSchema.properties.rerankContext.type).toBe("string");
     expect(queryTool.inputSchema.properties.explain.type).toBe("boolean");
   });
 

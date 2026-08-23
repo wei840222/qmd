@@ -2107,10 +2107,10 @@ export type Store = {
   searchVec: (query: string, model: string, limit?: number, collectionFilter?: CollectionFilter, session?: ILLMSession, precomputedEmbedding?: number[]) => Promise<SearchResult[]>;
 
   // Query expansion & reranking
-  expandQuery: (query: string, model?: string, intent?: string, options?: QueryExpansionOptions) => Promise<ExpandedQuery[]>;
+  expandQuery: (query: string, model?: string, expansionContext?: string, options?: QueryExpansionOptions) => Promise<ExpandedQuery[]>;
   /** Drop the cached expansion for a query so the next call regenerates. */
-  invalidateExpansionCache: (query: string, intent?: string) => void;
-  rerank: (query: string, documents: { file: string; text: string }[], model?: string, intent?: string) => Promise<{ file: string; score: number }[]>;
+  invalidateExpansionCache: (query: string, expansionContext?: string) => void;
+  rerank: (query: string, documents: { file: string; text: string }[], model?: string, rerankContext?: string) => Promise<{ file: string; score: number }[]>;
 
   // Document retrieval
   findDocument: (filename: string, options?: { includeBody?: boolean }) => DocumentResult | DocumentLookupError;
@@ -3500,11 +3500,11 @@ export function createStore(dbPath?: string, options: CreateStoreOptions = {}): 
     ),
 
     // Query expansion & reranking
-    expandQuery: (query: string, model?: string, intent?: string, options?: QueryExpansionOptions) => expandQuery(query, model ?? store.localLlm?.generateModelName ?? (store.llm as any)?.generateModelName ?? DEFAULT_QUERY_MODEL, db, intent, store.llm, options),
-    invalidateExpansionCache: (query: string, intent?: string) => deleteExpansionCacheEntry(db, query, store.localLlm?.generateModelName ?? (store.llm as any)?.generateModelName ?? DEFAULT_QUERY_MODEL, intent),
-    rerank: (query: string, documents: { file: string; text: string }[], model?: string, intent?: string) => {
+    expandQuery: (query: string, model?: string, expansionContext?: string, options?: QueryExpansionOptions) => expandQuery(query, model ?? store.localLlm?.generateModelName ?? (store.llm as any)?.generateModelName ?? DEFAULT_QUERY_MODEL, db, expansionContext, store.llm, options),
+    invalidateExpansionCache: (query: string, expansionContext?: string) => deleteExpansionCacheEntry(db, query, store.localLlm?.generateModelName ?? (store.llm as any)?.generateModelName ?? DEFAULT_QUERY_MODEL, expansionContext),
+    rerank: (query: string, documents: { file: string; text: string }[], model?: string, rerankContext?: string) => {
       const llm = getLlm(store);
-      return rerank(query, documents, model ?? store.localLlm?.rerankModelName ?? llm?.rerankModelName ?? DEFAULT_RERANK_MODEL, db, intent, store.llm ?? llm);
+      return rerank(query, documents, model ?? store.localLlm?.rerankModelName ?? llm?.rerankModelName ?? DEFAULT_RERANK_MODEL, db, rerankContext, store.llm ?? llm);
     },
 
     // Document retrieval
@@ -3942,7 +3942,7 @@ export type CacheKeyBody = {
   model?: string;
   chunk?: string;
   file?: string;
-  intent?: string;
+  expansionContext?: string;
 };
 
 export function getCacheKey(url: string, body: CacheKeyBody): string {
@@ -6029,9 +6029,9 @@ export function insertEmbedding(
 // Query expansion
 // =============================================================================
 
-export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database, intent?: string, llmOverride?: LLM, options?: QueryExpansionOptions): Promise<ExpandedQuery[]> {
+export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database, expansionContext?: string, llmOverride?: LLM, options?: QueryExpansionOptions): Promise<ExpandedQuery[]> {
   // Check cache first — stored as JSON preserving types
-  const cacheKey = getCacheKey("expandQuery", { query, model, ...(intent && { intent }) });
+  const cacheKey = getCacheKey("expandQuery", { query, model, ...(expansionContext && { expansionContext }) });
   const cached = getCachedResult(db, cacheKey);
   if (cached) {
     try {
@@ -6051,7 +6051,7 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
 
   const llm = llmOverride ?? getDefaultLlamaCpp();
   // Note: LlamaCpp uses hardcoded model, model parameter is ignored
-  const results = await llm.expandQuery(query, { context: intent });
+  const results = await llm.expandQuery(query, { context: expansionContext });
 
   // Map Queryable[] → ExpandedQuery[] (same shape, decoupled from llm.ts internals).
   // Filter out entries that duplicate the original query text.
@@ -6075,8 +6075,8 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
  * expansion's sub-queries all came back empty — left in place, the dud entry
  * would replay the same misses on every warm repeat of the query.
  */
-export function deleteExpansionCacheEntry(db: Database, query: string, model: string = DEFAULT_QUERY_MODEL, intent?: string): void {
-  const cacheKey = getCacheKey("expandQuery", { query, model, ...(intent && { intent }) });
+export function deleteExpansionCacheEntry(db: Database, query: string, model: string = DEFAULT_QUERY_MODEL, expansionContext?: string): void {
+  const cacheKey = getCacheKey("expandQuery", { query, model, ...(expansionContext && { expansionContext }) });
   db.prepare(`DELETE FROM llm_cache WHERE hash = ?`).run(cacheKey);
 }
 
@@ -6084,9 +6084,9 @@ export function deleteExpansionCacheEntry(db: Database, query: string, model: st
 // Reranking
 // =============================================================================
 
-export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, intent?: string, llmOverride?: LLM): Promise<{ file: string; score: number }[]> {
-  // Prepend intent to rerank query so the reranker scores with domain context
-  const rerankQuery = intent ? `${intent}\n\n${query}` : query;
+export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, rerankContext?: string, llmOverride?: LLM): Promise<{ file: string; score: number }[]> {
+  // Prepend rerank context so the reranker scores with domain context.
+  const rerankQuery = rerankContext ? `${rerankContext}\n\n${query}` : query;
   const llm = llmOverride ?? getDefaultLlamaCpp();
   // Prefer the LLM instance's resolved URI so a models.rerank swap cannot
   // reuse another model's cache entries (#764).
@@ -6962,7 +6962,10 @@ export interface HybridQueryOptions {
   minScore?: number;        // default 0
   candidateLimit?: number;  // default RERANK_CANDIDATE_LIMIT
   explain?: boolean;        // include backend/RRF/rerank score traces
-  intent?: string;          // domain intent hint for disambiguation
+  /** Additional context used only while generating query expansions. */
+  expansionContext?: string;
+  /** Additional context used for reranking and snippet/chunk selection. */
+  rerankContext?: string;
   expansion?: ExpansionMode; // default auto
   skipRerank?: boolean;     // skip LLM reranking, use only RRF scores
   chunkStrategy?: ChunkStrategy;
@@ -7028,7 +7031,8 @@ export async function hybridQuery(
     ? options.collections
     : options?.collection;
   const explain = options?.explain ?? false;
-  const intent = options?.intent;
+  const expansionContext = options?.expansionContext;
+  const rerankContext = options?.rerankContext;
   const expansionMode = options?.expansion ?? "auto";
   const skipRerank = options?.skipRerank ?? false;
   const hooks = options?.hooks;
@@ -7039,8 +7043,8 @@ export async function hybridQuery(
   const hasVectors = hasSearchableVectorIndex(store);
 
   // Step 1: BM25 probe — strong signal skips expensive LLM expansion
-  // When intent is provided, disable strong-signal bypass — the obvious BM25
-  // match may not be what the caller wants (e.g. "performance" with intent
+  // When either context is provided, disable strong-signal bypass — the obvious BM25
+  // match may not be what the caller wants (e.g. "performance" with context
   // "web page load times" should NOT shortcut to a sports-performance doc).
   // Pass collection directly into FTS query (filter at SQL level, not post-hoc)
   const parsedDirective = parseExpansionDirective(query);
@@ -7052,7 +7056,7 @@ export async function hybridQuery(
     expansionDecision = resolveExpansionPolicy({
       query,
       mode: expansionMode,
-      strongSignal: !intent && strongSignal.strong,
+      strongSignal: !expansionContext && !rerankContext && strongSignal.strong,
       allowCjkExpand: Boolean((store.llm as any)?.supportsExpand),
     });
   } catch (error) {
@@ -7074,7 +7078,7 @@ export async function hybridQuery(
   try {
     expanded = expansionDecision.action === "skip"
       ? []
-      : await store.expandQuery(query, undefined, intent, {
+      : await store.expandQuery(query, undefined, expansionContext, {
         requireResult: expansionDecision.reason === "explicit-force",
       });
   } catch (error) {
@@ -7176,7 +7180,7 @@ export async function hybridQuery(
     const runnable = expanded.filter(q => q.type === "lex" || hasVectors);
     const expansionContributed = rankedListMeta.some(m => m.queryType !== "original");
     if (runnable.length > 0 && !expansionContributed) {
-      store.invalidateExpansionCache(query, intent);
+      store.invalidateExpansionCache(query, expansionContext);
     }
   }
 
@@ -7192,7 +7196,7 @@ export async function hybridQuery(
   // Step 5: Chunk documents, pick best chunk per doc for reranking.
   // Reranking full bodies is O(tokens) — the critical perf lesson that motivated this refactor.
   const queryTerms = query.toLowerCase().split(/\s+/).filter(t => t.length > 2);
-  const intentTerms = intent ? extractIntentTerms(intent) : [];
+  const intentTerms = rerankContext ? extractIntentTerms(rerankContext) : [];
   const docChunkMap = new Map<string, { chunks: { text: string; pos: number }[]; bestIdx: number }>();
 
   const chunkStrategy = options?.chunkStrategy;
@@ -7277,7 +7281,7 @@ export async function hybridQuery(
 
   hooks?.onRerankStart?.(chunksToRerank.length);
   const rerankStart = Date.now();
-  const reranked = await store.rerank(query, chunksToRerank, undefined, intent);
+  const reranked = await store.rerank(query, chunksToRerank, undefined, rerankContext);
   hooks?.onRerankDone?.(Date.now() - rerankStart);
 
   // Step 7: Blend RRF position score with reranker score
@@ -7349,7 +7353,8 @@ export interface VectorSearchOptions {
   collection?: CollectionFilter;
   limit?: number;           // default 10
   minScore?: number;        // default 0.3
-  intent?: string;          // domain intent hint for disambiguation
+  /** Additional context used only while generating query expansions. */
+  expansionContext?: string;
   hooks?: Pick<SearchHooks, 'onExpand'>;
 }
 
@@ -7380,13 +7385,13 @@ export async function vectorSearchQuery(
   const limit = options?.limit ?? 10;
   const minScore = options?.minScore ?? 0.3;
   const collection = options?.collection;
-  const intent = options?.intent;
+  const expansionContext = options?.expansionContext;
 
   if (!hasSearchableVectorIndex(store)) return [];
 
   // Expand query — filter to vec/hyde only (lex queries target FTS, not vector)
   const expandStart = Date.now();
-  const allExpanded = await store.expandQuery(query);
+  const allExpanded = await store.expandQuery(query, undefined, expansionContext);
   const vecExpanded = allExpanded.filter(q => q.type !== 'lex');
   options?.hooks?.onExpand?.(query, vecExpanded, Date.now() - expandStart);
 
@@ -7431,8 +7436,8 @@ export interface StructuredSearchOptions {
   minScore?: number;        // default 0
   candidateLimit?: number;  // default RERANK_CANDIDATE_LIMIT
   explain?: boolean;        // include backend/RRF/rerank score traces
-  /** Domain intent hint for disambiguation — steers reranking and chunk selection */
-  intent?: string;
+  /** Additional context used for reranking and snippet/chunk selection. */
+  rerankContext?: string;
   /** Skip LLM reranking, use only RRF scores */
   skipRerank?: boolean;
   chunkStrategy?: ChunkStrategy;
@@ -7466,7 +7471,7 @@ export async function structuredSearch(
   const minScore = options?.minScore ?? 0;
   const candidateLimit = options?.candidateLimit ?? RERANK_CANDIDATE_LIMIT;
   const explain = options?.explain ?? false;
-  const intent = options?.intent;
+  const rerankContext = options?.rerankContext;
   const skipRerank = options?.skipRerank ?? false;
   const hooks = options?.hooks;
 
@@ -7586,7 +7591,7 @@ export async function structuredSearch(
     || searches.find(s => s.type === 'vec')?.query
     || searches[0]?.query || "";
   const queryTerms = primaryQuery.toLowerCase().split(/\s+/).filter(t => t.length > 2);
-  const intentTerms = intent ? extractIntentTerms(intent) : [];
+  const intentTerms = rerankContext ? extractIntentTerms(rerankContext) : [];
   const docChunkMap = new Map<string, { chunks: { text: string; pos: number }[]; bestIdx: number }>();
   const ssChunkStrategy = options?.chunkStrategy;
 
@@ -7671,7 +7676,7 @@ export async function structuredSearch(
 
   hooks?.onRerankStart?.(chunksToRerank.length);
   const rerankStart2 = Date.now();
-  const reranked = await store.rerank(primaryQuery, chunksToRerank, undefined, intent);
+  const reranked = await store.rerank(primaryQuery, chunksToRerank, undefined, rerankContext);
   hooks?.onRerankDone?.(Date.now() - rerankStart2);
 
   // Step 6: Blend RRF position score with reranker score

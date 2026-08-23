@@ -3130,7 +3130,7 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
       collection: collectionNames,
       limit: opts.all ? 500 : (opts.limit || 10),
       minScore: opts.minScore || 0.3,
-      intent: opts.intent,
+      expansionContext: opts.intent,
       hooks: {
         onExpand: (original, expanded) => {
           logExpansionTree(original, expanded);
@@ -3202,7 +3202,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
         candidateLimit: opts.candidateLimit,
         skipRerank: opts.skipRerank,
         explain: !!opts.explain,
-        intent,
+        rerankContext: intent,
         chunkStrategy: opts.chunkStrategy,
         hooks: {
           onEmbedStart: (count) => {
@@ -3230,7 +3230,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
         candidateLimit: opts.candidateLimit,
         skipRerank: opts.skipRerank,
         explain: !!opts.explain,
-        intent,
+        rerankContext: intent,
         expansion: opts.expansion,
         chunkStrategy: opts.chunkStrategy,
         hooks: {

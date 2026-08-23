@@ -183,8 +183,10 @@ export interface SearchOptions {
   query?: string;
   /** Pre-expanded queries (from expandQuery) — bypasses expansion policy evaluation */
   queries?: ExpandedQuery[];
-  /** Domain intent hint — steers reranking and snippet/chunk selection */
-  intent?: string;
+  /** Additional context used only while generating query expansions. */
+  expansionContext?: string;
+  /** Additional context used for reranking and snippet/chunk selection. */
+  rerankContext?: string;
   /** Rerank results using LLM (default: true) */
   rerank?: boolean;
   /** Filter to a specific collection */
@@ -227,13 +229,8 @@ export interface VectorSearchOptions {
  * Options for expandQuery() — manual query expansion.
  */
 export interface ExpandQueryOptions {
-  /**
-   * @deprecated Ignored. Intent no longer feeds the expansion model — caller
-   * intent is meta-language the model reproduced verbatim as sub-queries.
-   * Pass intent via SearchOptions instead, where it shapes reranking and
-   * snippet selection.
-   */
-  intent?: string;
+  /** Additional context used only while generating query expansions. */
+  expansionContext?: string;
 }
 
 /**
@@ -563,7 +560,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
           limit: opts.limit,
           minScore: opts.minScore,
           explain: opts.explain,
-          intent: opts.intent,
+          rerankContext: opts.rerankContext,
           candidateLimit: opts.candidateLimit,
           skipRerank,
           chunkStrategy: opts.chunkStrategy,
@@ -577,7 +574,8 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         limit: opts.limit,
         minScore: opts.minScore,
         explain: opts.explain,
-        intent: opts.intent,
+        expansionContext: opts.expansionContext,
+        rerankContext: opts.rerankContext,
         expansion: opts.expansion,
         hooks: opts.hooks,
         candidateLimit: opts.candidateLimit,
@@ -595,7 +593,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         opts?.collection,
       );
     },
-    expandQuery: async (q, opts) => internal.expandQuery(q, undefined, opts?.intent),
+    expandQuery: async (q, opts) => internal.expandQuery(q, undefined, opts?.expansionContext),
     get: async (pathOrDocid, opts) => internal.findDocument(pathOrDocid, opts),
     getDocumentBody: async (pathOrDocid, opts) => {
       const result = internal.findDocument(pathOrDocid, { includeBody: false });

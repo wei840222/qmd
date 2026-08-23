@@ -131,13 +131,13 @@ async function buildInstructions(store: QMDStore): Promise<string> {
   lines.push("  - type:'vec' — semantic vector search (meaning-based)");
   lines.push("  - type:'hyde' — hypothetical document (write what the answer looks like)");
   lines.push("");
-  lines.push("  Always provide `intent` on every search call to disambiguate and improve snippets.");
+  lines.push("  Use `rerankContext` to disambiguate results and improve snippets when needed.");
   lines.push("");
   lines.push("Examples:");
   lines.push("  Quick keyword lookup: [{type:'lex', query:'error handling'}]");
   lines.push("  Semantic search: [{type:'vec', query:'how to handle errors gracefully'}]");
   lines.push("  Best results: [{type:'lex', query:'error'}, {type:'vec', query:'error handling best practices'}]");
-  lines.push("  With intent: searches=[{type:'lex', query:'performance'}], intent='web page load times'");
+  lines.push("  With context: searches=[{type:'lex', query:'performance'}], rerankContext='web page load times'");
 
   // --- Retrieval workflow ---
   lines.push("");
@@ -297,7 +297,7 @@ Best recall on a technical topic:
 ]
 \`\`\`
 
-Intent-aware lex (C++ performance, not sports):
+Context-aware lex (C++ performance, not sports):
 \`\`\`json
 [
   { "type": "lex", "query": "\\"C++ performance\\" optimization -sports -athlete" },
@@ -323,8 +323,11 @@ Intent-aware lex (C++ performance, not sports):
           "Maximum candidates to rerank (default: 40, lower = faster but may miss results)"
         ),
         collections: z.array(z.string()).optional().describe("Filter to collections (OR match)"),
-        intent: z.string().optional().describe(
-          "Background context to disambiguate the query. Example: query='performance', intent='web page load times and Core Web Vitals'. Does not search on its own."
+        expansionContext: z.string().optional().describe(
+          "Additional context used only to generate lex, vec, and hyde query expansions."
+        ),
+        rerankContext: z.string().optional().describe(
+          "Additional context used only to rerank results and select snippets/chunks."
         ),
         rerank: z.boolean().optional().default(true).describe(
           "Rerank results using LLM (default: true). Set to false for faster results on CPU-only machines."
@@ -334,7 +337,7 @@ Intent-aware lex (C++ performance, not sports):
         ),
       }),
     },
-    track(async ({ query, searches, expansion, limit, minScore, candidateLimit, collections, intent, rerank, explain }) => {
+    track(async ({ query, searches, expansion, limit, minScore, candidateLimit, collections, expansionContext, rerankContext, rerank, explain }) => {
       // Require exactly one of `query` (plain text with an expansion policy) or `searches` (typed sub-queries).
       if (!query && (!searches || searches.length === 0)) {
         return {
@@ -369,7 +372,8 @@ Intent-aware lex (C++ performance, not sports):
           minScore,
           candidateLimit,
           rerank,
-          intent,
+          expansionContext,
+          rerankContext,
           explain,
           expansion: query ? expansion : undefined,
           hooks: explain && query ? {
@@ -394,7 +398,7 @@ Intent-aware lex (C++ performance, not sports):
         || "";
 
       const filtered: SearchResultItem[] = results.map(r => {
-        const { line, snippet } = extractSnippet(r.body, primaryQuery, 300, r.bestChunkPos, r.bestChunk.length, intent);
+        const { line, snippet } = extractSnippet(r.body, primaryQuery, 300, r.bestChunkPos, r.bestChunk.length, rerankContext);
         return {
           docid: `#${r.docid}`,
           file: r.displayPath,
@@ -1035,7 +1039,8 @@ export async function startMcpHttpServer(
           limit: typeof params.limit === "number" ? params.limit : 10,
           minScore: typeof params.minScore === "number" ? params.minScore : 0,
           candidateLimit: typeof params.candidateLimit === "number" ? params.candidateLimit : undefined,
-          intent: typeof params.intent === "string" ? params.intent : undefined,
+          expansionContext: typeof params.expansionContext === "string" ? params.expansionContext : undefined,
+          rerankContext: typeof params.rerankContext === "string" ? params.rerankContext : undefined,
           rerank: typeof params.rerank === "boolean" ? params.rerank : undefined,
         });
 
@@ -1045,7 +1050,7 @@ export async function startMcpHttpServer(
           || searches[0]?.query || "";
 
         const formatted = results.map(r => {
-          const { line, snippet } = extractSnippet(r.body, String(primaryQuery), 300, r.bestChunkPos, r.bestChunk.length, typeof params.intent === "string" ? params.intent : undefined);
+          const { line, snippet } = extractSnippet(r.body, String(primaryQuery), 300, r.bestChunkPos, r.bestChunk.length, typeof params.rerankContext === "string" ? params.rerankContext : undefined);
           return {
             docid: `#${r.docid}`,
             file: `qmd://${encodeQmdPath(r.displayPath)}`,

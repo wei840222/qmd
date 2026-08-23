@@ -1415,6 +1415,45 @@ describe("Caching", () => {
 });
 
 describe("Query expansion cache (#818)", () => {
+  test("passes expansion and rerank contexts to their own stages", async () => {
+    const store = await createTestStore();
+    const expandQuerySpy = vi.fn(async () => [{ type: "lex" as const, query: "charlie" }]);
+    const rerankSpy = vi.fn(async (_query: string, docs: { file: string; text: string }[]) =>
+      docs.map((doc) => ({ file: doc.file, score: 0.9 })),
+    );
+
+    try {
+      await insertTestDocument(store.db, "docs", {
+        name: "alpha",
+        title: "Alpha Bravo",
+        body: "# Alpha\n\nalpha bravo charlie content.",
+      });
+      store.expandQuery = expandQuerySpy as typeof store.expandQuery;
+      store.rerank = rerankSpy as typeof store.rerank;
+
+      await hybridQuery(store, "alpha bravo", {
+        expansion: "force",
+        expansionContext: "expansion-only context",
+        rerankContext: "rerank-only context",
+      });
+
+      expect(expandQuerySpy).toHaveBeenCalledWith(
+        "alpha bravo",
+        undefined,
+        "expansion-only context",
+        { requireResult: true },
+      );
+      expect(rerankSpy).toHaveBeenCalledWith(
+        "alpha bravo",
+        expect.any(Array),
+        undefined,
+        "rerank-only context",
+      );
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
   test("expandQuery serves cached expansions without invoking the LLM", async () => {
     const store = await createTestStore();
     try {
@@ -1441,12 +1480,12 @@ describe("Query expansion cache (#818)", () => {
         body: "# Alpha\n\nalpha bravo charlie content.",
       });
       const model = store.localLlm?.generateModelName ?? (store.llm as any)?.generateModelName ?? DEFAULT_QUERY_MODEL;
-      const cacheKey = getCacheKey("expandQuery", { query: "alpha bravo", model, intent: "unrelated meta commentary" });
+      const cacheKey = getCacheKey("expandQuery", { query: "alpha bravo", model, expansionContext: "unrelated meta commentary" });
       store.setCachedResult(cacheKey, JSON.stringify([{ type: "lex", query: "zzzqqq wwwuuu" }]));
 
-      // intent disables the strong-signal bypass so the cached expansion is
-      // actually consulted; it no longer reaches the expansion model itself.
-      await hybridQuery(store, "alpha bravo", { limit: 5, minScore: 0, skipRerank: true, intent: "unrelated meta commentary" });
+      // Expansion context disables the strong-signal bypass so the cached
+      // expansion is actually consulted.
+      await hybridQuery(store, "alpha bravo", { limit: 5, minScore: 0, skipRerank: true, expansionContext: "unrelated meta commentary" });
 
       // The dud expansion found nothing — it must not survive to poison the
       // next warm repeat of this query.
@@ -1465,10 +1504,10 @@ describe("Query expansion cache (#818)", () => {
         body: "# Alpha\n\nalpha bravo charlie content.",
       });
       const model = store.localLlm?.generateModelName ?? (store.llm as any)?.generateModelName ?? DEFAULT_QUERY_MODEL;
-      const cacheKey = getCacheKey("expandQuery", { query: "alpha bravo", model, intent: "unrelated meta commentary" });
+      const cacheKey = getCacheKey("expandQuery", { query: "alpha bravo", model, expansionContext: "unrelated meta commentary" });
       store.setCachedResult(cacheKey, JSON.stringify([{ type: "lex", query: "charlie" }]));
 
-      await hybridQuery(store, "alpha bravo", { limit: 5, minScore: 0, skipRerank: true, intent: "unrelated meta commentary" });
+      await hybridQuery(store, "alpha bravo", { limit: 5, minScore: 0, skipRerank: true, expansionContext: "unrelated meta commentary" });
 
       expect(store.getCachedResult(cacheKey)).not.toBeNull();
     } finally {

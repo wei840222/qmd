@@ -189,7 +189,8 @@ Point any MCP client at `http://localhost:8181/mcp` to connect.
 | `query` | `searches` | array | Typed sub-queries (`lex`/`vec`/`hyde`), 1–10. Mutually exclusive with `query`; exactly one is required. First gets 2x weight. |
 | `query` | `expansion` | string | Plain-query policy: `auto` (default), `force`, or `skip`. Ignored when `searches` is used. |
 | `query` | `collections` | string[] | Filter by collection names (OR). **Array only** — singular `collection` is silently ignored. |
-| `query` | `intent` | string | Disambiguation context (does not search on its own) |
+| `query` | `expansionContext` | string | Additional context used only to generate `lex` / `vec` / `hyde` query expansions. |
+| `query` | `rerankContext` | string | Additional context used only for reranking and snippet/chunk selection. |
 | `query` | `limit` | number | Max results (default 10) |
 | `query` | `minScore` | number | Minimum relevance 0–1 (default 0) |
 | `query` | `candidateLimit` | number | Max candidates to rerank (default 40) |
@@ -277,7 +278,8 @@ const results = await store.search({ query: "authentication flow" })
 // With options
 const results2 = await store.search({
   query: "rate limiting",
-  intent: "API throttling and abuse prevention",
+  expansionContext: "API throttling and abuse prevention",
+  rerankContext: "API throttling and abuse prevention",
   collection: "docs",
   limit: 5,
   minScore: 0.3,
@@ -312,7 +314,7 @@ const lexResults = await store.searchLex("auth middleware", { limit: 10 })
 const vecResults = await store.searchVector("how users log in", { limit: 10 })
 
 // Manual query expansion for full control
-const expanded = await store.expandQuery("auth flow", { intent: "user login" })
+const expanded = await store.expandQuery("auth flow", { expansionContext: "user login" })
 const results4 = await store.search({ queries: expanded })
 ```
 
@@ -998,7 +1000,7 @@ and `deep-search` (→ `query`).
 --line-numbers     # Add line numbers to output
 --explain          # Include retrieval score traces (query, JSON/CLI output)
 --index <name>     # Use named index
---intent "<text>"  # Disambiguation context (e.g. "web page load times")
+--intent "<text>"  # Legacy CLI alias for rerank context (e.g. "web page load times")
 --no-rerank        # Skip LLM reranking (RRF scores only; faster on CPU)
 -C, --candidate-limit <n>  # Max candidates to rerank (default: 40)
 --full-path        # Emit on-disk filesystem paths instead of qmd:// URIs
