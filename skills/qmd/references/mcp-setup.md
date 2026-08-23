@@ -10,21 +10,14 @@ qmd embed
 
 ## Configure MCP Client
 
-**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+Add QMD to your MCP client configuration (e.g. Cursor, Claude Desktop, Zed, OpenClaw, or other MCP-compatible clients):
+
 ```json
 {
   "mcpServers": {
-    "qmd": { "command": "qmd", "args": ["mcp"] }
-  }
-}
-```
-
-**OpenClaw** (`~/.openclaw/openclaw.json`):
-```json
-{
-  "mcp": {
-    "servers": {
-      "qmd": { "command": "qmd", "args": ["mcp"] }
+    "qmd": {
+      "command": "qmd",
+      "args": ["mcp"]
     }
   }
 }

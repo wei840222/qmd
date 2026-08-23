@@ -95,7 +95,9 @@ Although the tool works perfectly fine when you just tell your agent to use it o
 - `multi_get` — Batch retrieve by glob pattern, comma-separated list, or docids
 - `status` — Index health and collection info
 
-**Claude Desktop configuration** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+#### Stdio Transport (Default)
+
+Add QMD to your MCP client configuration (e.g. Cursor, Claude Desktop, Zed, or other MCP-compatible clients):
 
 ```json
 {
