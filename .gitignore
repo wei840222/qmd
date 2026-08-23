@@ -5,6 +5,7 @@ package-lock.json
 .npmrc
 *.sqlite
 .DS_Store
+__pycache__
 archive/
 texts/
 .cursor/
