@@ -1114,13 +1114,13 @@ export async function rebuildCjkLexicalIndex(
       WHERE build_id = ? AND state = 'building'
     `).run(baseMutationSeq, baseMutationSeq, Date.now(), build.buildId);
 
-    const iterator = snapshot.prepare<unknown[], SourceRow>(`
+    const iterator = snapshot.prepare(`
       SELECT d.id, d.collection, d.path, d.title, content.doc AS body
       FROM documents d
       JOIN content ON content.hash = d.hash
       WHERE d.active = 1
       ORDER BY d.id
-    `).iterate();
+    `).iterate() as IterableIterator<SourceRow>;
     let batch: AnalyzedRow[] = [];
     for (const row of iterator) {
       batch.push(await analyzeSourceRow(row, fixedLoader));

@@ -20,9 +20,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+          cache: pnpm
 
       - name: Install SQLite (Ubuntu)
         if: runner.os == 'Linux'
@@ -31,9 +34,6 @@ jobs:
       - name: Install SQLite (macOS)
         if: runner.os == 'macOS'
         run: brew install sqlite
-
-      - name: Enable Corepack
-        run: corepack enable
 
       - name: Install dependencies from the frozen pnpm lockfile
         run: pnpm install --frozen-lockfile
