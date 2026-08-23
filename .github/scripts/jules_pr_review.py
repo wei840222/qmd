@@ -122,7 +122,23 @@ def push_diff_branch(branch_name):
 
 def get_pr_diff(owner, repo, pr_number):
     url = f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{pr_number}"
-    return request("GET", url, github_headers("application/vnd.github.v3.diff"))
+    try:
+        return request("GET", url, github_headers("application/vnd.github.v3.diff"))
+    except RuntimeError as exc:
+        if "406" in str(exc) or "too_large" in str(exc):
+            log("GitHub API diff returned 406 (diff exceeded limit), falling back to git diff...")
+            base_ref = os.environ.get("BASE_REF", "main")
+            base_sha = os.environ.get("BASE_SHA")
+            subprocess.run(["git", "fetch", "origin", base_ref], check=False, capture_output=True)
+            if base_sha:
+                try:
+                    res = subprocess.run(["git", "diff", f"{base_sha}...HEAD"], capture_output=True, text=True, check=True)
+                    return res.stdout
+                except subprocess.CalledProcessError:
+                    pass
+            res = subprocess.run(["git", "diff", f"origin/{base_ref}...HEAD"], capture_output=True, text=True, check=True)
+            return res.stdout
+        raise
 
 
 def create_diff_branch(pr_number, diff_text):
