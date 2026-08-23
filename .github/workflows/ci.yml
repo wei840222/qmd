@@ -37,6 +37,12 @@ jobs:
       - name: Lint
         run: pnpm run lint
 
+      - name: Type Check
+        run: pnpm run test:types
+
+      - name: AST Grammars Smoke
+        run: pnpm run smoke:package-grammars
+
       - name: Tests
         run: pnpm run test:unit
 
