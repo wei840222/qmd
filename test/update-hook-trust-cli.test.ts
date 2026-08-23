@@ -15,9 +15,8 @@ import { spawn } from "node:child_process";
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(thisDir, "..");
 const qmdScript = join(projectRoot, "src", "cli", "qmd.ts");
-const isBunRuntime = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
 const tsxCli = join(projectRoot, "node_modules", "tsx", "dist", "cli.mjs");
-const runnerArgs = isBunRuntime ? [qmdScript] : [tsxCli, qmdScript];
+const runnerArgs = [tsxCli, qmdScript];
 
 let projectDir: string;
 let configDir: string;

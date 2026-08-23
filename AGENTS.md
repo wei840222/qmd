@@ -1,6 +1,6 @@
 # QMD - Query Markup Documents
 
-Use Bun instead of Node.js (`bun` not `node`, `bun install` not `npm install`).
+Use Node.js (>=22) and pnpm (`pnpm` not `npm` or `bun`, `pnpm install` not `npm install`).
 
 ## Commands
 
@@ -137,8 +137,8 @@ qmd multi-get "#abc123, #def456"
 ## Development
 
 ```sh
-bun src/cli/qmd.ts <command>   # Run from source
-bun link               # Install globally as 'qmd'
+pnpm qmd <command>       # Run from source (or: npx tsx src/cli/qmd.ts <command>)
+npm link                 # Install globally as 'qmd'
 ```
 
 ## Tests & Benchmarks
@@ -146,15 +146,15 @@ bun link               # Install globally as 'qmd'
 All tests live in `test/`. Run everything:
 
 ```sh
+pnpm test
 npx vitest run --reporter=verbose test/
-bun test --preload ./src/test-preload.ts test/
 ```
 
 Run CJK evaluation & benchmarks:
 
 ```sh
-bun run test:quality   # Run CJK search retrieval quality tests (test/eval-cjk.test.ts)
-bun run measure:cjk    # Measure CJK rebuild latency, DB payload size, and recall/MRR
+pnpm run test:quality   # Run CJK search retrieval quality tests (test/eval-cjk.test.ts)
+pnpm run measure:cjk    # Measure CJK rebuild latency, DB payload size, and recall/MRR
 ```
 
 ## Architecture
@@ -173,11 +173,9 @@ bun run measure:cjk    # Measure CJK rebuild latency, DB payload size, and recal
 - Write out example commands for the user to run manually
 - Index is stored at `~/.cache/qmd/index.sqlite`
 
-## Do NOT compile
+## Building
 
-- Never run `bun build --compile` - it overwrites the shell wrapper and breaks sqlite-vec
-- The `qmd` file is a shell script that runs compiled JS from `dist/` - do not replace it
-- `npm run build` compiles TypeScript to `dist/` via `tsc -p tsconfig.build.json`
+- `pnpm run build` compiles TypeScript to `dist/` via `tsc -p tsconfig.build.json`
 
 ## Releasing
 

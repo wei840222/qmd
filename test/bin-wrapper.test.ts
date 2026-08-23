@@ -8,18 +8,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const fixtures: string[] = [];
 
-// Shebang-forward for bin/qmd must exec a real Node binary, not bun.
-// `bun test` sets process.execPath to bun; interpolating that would run the
-// trampoline under bun and hit the PATH-`node` fallback, which is the
-// opposite of the NODE_MODULE_VERSION case this suite pins.
-function realNodeExecPath(): string {
-  if (typeof process.versions.bun !== "string") return process.execPath;
-  const result = spawnSync("node", ["-p", "process.execPath"], { encoding: "utf8" });
-  const resolved = result.stdout?.trim();
-  if (result.status === 0 && resolved) return resolved;
-  return "node";
-}
-const REAL_NODE = realNodeExecPath();
+const REAL_NODE = process.execPath;
 
 function makeTempFixture() {
   const root = mkdtempSync(join(tmpdir(), "qmd-bin-wrapper-"));
@@ -28,16 +17,14 @@ function makeTempFixture() {
   const runtimeBin = join(root, "runtime-bin");
   mkdirSync(runtimeBin, { recursive: true });
 
-  for (const runtime of ["node", "bun"]) {
-    const runtimePath = join(runtimeBin, runtime);
-    if (runtime === "node") {
-      // Shebang of bin/qmd is `#!/usr/bin/env node`, so PATH `node` must
-      // still launch the trampoline. The trampoline itself must NOT
-      // re-resolve `node` from PATH for the child (#577 leftover): that
-      // is the NODE_MODULE_VERSION bug. Exit 42 if it does.
-      writeFileSync(
-        runtimePath,
-        `#!/bin/sh
+  const runtimePath = join(runtimeBin, "node");
+  // Shebang of bin/qmd is `#!/usr/bin/env node`, so PATH `node` must
+  // still launch the trampoline. The trampoline itself must NOT
+  // re-resolve `node` from PATH for the child (#577 leftover): that
+  // is the NODE_MODULE_VERSION bug. Exit 42 if it does.
+  writeFileSync(
+    runtimePath,
+    `#!/bin/sh
 if [ "$(basename "$1")" = "qmd" ]; then
   exec "${REAL_NODE}" "$@"
 else
@@ -45,15 +32,8 @@ else
   exit 42
 fi
 `,
-      );
-    } else {
-      writeFileSync(
-        runtimePath,
-        `#!/bin/sh\n{\n  printf '%s\\n' '${runtime}'\n  printf '%s\\n' "$1"\n  shift\n  printf '%s\\n' "$@"\n} > "$QMD_WRAPPER_CAPTURE"\n`,
-      );
-    }
-    chmodSync(runtimePath, 0o755);
-  }
+  );
+  chmodSync(runtimePath, 0o755);
 
   return { root, capturePath, runtimeBin };
 }
@@ -193,104 +173,19 @@ describe("bin/qmd package wrapper", () => {
     expect(result.scriptPath).toBe(realpathSync(join(packageRoot, "dist", "cli", "qmd.js")));
   });
 
-  test("bun global symlink uses bun when package-local bun lockfile exists", () => {
-    const { root, runtimeBin, capturePath } = makeTempFixture();
-    const packageRoot = makePackage(root, "home/user/.bun/install/global/node_modules/@tobilu/qmd", ["bun.lock"]);
-    const bunBin = join(root, "home", "user", ".bun", "bin", "qmd");
-    symlinkRelative(join(packageRoot, "bin", "qmd"), bunBin);
-
-    const result = runWrapper(bunBin, runtimeBin, capturePath);
-
-    expect(result.runtime).toBe("bun");
-    expect(result.scriptPath).toBe(realpathSync(join(packageRoot, "dist", "cli", "qmd.js")));
-  });
-
-  test("bun global install with bun.lock at the install root uses bun", () => {
-    const { root, runtimeBin, capturePath } = makeTempFixture();
-    const packageRoot = makePackage(root, "home/user/.bun/install/global/node_modules/@tobilu/qmd");
-    writeFileSync(join(root, "home", "user", ".bun", "install", "global", "bun.lock"), "");
-    const bunBin = join(root, "home", "user", ".bun", "bin", "qmd");
-    symlinkRelative(join(packageRoot, "bin", "qmd"), bunBin);
-
-    const result = runWrapper(bunBin, runtimeBin, capturePath);
-
-    expect(result.runtime).toBe("bun");
-    expect(result.scriptPath).toBe(realpathSync(join(packageRoot, "dist", "cli", "qmd.js")));
-  });
-
-  test("package-lock.json at the install root keeps npm priority", () => {
-    const { root, runtimeBin, capturePath } = makeTempFixture();
-    const packageRoot = makePackage(root, "project/node_modules/@tobilu/qmd");
-    writeFileSync(join(root, "project", "package-lock.json"), "");
-    writeFileSync(join(root, "project", "bun.lock"), "");
-
-    const result = runWrapper(join(packageRoot, "bin", "qmd"), runtimeBin, capturePath);
-
-    expect(result.runtime).toBe("node");
-    expect(result.scriptPath).toBe(realpathSync(join(packageRoot, "dist", "cli", "qmd.js")));
-  });
-
-  test("ambient BUN_INSTALL alone does not select bun for an npm-installed package", () => {
-    const { root, runtimeBin, capturePath } = makeTempFixture();
-    const packageRoot = makePackage(root, "opt/homebrew/lib/node_modules/@tobilu/qmd");
-    const globalBin = join(root, "opt", "homebrew", "bin", "qmd");
-    symlinkRelative(join(packageRoot, "bin", "qmd"), globalBin);
-
-    const result = runWrapper(globalBin, runtimeBin, capturePath, { BUN_INSTALL: join(root, ".bun") });
-
-    expect(result.runtime).toBe("node");
-    expect(result.scriptPath).toBe(realpathSync(join(packageRoot, "dist", "cli", "qmd.js")));
-  });
-
-  test("package-lock.json takes priority over bun lockfiles", () => {
-    const { root, runtimeBin, capturePath } = makeTempFixture();
-    const packageRoot = makePackage(root, "node_modules/@tobilu/qmd", ["package-lock.json", "bun.lock"]);
-
-    const result = runWrapper(join(packageRoot, "bin", "qmd"), runtimeBin, capturePath);
-
-    expect(result.runtime).toBe("node");
-    expect(result.scriptPath).toBe(realpathSync(join(packageRoot, "dist", "cli", "qmd.js")));
-  });
-
   test("packaged tree uses dist even if source files are present", () => {
     const { root, runtimeBin, capturePath } = makeTempFixture();
-    const packageRoot = makePackage(root, "node_modules/@tobilu/qmd", ["bun.lock"], { source: true });
+    const packageRoot = makePackage(root, "node_modules/@tobilu/qmd", [], { source: true });
 
     const result = runWrapper(join(packageRoot, "bin", "qmd"), runtimeBin, capturePath);
 
-    expect(result.runtime).toBe("bun");
+    expect(result.runtime).toBe("node");
     expect(result.scriptPath).toBe(realpathSync(join(packageRoot, "dist", "cli", "qmd.js")));
-  });
-
-  test("prefers source with bun in a Bun checkout even when dist exists", () => {
-    const { root, runtimeBin, capturePath } = makeTempFixture();
-    const packageRoot = makePackage(root, "qmd", ["bun.lock"], { source: true, git: true });
-
-    const result = runWrapper(join(packageRoot, "bin", "qmd"), runtimeBin, capturePath);
-
-    expect(result.runtime).toBe("bun");
-    expect(result.scriptPath).toBe(realpathSync(join(packageRoot, "src", "cli", "qmd.ts")));
-    expect(result.args).toEqual(["--version"]);
   });
 
   test("prefers source through tsx in a Node checkout even when dist exists", () => {
     const { root, runtimeBin, capturePath } = makeTempFixture();
     const packageRoot = makePackage(root, "qmd", [], { source: true, tsx: true, git: true });
-
-    const result = runWrapper(join(packageRoot, "bin", "qmd"), runtimeBin, capturePath);
-
-    expect(result.runtime).toBe("node");
-    expect(result.scriptPath).toBe(realpathSync(join(packageRoot, "node_modules", "tsx", "dist", "cli.mjs")));
-    expect(result.args).toEqual([realpathSync(join(packageRoot, "src", "cli", "qmd.ts")), "--version"]);
-  });
-
-  test("source checkout with both bun.lock and package-lock.json prefers node+tsx", () => {
-    // Mirrors the dist-mode "npm priority" rule: a working tree that has both
-    // lockfiles (because the user ran `npm install` against a repo that also
-    // ships bun.lock) installed native modules for Node's ABI, so source mode
-    // must route through tsx to avoid better-sqlite3 / sqlite-vec mismatches.
-    const { root, runtimeBin, capturePath } = makeTempFixture();
-    const packageRoot = makePackage(root, "qmd", ["bun.lock", "package-lock.json"], { source: true, tsx: true, git: true });
 
     const result = runWrapper(join(packageRoot, "bin", "qmd"), runtimeBin, capturePath);
 
@@ -325,7 +220,7 @@ describe("bin/qmd package wrapper", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("qmd is not built");
-    expect(result.stderr).toContain("bun install && bun run build");
+    expect(result.stderr).toContain("pnpm install && pnpm run build");
     expect(result.stderr).toContain("npm install && npm run build");
     expect(result.stderr).toContain("qmd doctor");
   });

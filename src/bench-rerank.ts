@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * QMD Reranker Benchmark
  *
@@ -6,9 +6,9 @@
  * Reports device, parallelism, memory, VRAM, and throughput.
  *
  * Usage:
- *   bun src/bench-rerank.ts              # full benchmark
- *   bun src/bench-rerank.ts --quick      # quick smoke test (10 docs, 1 iteration)
- *   bun src/bench-rerank.ts --docs 100   # custom doc count
+ *   npx tsx src/bench-rerank.ts              # full benchmark
+ *   npx tsx src/bench-rerank.ts --quick      # quick smoke test (10 docs, 1 iteration)
+ *   npx tsx src/bench-rerank.ts --docs 100   # custom doc count
  */
 
 import {

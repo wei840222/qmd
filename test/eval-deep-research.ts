@@ -42,7 +42,7 @@ function loadQueries(): EvalQuery[] {
 function runBM25Search(query: string): SearchResult[] {
   try {
     const output = execSync(
-      `bun src/qmd.ts search "${query.replace(/"/g, '\\"')}" -c eval-docs --json -n 5 2>/dev/null`,
+      `npx tsx src/cli/qmd.ts search "${query.replace(/"/g, '\\"')}" -c eval-docs --json -n 5 2>/dev/null`,
       { encoding: "utf-8", timeout: 30000 }
     );
     return JSON.parse(output);
@@ -54,7 +54,7 @@ function runBM25Search(query: string): SearchResult[] {
 function runDeepResearch(query: string): SearchResult[] {
   try {
     const output = execSync(
-      `bun src/qmd.ts query "${query.replace(/"/g, '\\"')}" -c eval-docs --json -n 5 2>/dev/null`,
+      `npx tsx src/cli/qmd.ts query "${query.replace(/"/g, '\\"')}" -c eval-docs --json -n 5 2>/dev/null`,
       { encoding: "utf-8", timeout: 120000 }
     );
     return JSON.parse(output);
@@ -140,7 +140,7 @@ async function main() {
 
   // Check if eval-docs collection exists
   try {
-    const status = execSync("bun src/qmd.ts status --json 2>/dev/null", {
+    const status = execSync("npx tsx src/cli/qmd.ts status --json 2>/dev/null", {
       encoding: "utf-8",
     });
     if (!status.includes("eval-docs")) {

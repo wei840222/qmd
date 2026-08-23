@@ -1,3 +1,6 @@
+#!/usr/bin/env node
+import { spawn } from "node:child_process";
+
 const MODEL_TEST_GROUPS = [
   {
     name: "tokenizer",
@@ -74,14 +77,12 @@ const MODEL_TEST_GROUPS = [
 ];
 
 function usage() {
-  console.error("Usage: bun scripts/test-runtime.mjs <node|bun> [--models-only] [--dry-run]");
+  console.error("Usage: node scripts/test-runtime.mjs [--models-only] [--dry-run]");
   process.exit(2);
 }
 
-function commandFor(runtime, file, pattern) {
-  const command = runtime === "node"
-    ? ["node", "./node_modules/vitest/vitest.mjs", "run", "--reporter=verbose", "--testTimeout", "60000"]
-    : ["bun", "test", "--timeout", "60000", "--preload", "./src/test-preload.ts"];
+function commandFor(file, pattern) {
+  const command = [process.execPath, "./node_modules/vitest/vitest.mjs", "run", "--reporter=verbose", "--testTimeout", "60000"];
   if (file) command.push(file);
   if (pattern) command.push("-t", pattern);
   return command;
@@ -91,25 +92,43 @@ function displayCommand(command) {
   return command.map(argument => JSON.stringify(argument)).join(" ");
 }
 
-async function run(name, command, env, dryRun) {
+function run(name, command, env, dryRun) {
   console.log(`\n=== ${name} ===`);
   console.log(displayCommand(command));
-  if (dryRun) return;
+  if (dryRun) return Promise.resolve();
 
-  const child = Bun.spawn(command, {
-    cwd: process.cwd(),
-    env,
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
+  return new Promise((resolve, reject) => {
+    const [bin, ...args] = command;
+    const child = spawn(bin, args, {
+      cwd: process.cwd(),
+      env,
+      stdio: "inherit",
+    });
+
+    child.on("exit", (code) => {
+      if (code !== 0) {
+        process.exit(code ?? 1);
+      } else {
+        resolve();
+      }
+    });
+
+    child.on("error", (err) => {
+      reject(err);
+    });
   });
-  const exitCode = await child.exited;
-  if (exitCode !== 0) process.exit(exitCode);
 }
 
-const [runtime, ...flags] = process.argv.slice(2);
-if (runtime !== "node" && runtime !== "bun") usage();
-if (flags.some(flag => flag !== "--models-only" && flag !== "--dry-run")) usage();
+const args = process.argv.slice(2);
+const flags = args.filter(arg => arg.startsWith("--"));
+const positional = args.filter(arg => !arg.startsWith("--"));
+
+if (positional.length > 0 && positional[0] !== "node") {
+  usage();
+}
+if (flags.some(flag => flag !== "--models-only" && flag !== "--dry-run")) {
+  usage();
+}
 
 const modelsOnly = flags.includes("--models-only");
 const dryRun = flags.includes("--dry-run");
@@ -127,8 +146,8 @@ const modelEnv = {
 };
 
 if (!modelsOnly) {
-  await run(`${runtime} base suite`, commandFor(runtime), baseEnv, dryRun);
+  await run("Node.js base suite", commandFor(), baseEnv, dryRun);
 }
 for (const group of MODEL_TEST_GROUPS) {
-  await run(`${runtime} local model: ${group.name}`, commandFor(runtime, group.file, group.pattern), modelEnv, dryRun);
+  await run(`Node.js local model: ${group.name}`, commandFor(group.file, group.pattern), modelEnv, dryRun);
 }

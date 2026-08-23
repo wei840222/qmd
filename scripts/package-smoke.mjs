@@ -99,12 +99,6 @@ assertPath("THIRD_PARTY_NOTICES.md", "third-party notices");
 run("compiled CLI under Node", process.execPath, ["dist/cli/qmd.js", "--help"], { quiet: true });
 run("package wrapper", "sh", ["bin/qmd", "--help"], { quiet: true });
 
-if (process.env.QMD_SKIP_BUN_SMOKE === "1") {
-  console.log("==> compiled CLI under Bun (skipped by QMD_SKIP_BUN_SMOKE=1)");
-} else {
-  run("compiled CLI under Bun", "bun", ["dist/cli/qmd.js", "--help"], { quiet: true });
-}
-
 const packageSmokeRoot = process.env.QMD_PACKAGE_SMOKE_TMPDIR || join(root, ".tmp");
 mkdirSync(packageSmokeRoot, { recursive: true });
 const packageSmokeDir = mkdtempSync(join(packageSmokeRoot, "qmd-package-smoke-"));
@@ -129,9 +123,9 @@ try {
     `${JSON.stringify({ private: true, type: "module" }, null, 2)}\n`,
   );
   run(
-    "install packed tarball with Bun",
-    "bun",
-    ["add", "--ignore-scripts", join(packageSmokeDir, tarballName)],
+    "install packed tarball with npm",
+    "npm",
+    ["install", "--ignore-scripts", "--no-package-lock", join(packageSmokeDir, tarballName)],
     { cwd: consumerDir, quiet: true },
   );
 
@@ -179,14 +173,6 @@ try {
     ["--input-type=module", "--eval", jiebaSmoke],
     { cwd: consumerDir, env: smokeEnv, quiet: true },
   );
-  if (process.env.QMD_SKIP_BUN_SMOKE !== "1") {
-    run(
-      "packed jieba capability under Bun",
-      "bun",
-      ["--eval", jiebaSmoke],
-      { cwd: consumerDir, env: smokeEnv, quiet: true },
-    );
-  }
 } finally {
   rmSync(packageSmokeDir, { recursive: true, force: true });
 }

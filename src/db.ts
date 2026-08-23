@@ -1,71 +1,20 @@
 /**
- * db.ts - Cross-runtime SQLite compatibility layer
+ * db.ts - SQLite database connection and extension management
  *
- * Provides a unified Database export that works under both Bun (bun:sqlite)
- * and Node.js (better-sqlite3). The APIs are nearly identical — the main
- * difference is the import path.
- *
- * On macOS, Apple's system SQLite is compiled with SQLITE_OMIT_LOAD_EXTENSION,
- * which prevents loading native extensions like sqlite-vec. When running under
- * Bun we call Database.setCustomSQLite() to swap in Homebrew's full-featured
- * SQLite build before creating any database instances.
+ * Provides Database export and connection management using better-sqlite3
+ * and sqlite-vec.
  */
 
-export const isBun = "Bun" in globalThis;
+import BetterSqlite3 from "better-sqlite3";
+import * as sqliteVec from "sqlite-vec";
 
 export type SQLiteValue = string | number | bigint | Buffer | Uint8Array | Float32Array | null;
 export type SQLiteParams = readonly SQLiteValue[];
 
 type DatabaseOpenOptions = {
   readonly?: boolean;
-  create?: boolean;
   fileMustExist?: boolean;
 };
-type DatabaseConstructor = new (path: string, options?: DatabaseOpenOptions) => Database;
-type LoadableSqliteDatabase = Pick<Database, "loadExtension">;
-
-let _Database: DatabaseConstructor;
-let _sqliteVecLoad: ((db: LoadableSqliteDatabase) => void) | null;
-
-if (isBun) {
-  // Dynamic string prevents tsc from resolving bun:sqlite on Node.js builds
-  const bunSqlite = "bun:" + "sqlite";
-  const BunDatabase = (await import(/* @vite-ignore */ bunSqlite)).Database;
-
-  // See: https://bun.com/docs/runtime/sqlite#setcustomsqlite
-  if (process.platform === "darwin") {
-    const homebrewPaths = [
-      "/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib",  // Apple Silicon
-      "/usr/local/opt/sqlite/lib/libsqlite3.dylib",     // Intel
-    ];
-    for (const p of homebrewPaths) {
-      try {
-        BunDatabase.setCustomSQLite(p);
-        break;
-      } catch {}
-    }
-  }
-
-  _Database = BunDatabase;
-
-  // setCustomSQLite may have silently failed — test that extensions actually work.
-  try {
-    const { getLoadablePath } = await import("sqlite-vec");
-    const vecPath = getLoadablePath();
-    const testDb = new BunDatabase(":memory:");
-    testDb.loadExtension(vecPath);
-    testDb.close();
-    _sqliteVecLoad = (db: LoadableSqliteDatabase) => db.loadExtension(vecPath);
-  } catch {
-    // Vector search won't work, but BM25 and other operations are unaffected.
-    _sqliteVecLoad = null;
-  }
-} else {
-  // Dual-runtime: better-sqlite3 matches Database at runtime; published types do not share an interface with bun:sqlite.
-  _Database = (await import("better-sqlite3")).default as DatabaseConstructor;
-  const sqliteVec = await import("sqlite-vec");
-  _sqliteVecLoad = (db: LoadableSqliteDatabase) => sqliteVec.load(db as Parameters<typeof sqliteVec.load>[0]);
-}
 
 function isBusyError(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
@@ -100,14 +49,12 @@ function enableWal(db: Database, budgetMs: number): void {
 }
 
 /**
- * Open a SQLite database. Works with both bun:sqlite and better-sqlite3.
+ * Open a SQLite database using better-sqlite3.
  *
- * `bun:sqlite` and `better-sqlite3` both default `busy_timeout` to 0, so
- * concurrent writers throw `SQLITE_BUSY` instead of waiting. WAL improves
- * read-while-write concurrency but does not serialise writers. Setting the
- * timeout at connection open makes parallel processes (e.g. an `update` or
- * `query` racing a long `embed`, or a first-open schema migration racing any
- * routine command) queue at batch boundaries instead of failing on contact.
+ * `better-sqlite3` defaults `busy_timeout` to 0, so concurrent writers throw
+ * `SQLITE_BUSY` instead of waiting. WAL improves read-while-write concurrency
+ * but does not serialise writers. Setting the timeout at connection open makes
+ * parallel processes queue at batch boundaries instead of failing on contact.
  *
  * WAL is enabled here too (with a bounded retry) so connection-level pragmas
  * live in one place and the cold-database journal migration survives concurrent
@@ -115,11 +62,10 @@ function enableWal(db: Database, budgetMs: number): void {
  *
  * Default 120_000 ms outlasts the worst-case batch commit on a multi-GB
  * index. Override with `QMD_SQLITE_BUSY_TIMEOUT` (value in milliseconds; `0`
- * restores the upstream fail-fast behaviour). See
- * https://bun.sh/docs/api/sqlite#busy-timeout.
+ * restores the upstream fail-fast behaviour).
  */
 export function openDatabase(path: string): Database {
-  const db = new _Database(path) as Database;
+  const db: Database = new BetterSqlite3(path);
   const raw = process.env.QMD_SQLITE_BUSY_TIMEOUT;
   const parsed = raw !== undefined && raw !== "" ? Number(raw) : Number.NaN;
   const busyTimeoutMs = Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 120_000;
@@ -130,10 +76,8 @@ export function openDatabase(path: string): Database {
 
 /** Open an existing database without changing journal mode, schema, or user data. */
 export function openReadOnlyDatabase(path: string): Database {
-  const options: DatabaseOpenOptions = isBun
-    ? { readonly: true, create: false }
-    : { readonly: true, fileMustExist: true };
-  const db = new _Database(path, options) as Database;
+  const options: DatabaseOpenOptions = { readonly: true, fileMustExist: true };
+  const db: Database = new BetterSqlite3(path, options);
   const raw = process.env.QMD_SQLITE_BUSY_TIMEOUT;
   const parsed = raw !== undefined && raw !== "" ? Number(raw) : Number.NaN;
   const busyTimeoutMs = Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 120_000;
@@ -142,38 +86,21 @@ export function openReadOnlyDatabase(path: string): Database {
 }
 
 /**
- * Common subset of the Database interface used throughout QMD.
+ * Database and Statement types used throughout QMD.
  */
-export interface Database {
-  exec(sql: string): void;
-  prepare(sql: string): Statement;
-  loadExtension(path: string): void;
-  // Both drivers return the wrapped function with variant methods attached
-  // (better-sqlite3 and bun:sqlite each expose .immediate/.deferred/.exclusive).
-  transaction<T extends (...args: SQLiteValue[]) => unknown>(fn: T): T & { immediate: T };
-  close(): void;
-}
-
-export interface Statement {
-  run(...params: SQLiteValue[]): { changes: number; lastInsertRowid: number | bigint };
-  get<T = unknown>(...params: SQLiteValue[]): T | undefined;
-  all<T = unknown>(...params: SQLiteValue[]): T[];
-  iterate<T = unknown>(...params: SQLiteValue[]): IterableIterator<T>;
-}
+export type Database = BetterSqlite3.Database;
+export type Statement<T extends SQLiteParams = SQLiteParams> = BetterSqlite3.Statement<T>;
 
 /**
  * Load the sqlite-vec extension into a database.
  *
- * Throws with platform-specific fix instructions when the extension is
- * unavailable.
+ * Throws with fix instructions when the extension is unavailable.
  */
 export function loadSqliteVec(db: Database): void {
-  if (!_sqliteVecLoad) {
-    const hint = isBun && process.platform === "darwin"
-      ? "On macOS with Bun, install Homebrew SQLite: brew install sqlite\n" +
-        "Or install qmd with npm instead: npm install -g @wei840222/qmd"
-      : "Ensure the sqlite-vec native module is installed correctly.";
-    throw new Error(`sqlite-vec extension is unavailable. ${hint}`);
+  try {
+    sqliteVec.load(db);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`sqlite-vec extension is unavailable. Ensure the sqlite-vec native module is installed correctly: ${message}`);
   }
-  _sqliteVecLoad(db);
 }

@@ -49,43 +49,5 @@ jobs:
         env:
           CI: true
 
-  test-bun:
-    name: Bun (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # Verified native dependency targets: Linux x64 glibc, macOS arm64.
-        os: [ubuntu-latest, macos-latest]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Install SQLite (Ubuntu)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
-
-      - name: Install SQLite (macOS)
-        if: runner.os == 'macOS'
-        run: brew install sqlite
-
-      - name: Verify lockfile is up-to-date
-        run: bun install --frozen-lockfile
-
-      - name: Tests
-        run: bun test --timeout 60000 --preload ./src/test-preload.ts test/
-        env:
-          CI: true
-          DYLD_LIBRARY_PATH: /opt/homebrew/opt/sqlite/lib
-          LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
-
-      - name: Packed package smoke (Node and Bun)
-        run: bun run test:package
+      - name: Packed package smoke
+        run: pnpm run test:package

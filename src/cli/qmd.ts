@@ -1,4 +1,4 @@
-import { isBun, openDatabase, loadSqliteVec } from "../db.js";
+import { openDatabase, loadSqliteVec } from "../db.js";
 import type { Database, SQLiteValue } from "../db.js";
 import fastGlob from "fast-glob";
 import { spawn as nodeSpawn } from "child_process";
@@ -450,7 +450,7 @@ async function flushWritable(stream: CliLifecycleWritable): Promise<void> {
  * order, and the process exits cleanly. The `GGML_METAL_NO_RESIDENCY=1` env
  * var that `bin/qmd` exports is a defense-in-depth safety net for paths
  * that still call `process.exit()` after loading the native binding
- * (signal handlers, error paths, `bun test`).
+ * (signal handlers, error paths, test runners).
  *
  * If the caller passes an explicit `exit` for testability, we honor it —
  * the lifecycle tests verify the legacy flush → cleanup → exit ordering.
@@ -4487,7 +4487,7 @@ async function showDoctor(): Promise<void> {
 
   console.log(`${c.bold}QMD Doctor${c.reset}\n`);
   console.log(`Index: ${getDbPath()}`);
-  console.log(`Runtime: ${isBun ? "bun:sqlite" : "better-sqlite3"}`);
+  console.log(`Runtime: better-sqlite3`);
 
   try {
     const row = db.prepare(`SELECT sqlite_version() AS version`).get() as { version: string };
@@ -5259,11 +5259,8 @@ if (isMain) {
           const selfPath = fileURLToPath(import.meta.url);
           const indexArgs = cli.values.index ? ["--index", String(cli.values.index)] : [];
           const hostArgs = host ? ["--host", host] : [];
-          const isBunRuntime = typeof (process.versions as Record<string, string | undefined>).bun === "string";
           const spawnArgs = selfPath.endsWith(".ts")
-            ? isBunRuntime
-              ? [selfPath, ...indexArgs, "mcp", "--http", "--port", String(port), ...hostArgs]
-              : ["--import", pathJoin(dirname(selfPath), "..", "..", "node_modules", "tsx", "dist", "esm", "index.mjs"), selfPath, ...indexArgs, "mcp", "--http", "--port", String(port), ...hostArgs]
+            ? ["--import", pathJoin(dirname(selfPath), "..", "..", "node_modules", "tsx", "dist", "esm", "index.mjs"), selfPath, ...indexArgs, "mcp", "--http", "--port", String(port), ...hostArgs]
             : [selfPath, ...indexArgs, "mcp", "--http", "--port", String(port), ...hostArgs];
           const child = nodeSpawn(process.execPath, spawnArgs, {
             stdio: ["ignore", logFd, logFd],

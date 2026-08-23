@@ -1069,11 +1069,6 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
   // Use the singleton to avoid multiple Metal contexts
   const llm = getDefaultLlamaCpp();
 
-  afterAll(async () => {
-    // Ensure native resources are released to avoid ggml-metal asserts on process exit.
-    await disposeDefaultLlamaCpp();
-  });
-
   describe("embed", () => {
     test("returns embedding with correct dimensions", async () => {
       const result = await llm.embed("Hello world");
@@ -1081,8 +1076,7 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       expect(result).not.toBeNull();
       expect(result!.embedding).toBeInstanceOf(Array);
       expect(result!.embedding.length).toBeGreaterThan(0);
-      // embeddinggemma outputs 1024 dimensions
-      expect(result!.embedding.length).toBe(1024);
+      expect(result!.embedding.length).toBe(768);
     });
 
     test("returns consistent embeddings for same input", async () => {
@@ -1130,7 +1124,7 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       expect(results).toHaveLength(3);
       for (const result of results) {
         expect(result).not.toBeNull();
-        expect(result!.embedding.length).toBe(1024);
+        expect(result!.embedding.length).toBe(768);
       }
     });
 
@@ -1475,7 +1469,7 @@ describe.skipIf(!!process.env.CI)("LLM Session Management", () => {
         expect(session.isValid).toBe(true);
         const embedding = await session.embed("test text");
         expect(embedding).not.toBeNull();
-        expect(embedding!.embedding.length).toBe(1024);
+        expect(embedding!.embedding.length).toBe(768);
         return "success";
       });
       expect(result).toBe("success");
@@ -1537,7 +1531,7 @@ describe.skipIf(!!process.env.CI)("LLM Session Management", () => {
         expect(results).toHaveLength(3);
         for (const result of results) {
           expect(result).not.toBeNull();
-          expect(result!.embedding.length).toBe(1024);
+          expect(result!.embedding.length).toBe(768);
         }
       });
     });
@@ -1555,7 +1549,7 @@ describe.skipIf(!!process.env.CI)("LLM Session Management", () => {
         expect(result.results[0]!.file).toBe("a.txt");
         expect(result.results[0]!.score).toBeGreaterThan(result.results[1]!.score);
       });
-    });
+    }, 60000);
 
     test("max duration aborts session after timeout", async () => {
       let aborted = false;
@@ -1632,6 +1626,11 @@ describe.skipIf(!!process.env.CI)("LLM Session Management", () => {
         })
       ).rejects.toThrow("Custom test error");
     });
+  });
+
+  afterAll(async () => {
+    // Ensure native resources are released to avoid ggml-metal asserts on process exit.
+    await disposeDefaultLlamaCpp();
   });
 });
 

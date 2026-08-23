@@ -24,6 +24,6 @@ for (const grammar of grammars) {
 }
 
 if (!ok) {
-  console.error("\nAST grammar package smoke check failed. Run `bun install` locally or repair a broken global install with the matching `bun add tree-sitter-...@<version>` command shown by `qmd status`.");
+  console.error("\nAST grammar package smoke check failed. Run `pnpm install` locally or repair a broken global install with the matching `pnpm add tree-sitter-...@<version>` command shown by `qmd status`.");
   process.exit(1);
 }

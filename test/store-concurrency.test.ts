@@ -18,19 +18,14 @@ const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(thisDir, "..");
 const workerScript = join(thisDir, "_helpers", "store-init-worker.ts");
 const tsxCli = join(projectRoot, "node_modules", "tsx", "dist", "cli.mjs");
-const isBunRuntime = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
-
-const WORKERS = isBunRuntime ? (process.platform === "darwin" ? 16 : 12) : 6;
-// A single unlucky schedule can miss the FTS CREATE race that Bun/macOS CI
-// hits. Two cold trials keep the test tight without blowing the 60s budget.
+const WORKERS = 6;
+// Two cold trials keep the test tight without blowing the 60s budget.
 const COLD_TRIALS = 2;
 
 type WorkerResult = { code: number | null; stderr: string };
 
 function runWorker(dbPath: string, startAtMs: number): Promise<WorkerResult> {
-  const args = isBunRuntime
-    ? [workerScript, dbPath, String(startAtMs)]
-    : [tsxCli, workerScript, dbPath, String(startAtMs)];
+  const args = [tsxCli, workerScript, dbPath, String(startAtMs)];
   return new Promise((resolve) => {
     const proc = spawn(process.execPath, args, { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";

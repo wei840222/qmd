@@ -29,13 +29,13 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
-# Verify bun.lock is in sync with package.json
-if ! bun install --frozen-lockfile &>/dev/null; then
-  echo "Error: bun.lock is out of sync with package.json" >&2
-  echo "Run 'bun install' and commit the updated lockfile." >&2
+# Verify pnpm-lock.yaml is in sync with package.json
+if ! pnpm install --frozen-lockfile &>/dev/null; then
+  echo "Error: pnpm-lock.yaml is out of sync with package.json" >&2
+  echo "Run 'pnpm install' and commit the updated lockfile." >&2
   exit 1
 fi
-echo "bun.lock: in sync ✓"
+echo "pnpm-lock.yaml: in sync ✓"
 
 # Read current version
 CURRENT=$(jq -r .version package.json)

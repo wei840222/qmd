@@ -16,13 +16,14 @@ jobs:
         node-version: ["24"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
+          cache: pnpm
 
-      - name: Install SQLite (Ubuntu)
+      - name: Install SQLite
         run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
 
       - name: Enable Corepack
@@ -39,36 +40,16 @@ jobs:
         env:
           CI: true
 
-  test-bun:
-    name: Bun (Node ${{ matrix.node-version }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: ["24"]
+      - name: Packed package smoke
+        run: pnpm run test:package
 
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
+      - name: Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
-          bun-version: latest
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-
-      - name: Install SQLite (Ubuntu)
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
-
-      - name: Verify lockfile is up-to-date
-        run: bun install --frozen-lockfile
-
-      - name: Tests
-        run: bun test --timeout 60000 --preload ./src/test-preload.ts test/
-        env:
-          CI: true
-          LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
-
-      - name: Packed package smoke (Node and Bun)
-        run: bun run test:package
+          token-setup-trivy: ${{ secrets.GITHUB_TOKEN }}
+          version: v0.70.0
+          scan-type: fs
+          scan-ref: .
+          format: table
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: true

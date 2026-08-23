@@ -71,9 +71,7 @@ describe("tryAcquireEmbedLock", () => {
     const holdMs = 1000;
 
     // Include a bare `qmd` argv token so isQmdMcpPid(child) is true.
-    const args = isBunRuntime
-      ? [holderTs, lockPath, String(holdMs), "qmd", "embed"]
-      : [tsxCli, holderTs, lockPath, String(holdMs), "qmd", "embed"];
+    const args = [tsxCli, holderTs, lockPath, String(holdMs), "qmd", "embed"];
 
     try {
       const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });

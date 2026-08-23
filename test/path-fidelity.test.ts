@@ -47,16 +47,13 @@ import type { CollectionConfig } from "../src/collections.js";
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(thisDir, "..");
 const qmdScript = join(projectRoot, "src", "cli", "qmd.ts");
-const isBunRuntime = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
 const tsxCli = join(projectRoot, "node_modules", "tsx", "dist", "cli.mjs");
 
 async function runQmd(
   args: string[],
   opts: { cwd: string; dbPath: string; configDir: string; env?: Record<string, string> }
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const runner = isBunRuntime
-    ? { command: process.execPath, args: [qmdScript, ...args] }
-    : { command: process.execPath, args: [tsxCli, qmdScript, ...args] };
+  const runner = { command: process.execPath, args: [tsxCli, qmdScript, ...args] };
 
   const proc = spawn(runner.command, runner.args, {
     cwd: opts.cwd,
