@@ -10,15 +10,6 @@ qmd embed
 
 ## Configure MCP Client
 
-**Claude Code** (`~/.claude/settings.json`):
-```json
-{
-  "mcpServers": {
-    "qmd": { "command": "qmd", "args": ["mcp"] }
-  }
-}
-```
-
 **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 ```json
 {

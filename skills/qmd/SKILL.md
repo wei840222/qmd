@@ -304,7 +304,7 @@ qmd pull
 
 ## MCP setup
 
-See `references/mcp-setup.md` for Claude Code, Claude Desktop, OpenClaw, and HTTP
+See `references/mcp-setup.md` for Claude Desktop, OpenClaw, and HTTP
 server configuration.
 
 ## Pitfalls

@@ -108,26 +108,6 @@ Although the tool works perfectly fine when you just tell your agent to use it o
 }
 ```
 
-**Claude Code** — Install the plugin (recommended):
-
-```bash
-claude plugin marketplace add wei840222/qmd
-claude plugin install qmd@qmd
-```
-
-Or configure MCP manually in `~/.claude/settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "qmd": {
-      "command": "qmd",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
 #### HTTP Transport
 
 By default, QMD's MCP server uses stdio (launched as a subprocess by each client). For a shared, long-lived server that avoids repeated model loading, use the HTTP transport:
