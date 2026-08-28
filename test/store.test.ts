@@ -1441,7 +1441,7 @@ describe("Query expansion cache (#818)", () => {
         "alpha bravo",
         undefined,
         "expansion-only context",
-        { requireResult: true },
+        { requireResult: true, includeHyde: true },
       );
       expect(rerankSpy).toHaveBeenCalledWith(
         "alpha bravo",
@@ -1466,6 +1466,25 @@ describe("Query expansion cache (#818)", () => {
       // consulted either way.
       const out = await store.expandQuery("cached question");
       expect(out).toEqual([{ type: "lex", query: "seeded-term" }]);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("expandQuery with includeHyde: false uses separate cache key", async () => {
+    const store = await createTestStore();
+    try {
+      const model = store.localLlm?.generateModelName ?? (store.llm as any)?.generateModelName ?? DEFAULT_QUERY_MODEL;
+      const seededFull = [{ type: "lex", query: "seeded-lex" }, { type: "hyde", query: "seeded-hyde" }];
+      const seededNoHyde = [{ type: "lex", query: "seeded-lex-nohyde" }];
+      store.setCachedResult(getCacheKey("expandQuery", { query: "cached question", model }), JSON.stringify(seededFull));
+      store.setCachedResult(getCacheKey("expandQuery", { query: "cached question", model, noHyde: true }), JSON.stringify(seededNoHyde));
+
+      const outDefault = await store.expandQuery("cached question");
+      expect(outDefault).toEqual(seededFull);
+
+      const outNoHyde = await store.expandQuery("cached question", undefined, undefined, { includeHyde: false });
+      expect(outNoHyde).toEqual(seededNoHyde);
     } finally {
       await cleanupTestDb(store);
     }

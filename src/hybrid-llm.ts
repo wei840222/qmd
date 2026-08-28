@@ -38,7 +38,7 @@ export class HybridLLM implements LLM {
     return this.localLLM.modelExists(model);
   }
 
-  async expandQuery(query: string, options?: { context?: string; includeLexical?: boolean }): Promise<Queryable[]> {
+  async expandQuery(query: string, options?: { context?: string; includeLexical?: boolean; includeHyde?: boolean }): Promise<Queryable[]> {
     if (this.remoteLLM?.supportsExpand) {
       try {
         return await this.remoteLLM.expandQuery(query, options);

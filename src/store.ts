@@ -720,6 +720,8 @@ export type ExpandedQuery = {
 
 export type QueryExpansionOptions = {
   requireResult?: boolean;
+  includeLexical?: boolean;
+  includeHyde?: boolean;
 };
 
 class QueryExpansionNoResultError extends Error {
@@ -3943,6 +3945,8 @@ export type CacheKeyBody = {
   chunk?: string;
   file?: string;
   expansionContext?: string;
+  noHyde?: boolean;
+  noLex?: boolean;
 };
 
 export function getCacheKey(url: string, body: CacheKeyBody): string {
@@ -6030,8 +6034,16 @@ export function insertEmbedding(
 // =============================================================================
 
 export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database, expansionContext?: string, llmOverride?: LLM, options?: QueryExpansionOptions): Promise<ExpandedQuery[]> {
+  const includeLexical = options?.includeLexical ?? true;
+  const includeHyde = options?.includeHyde ?? true;
   // Check cache first — stored as JSON preserving types
-  const cacheKey = getCacheKey("expandQuery", { query, model, ...(expansionContext && { expansionContext }) });
+  const cacheKey = getCacheKey("expandQuery", {
+    query,
+    model,
+    ...(expansionContext && { expansionContext }),
+    ...(!includeHyde && { noHyde: true }),
+    ...(!includeLexical && { noLex: true }),
+  });
   const cached = getCachedResult(db, cacheKey);
   if (cached) {
     try {
@@ -6051,7 +6063,11 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
 
   const llm = llmOverride ?? getDefaultLlamaCpp();
   // Note: LlamaCpp uses hardcoded model, model parameter is ignored
-  const results = await llm.expandQuery(query, { context: expansionContext });
+  const results = await llm.expandQuery(query, {
+    context: expansionContext,
+    includeLexical,
+    includeHyde,
+  });
 
   // Map Queryable[] → ExpandedQuery[] (same shape, decoupled from llm.ts internals).
   // Filter out entries that duplicate the original query text.
@@ -6075,8 +6091,20 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
  * expansion's sub-queries all came back empty — left in place, the dud entry
  * would replay the same misses on every warm repeat of the query.
  */
-export function deleteExpansionCacheEntry(db: Database, query: string, model: string = DEFAULT_QUERY_MODEL, expansionContext?: string): void {
-  const cacheKey = getCacheKey("expandQuery", { query, model, ...(expansionContext && { expansionContext }) });
+export function deleteExpansionCacheEntry(
+  db: Database,
+  query: string,
+  model: string = DEFAULT_QUERY_MODEL,
+  expansionContext?: string,
+  options?: { includeLexical?: boolean; includeHyde?: boolean }
+): void {
+  const cacheKey = getCacheKey("expandQuery", {
+    query,
+    model,
+    ...(expansionContext && { expansionContext }),
+    ...(options?.includeHyde === false && { noHyde: true }),
+    ...(options?.includeLexical === false && { noLex: true }),
+  });
   db.prepare(`DELETE FROM llm_cache WHERE hash = ?`).run(cacheKey);
 }
 
@@ -6967,6 +6995,7 @@ export interface HybridQueryOptions {
   /** Additional context used for reranking and snippet/chunk selection. */
   rerankContext?: string;
   expansion?: ExpansionMode; // default auto
+  includeHyde?: boolean;    // default true; set false to disable generating hyde during expansion
   skipRerank?: boolean;     // skip LLM reranking, use only RRF scores
   chunkStrategy?: ChunkStrategy;
   hooks?: SearchHooks;
@@ -7072,6 +7101,7 @@ export async function hybridQuery(
   if (hasStrongSignal) hooks?.onStrongSignal?.(topScore);
 
   // Step 2: Expand query (or skip if strong signal)
+  const includeHyde = options?.includeHyde ?? true;
   if (expansionDecision.action === "expand") hooks?.onExpandStart?.();
   const expandStart = Date.now();
   let expanded: ExpandedQuery[];
@@ -7080,6 +7110,7 @@ export async function hybridQuery(
       ? []
       : await store.expandQuery(query, undefined, expansionContext, {
         requireResult: expansionDecision.reason === "explicit-force",
+        includeHyde,
       });
   } catch (error) {
     hooks?.onExpansionError?.({
@@ -7355,6 +7386,8 @@ export interface VectorSearchOptions {
   minScore?: number;        // default 0.3
   /** Additional context used only while generating query expansions. */
   expansionContext?: string;
+  /** Whether to include HyDE (hypothetical document) in query expansion (default: true) */
+  includeHyde?: boolean;
   hooks?: Pick<SearchHooks, 'onExpand'>;
 }
 
@@ -7386,12 +7419,15 @@ export async function vectorSearchQuery(
   const minScore = options?.minScore ?? 0.3;
   const collection = options?.collection;
   const expansionContext = options?.expansionContext;
+  const includeHyde = options?.includeHyde ?? true;
 
   if (!hasSearchableVectorIndex(store)) return [];
 
   // Expand query — filter to vec/hyde only (lex queries target FTS, not vector)
   const expandStart = Date.now();
-  const allExpanded = await store.expandQuery(query, undefined, expansionContext);
+  const allExpanded = await store.expandQuery(query, undefined, expansionContext, {
+    includeHyde,
+  });
   const vecExpanded = allExpanded.filter(q => q.type !== 'lex');
   options?.hooks?.onExpand?.(query, vecExpanded, Date.now() - expandStart);
 

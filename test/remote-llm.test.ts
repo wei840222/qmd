@@ -73,7 +73,7 @@ describe("RemoteLLM & HybridLLM Integration", () => {
     });
 
     test("uses the configured timeout for remote requests", async () => {
-      const fetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> =>
+      const fetch: typeof globalThis.fetch = async (_input, init) =>
         new Promise((_resolve, reject) => {
           init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
         });
@@ -178,6 +178,34 @@ describe("RemoteLLM & HybridLLM Integration", () => {
       expect(systemPrompt).not.toContain("lex: keyword-focused search phrase");
       expect(systemPrompt).not.toContain("lex: preserve precise terms");
       expect(systemPrompt).not.toContain("lex: database connection pool timeout exhaustion");
+    });
+
+    test("can exclude hyde queries", async () => {
+      mockResponseBody = {
+        choices: [
+          {
+            message: {
+              content: "lex: database pool timeout\nvec: why is database connection pool timing out under load?\nhyde: Connection pool exhaustion occurs when connections are retained longer than expected.",
+            },
+          },
+        ],
+      };
+
+      const llm = new RemoteLLM({
+        generateApiUrl: `http://127.0.0.1:${serverPort}/v1/chat/completions`,
+        generateApiModel: "gpt-4o-mini",
+      });
+
+      const result = await llm.expandQuery("db pool timeout", { includeHyde: false });
+
+      expect(result).toEqual([
+        { type: "lex", text: "database pool timeout" },
+        { type: "vec", text: "why is database connection pool timing out under load?" },
+      ]);
+      const systemPrompt = lastRequestBody.messages[0].content as string;
+      expect(systemPrompt).not.toContain("hyde: concise hypothetical answer-style passage");
+      expect(systemPrompt).not.toContain("hyde: write a concise hypothetical passage");
+      expect(systemPrompt).not.toContain("hyde: Database connection pool timeout troubleshooting");
     });
 
     test("keeps at most one expansion for each backend type", async () => {

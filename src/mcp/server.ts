@@ -335,9 +335,12 @@ Context-aware lex (C++ performance, not sports):
         explain: z.boolean().optional().default(false).describe(
           "Include retrieval traces and the shared query-expansion decision or typed expansion error"
         ),
+        includeHyde: z.boolean().optional().default(true).describe(
+          "Whether to include HyDE (hypothetical document) in query expansion (default: true)"
+        ),
       }),
     },
-    track(async ({ query, searches, expansion, limit, minScore, candidateLimit, collections, expansionContext, rerankContext, rerank, explain }) => {
+    track(async ({ query, searches, expansion, includeHyde, limit, minScore, candidateLimit, collections, expansionContext, rerankContext, rerank, explain }) => {
       // Require exactly one of `query` (plain text with an expansion policy) or `searches` (typed sub-queries).
       if (!query && (!searches || searches.length === 0)) {
         return {
@@ -376,6 +379,7 @@ Context-aware lex (C++ performance, not sports):
           rerankContext,
           explain,
           expansion: query ? expansion : undefined,
+          includeHyde,
           hooks: explain && query ? {
             onExpansionDecision: decision => { expansionDecision = decision; },
             onExpansionError: event => { expansionError = event; },

@@ -203,6 +203,8 @@ export interface SearchOptions {
   explain?: boolean;
   /** Query expansion policy (default: auto) */
   expansion?: ExpansionMode;
+  /** Whether to include HyDE (hypothetical document) in query expansion (default: true) */
+  includeHyde?: boolean;
   /** Optional progress/decision hooks for search orchestration */
   hooks?: SearchHooks;
   /** Chunk strategy: "auto" (default, uses AST for code files) or "regex" (legacy) */
@@ -231,6 +233,10 @@ export interface VectorSearchOptions {
 export interface ExpandQueryOptions {
   /** Additional context used only while generating query expansions. */
   expansionContext?: string;
+  /** Whether to include lexical (BM25) sub-queries (default: true) */
+  includeLexical?: boolean;
+  /** Whether to include HyDE (hypothetical document) sub-queries (default: true) */
+  includeHyde?: boolean;
 }
 
 /**
@@ -577,6 +583,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         expansionContext: opts.expansionContext,
         rerankContext: opts.rerankContext,
         expansion: opts.expansion,
+        includeHyde: opts.includeHyde,
         hooks: opts.hooks,
         candidateLimit: opts.candidateLimit,
         skipRerank,
@@ -593,7 +600,10 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         opts?.collection,
       );
     },
-    expandQuery: async (q, opts) => internal.expandQuery(q, undefined, opts?.expansionContext),
+    expandQuery: async (q, opts) => internal.expandQuery(q, undefined, opts?.expansionContext, {
+      includeLexical: opts?.includeLexical,
+      includeHyde: opts?.includeHyde,
+    }),
     get: async (pathOrDocid, opts) => internal.findDocument(pathOrDocid, opts),
     getDocumentBody: async (pathOrDocid, opts) => {
       const result = internal.findDocument(pathOrDocid, { includeBody: false });
