@@ -836,6 +836,15 @@ describe("search (unified API)", () => {
       const results = await store.search({ query: "xyznonexistentterm123", rerank: false });
       expect(results).toHaveLength(0);
     });
+
+    test("search() with includeHyde: false", async () => {
+      const results = await store.search({
+        query: "authentication",
+        includeHyde: false,
+        rerank: false,
+      });
+      expect(results.length).toBeGreaterThan(0);
+    });
   });
 });
 

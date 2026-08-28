@@ -244,7 +244,7 @@ export interface ILLMSession {
   readonly embeddingModel: string;
   embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null>;
   embedBatch(texts: string[], options?: EmbedOptions): Promise<(EmbeddingResult | null)[]>;
-  expandQuery(query: string, options?: { context?: string; includeLexical?: boolean }): Promise<Queryable[]>;
+  expandQuery(query: string, options?: { context?: string; includeLexical?: boolean; includeHyde?: boolean }): Promise<Queryable[]>;
   rerank(query: string, documents: RerankDocument[], options?: RerankOptions): Promise<RerankResult>;
   /** Whether this session is still valid (not released or aborted) */
   readonly isValid: boolean;
@@ -595,7 +595,7 @@ export interface LLM {
    * Expand a search query into multiple variations for different backends.
    * Returns a list of Queryable objects.
    */
-  expandQuery(query: string, options?: { context?: string, includeLexical?: boolean }): Promise<Queryable[]>;
+  expandQuery(query: string, options?: { context?: string; includeLexical?: boolean; includeHyde?: boolean }): Promise<Queryable[]>;
 
   /**
    * Rerank documents by relevance to a query
@@ -1651,7 +1651,7 @@ export class LlamaCpp implements LLM {
   // High-level abstractions
   // ==========================================================================
 
-  async expandQuery(query: string, options: { context?: string, includeLexical?: boolean } = {}): Promise<Queryable[]> {
+  async expandQuery(query: string, options: { context?: string; includeLexical?: boolean; includeHyde?: boolean } = {}): Promise<Queryable[]> {
     if (this._ciMode) throw new Error("LLM operations are disabled in CI (set CI=true)");
     // Ping activity at start to keep models alive during this operation
     this.touchActivity();
@@ -1660,6 +1660,7 @@ export class LlamaCpp implements LLM {
     await this.ensureGenerateModel();
 
     const includeLexical = options.includeLexical ?? true;
+    const includeHyde = options.includeHyde ?? true;
     const context = options.context;
 
     // Keep the caller-provided expansion context separate from the query. It
@@ -1676,11 +1677,17 @@ export class LlamaCpp implements LLM {
     let genContext: Awaited<ReturnType<LlamaModel["createContext"]>> | undefined;
     let sequence: { dispose: () => void | Promise<void> } | undefined;
     try {
+      const allowedTypes: string[] = [];
+      if (includeLexical) allowedTypes.push('"lex"');
+      allowedTypes.push('"vec"');
+      if (includeHyde) allowedTypes.push('"hyde"');
+      const typeRule = allowedTypes.join(' | ');
+
       const grammar = await llama.createGrammar({
         grammar: `
         root ::= line+
         line ::= type ": " content "\\n"
-        type ::= "lex" | "vec" | "hyde"
+        type ::= ${typeRule}
         content ::= [^\\n]+
       `
       });
@@ -1723,21 +1730,25 @@ export class LlamaCpp implements LLM {
         if (colonIdx === -1) return null;
         const type = line.slice(0, colonIdx).trim();
         if (type !== 'lex' && type !== 'vec' && type !== 'hyde') return null;
+        if (type === 'lex' && !includeLexical) return null;
+        if (type === 'hyde' && !includeHyde) return null;
         const text = line.slice(colonIdx + 1).trim();
         if (!hasQueryTerm(text)) return null;
         return { type: type as QueryType, text };
       }).filter((q): q is Queryable => q !== null);
 
-      // Filter out lex entries if not requested
-      const filtered = includeLexical ? queryables : queryables.filter(q => q.type !== 'lex');
+      // Filter out unwanted types if any slipped through
+      const filtered = queryables
+        .filter(q => (includeLexical || q.type !== 'lex'))
+        .filter(q => (includeHyde || q.type !== 'hyde'));
       if (filtered.length > 0) return filtered;
 
       const fallback: Queryable[] = [
-        { type: 'hyde', text: `Information about ${query}` },
-        { type: 'lex', text: query },
-        { type: 'vec', text: query },
+        ...(includeHyde ? [{ type: 'hyde' as const, text: `Information about ${query}` }] : []),
+        ...(includeLexical ? [{ type: 'lex' as const, text: query }] : []),
+        { type: 'vec' as const, text: query },
       ];
-      return includeLexical ? fallback : fallback.filter(q => q.type !== 'lex');
+      return fallback;
     } catch (error) {
       console.error("Structured query expansion failed:", error);
       // Fallback to original query
@@ -2133,7 +2144,7 @@ class LLMSession implements ILLMSession {
 
   async expandQuery(
     query: string,
-    options?: { context?: string; includeLexical?: boolean }
+    options?: { context?: string; includeLexical?: boolean; includeHyde?: boolean }
   ): Promise<Queryable[]> {
     return this.withOperation(() => this.manager.getLlamaCpp().expandQuery(query, options));
   }

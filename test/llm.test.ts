@@ -1455,6 +1455,14 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       const lexEntries = result.filter(q => q.type === "lex");
       expect(lexEntries).toHaveLength(0);
     });
+
+    test("can exclude hyde queries", async () => {
+      const result = await llm.expandQuery("authentication setup", { includeHyde: false });
+
+      // Should not contain any 'hyde' type entries
+      const hydeEntries = result.filter(q => q.type === "hyde");
+      expect(hydeEntries).toHaveLength(0);
+    });
   });
 });
 

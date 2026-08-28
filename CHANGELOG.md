@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Disable HyDE Expansion Control**: Added `--no-hyde` CLI option for `qmd query` and `qmd vsearch`, `includeHyde` parameter to SDK (`store.search`, `store.expandQuery`) and MCP `query` tool, allowing users to disable generating hypothetical document embeddings during query expansion.
+
 ## [2026.8.23-1] - 2026-08-23
 
 ### Added

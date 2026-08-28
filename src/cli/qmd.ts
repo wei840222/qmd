@@ -2589,6 +2589,7 @@ type OutputOptions = {
   candidateLimit?: number;  // Max candidates to rerank (default: 40)
   intent?: string;       // Domain intent for disambiguation
   expansion?: ExpansionMode; // Shared auto | force | skip policy
+  includeHyde?: boolean; // Whether to include HyDE in query expansion
   skipRerank?: boolean;  // Skip LLM reranking, use RRF scores only
   chunkStrategy?: ChunkStrategy;  // "auto" (default) or "regex"
   fullPath?: boolean;    // Show realpath instead of qmd:// URI (relative to $PWD when subpath)
@@ -3131,6 +3132,7 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
       limit: opts.all ? 500 : (opts.limit || 10),
       minScore: opts.minScore || 0.3,
       expansionContext: opts.intent,
+      includeHyde: opts.includeHyde,
       hooks: {
         onExpand: (original, expanded) => {
           logExpansionTree(original, expanded);
@@ -3232,6 +3234,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
         explain: !!opts.explain,
         rerankContext: intent,
         expansion: opts.expansion,
+        includeHyde: opts.includeHyde,
         chunkStrategy: opts.chunkStrategy,
         hooks: {
           onExpansionDecision: (decision) => {
@@ -3356,6 +3359,7 @@ function parseCLI() {
       // Query options
       "candidate-limit": { type: "string", short: "C" },
       "no-rerank": { type: "boolean", default: false },
+      "no-hyde": { type: "boolean", default: false },
       expand: { type: "boolean", default: false },
       "no-gpu": { type: "boolean", default: false },
       intent: { type: "string" },
@@ -3428,6 +3432,7 @@ function parseCLI() {
     lineNumbers: !!values["line-numbers"],
     candidateLimit: values["candidate-limit"] ? parseInt(String(values["candidate-limit"]), 10) : undefined,
     skipRerank: !!values["no-rerank"],
+    includeHyde: !values["no-hyde"],
     explain: !!values.explain,
     intent: values.intent as string | undefined,
     expansion: values.expand ? "force" : "auto",
@@ -3960,6 +3965,7 @@ function showHelp(): void {
   console.log("  --chunk-strategy <auto|regex> - Chunking mode (default: regex; auto uses AST for code files)");
   console.log("  --timeout <minutes>          - Embed session cap in minutes (0 = no limit; default 30)");
   console.log("  --expand                    - Force query expansion (auto is the default; lex: skips)");
+  console.log("  --no-hyde                   - Disable HyDE (hypothetical document) in query expansion");
   console.log("");
   console.log("Embedding providers & disclosure:");
   console.log("  - Local embedding is the default. OpenAI requires explicit provider configuration and OPENAI_API_KEY.");

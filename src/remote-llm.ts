@@ -170,24 +170,38 @@ export class RemoteLLM implements LLM {
     return { name: _model, path: _model, exists: true };
   }
 
-  async expandQuery(query: string, options?: { context?: string; includeLexical?: boolean; timeZone?: string }): Promise<Queryable[]> {
+  async expandQuery(query: string, options?: { context?: string; includeLexical?: boolean; includeHyde?: boolean; timeZone?: string }): Promise<Queryable[]> {
     if (!this.supportsExpand) {
       throw new Error("Remote expansion is not configured or circuit is broken.");
     }
 
     const includeLexical = options?.includeLexical !== false;
+    const includeHyde = options?.includeHyde !== false;
     const lexicalOutput = includeLexical ? "lex: keyword-focused search phrase\n" : "";
     const lexicalRule = includeLexical
       ? "- lex: preserve precise terms and add only useful synonyms or related keywords; do not write a complete question.\n"
       : "";
     const lexicalExample = includeLexical ? "lex: database connection pool timeout exhaustion\n" : "";
+
+    const hydeOutput = includeHyde ? "hyde: concise hypothetical answer-style passage\n" : "";
+    const hydeRule = includeHyde
+      ? "- hyde: write a concise hypothetical passage describing plausible answer content, describing general concepts without inventing specific fake facts.\n"
+      : "";
+    const hydeExample = includeHyde ? "hyde: Database connection pool timeout troubleshooting may examine pool limits, active connections, query latency, and connection handling.\n" : "";
+
+    const requestedBackends = [
+      includeLexical ? "lex" : null,
+      "vec",
+      includeHyde ? "hyde" : null,
+    ].filter(Boolean).join(", ");
+
     const systemPrompt = `<role>
 You are a specialized assistant for hybrid document-search query expansion.
 You expand search queries to enhance retrieval recall with analytical precision while preserving user intent and constraints.
 </role>
 
 <instructions>
-1. Proactively generate one high-quality variation for each requested backend (lex, vec, hyde) whenever the query has clear intent.
+1. Proactively generate one high-quality variation for each requested backend (${requestedBackends}) whenever the query has clear intent.
 2. Preserve query constraints and avoid inventing unmentioned facts.
 3. Return only the requested prefix lines.
 </instructions>
@@ -199,15 +213,13 @@ You expand search queries to enhance retrieval recall with analytical precision 
 - Keep the query's primary language and script, while preserving exact identifiers, product names, API names, abbreviations, and established domain terms from the query or context.
 ${lexicalRule}- vec: state the search intent as a clear natural-language phrase or question.
 - For space-separated or keyword-list queries, synthesize the scattered terms into a coherent, natural-language phrase or question for vec.
-- hyde: write a concise hypothetical passage describing plausible answer content, describing general concepts without inventing specific fake facts.
-- For very short or identifier-only queries, retain exact terms without inventing unprovided constraints.
+${hydeRule}- For very short or identifier-only queries, retain exact terms without inventing unprovided constraints.
 </constraints>
 
 <output_format>
 Output only prefix lines. Do not include preambles, explanations, markdown, or code fences.
 ${lexicalOutput}vec: natural-language semantic search phrase or question
-hyde: concise hypothetical answer-style passage
-Generate at most one line of each listed type.
+${hydeOutput}Generate at most one line of each listed type.
 </output_format>
 
 <example>
@@ -222,8 +234,7 @@ database pool timeout
 </task>
 
 ${lexicalExample}vec: Why is the database connection pool timing out under load?
-hyde: Database connection pool timeout troubleshooting may examine pool limits, active connections, query latency, and connection handling.
-</example>`;
+${hydeExample}</example>`;
 
     const currentTime = getFormattedLocalTime(new Date(), options?.timeZone ?? this.timeZone);
     const additionalContext = options?.context
@@ -279,7 +290,9 @@ Return only the prefix lines specified in the output format.
         const match = /^(lex|vec|hyde)\s*:\s*(.+)$/i.exec(line.trim());
         if (match && match[1] && match[2]) {
           const type = match[1].toLowerCase() as "lex" | "vec" | "hyde";
-          if ((type !== "lex" || options?.includeLexical !== false) && !seenTypes.has(type)) {
+          if (type === "lex" && !includeLexical) continue;
+          if (type === "hyde" && !includeHyde) continue;
+          if (!seenTypes.has(type)) {
             seenTypes.add(type);
             results.push({ type, text: match[2].trim() });
           }
