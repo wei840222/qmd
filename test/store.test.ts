@@ -1514,6 +1514,37 @@ describe("Query expansion cache (#818)", () => {
     }
   });
 
+  test("hybridQuery drops the no-HyDE cache entry when its expansions contribute nothing", async () => {
+    const store = await createTestStore();
+    try {
+      await insertTestDocument(store.db, "docs", {
+        name: "alpha",
+        title: "Alpha Bravo",
+        body: "# Alpha\n\nalpha bravo charlie content.",
+      });
+      const model = store.localLlm?.generateModelName ?? (store.llm as any)?.generateModelName ?? DEFAULT_QUERY_MODEL;
+      const cacheKey = getCacheKey("expandQuery", {
+        query: "alpha bravo",
+        model,
+        expansionContext: "unrelated meta commentary",
+        noHyde: true,
+      });
+      store.setCachedResult(cacheKey, JSON.stringify([{ type: "lex", query: "zzzqqq wwwuuu" }]));
+
+      await hybridQuery(store, "alpha bravo", {
+        limit: 5,
+        minScore: 0,
+        skipRerank: true,
+        expansionContext: "unrelated meta commentary",
+        includeHyde: false,
+      });
+
+      expect(store.getCachedResult(cacheKey)).toBeNull();
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
   test("hybridQuery keeps a cached expansion that contributed results", async () => {
     const store = await createTestStore();
     try {

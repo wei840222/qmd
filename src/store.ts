@@ -2111,7 +2111,7 @@ export type Store = {
   // Query expansion & reranking
   expandQuery: (query: string, model?: string, expansionContext?: string, options?: QueryExpansionOptions) => Promise<ExpandedQuery[]>;
   /** Drop the cached expansion for a query so the next call regenerates. */
-  invalidateExpansionCache: (query: string, expansionContext?: string) => void;
+  invalidateExpansionCache: (query: string, expansionContext?: string, options?: QueryExpansionOptions) => void;
   rerank: (query: string, documents: { file: string; text: string }[], model?: string, rerankContext?: string) => Promise<{ file: string; score: number }[]>;
 
   // Document retrieval
@@ -3503,7 +3503,13 @@ export function createStore(dbPath?: string, options: CreateStoreOptions = {}): 
 
     // Query expansion & reranking
     expandQuery: (query: string, model?: string, expansionContext?: string, options?: QueryExpansionOptions) => expandQuery(query, model ?? store.localLlm?.generateModelName ?? (store.llm as any)?.generateModelName ?? DEFAULT_QUERY_MODEL, db, expansionContext, store.llm, options),
-    invalidateExpansionCache: (query: string, expansionContext?: string) => deleteExpansionCacheEntry(db, query, store.localLlm?.generateModelName ?? (store.llm as any)?.generateModelName ?? DEFAULT_QUERY_MODEL, expansionContext),
+    invalidateExpansionCache: (query: string, expansionContext?: string, options?: QueryExpansionOptions) => deleteExpansionCacheEntry(
+      db,
+      query,
+      store.localLlm?.generateModelName ?? (store.llm as any)?.generateModelName ?? DEFAULT_QUERY_MODEL,
+      expansionContext,
+      options,
+    ),
     rerank: (query: string, documents: { file: string; text: string }[], model?: string, rerankContext?: string) => {
       const llm = getLlm(store);
       return rerank(query, documents, model ?? store.localLlm?.rerankModelName ?? llm?.rerankModelName ?? DEFAULT_RERANK_MODEL, db, rerankContext, store.llm ?? llm);
@@ -7211,7 +7217,7 @@ export async function hybridQuery(
     const runnable = expanded.filter(q => q.type === "lex" || hasVectors);
     const expansionContributed = rankedListMeta.some(m => m.queryType !== "original");
     if (runnable.length > 0 && !expansionContributed) {
-      store.invalidateExpansionCache(query, expansionContext);
+      store.invalidateExpansionCache(query, expansionContext, { includeHyde });
     }
   }
 
