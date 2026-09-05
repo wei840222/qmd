@@ -803,6 +803,31 @@ describe("CLI Status Command", () => {
     expect(stdout).toContain("added alpha");
   }, 20000);
 
+  test("qmd doctor clears a previous reconciliation warning after a clean startup", async () => {
+    const env = await createIsolatedTestEnv("doctor-config-clean");
+    await writeFile(join(env.configDir, "index.yml"), `collections:
+  alpha:
+    path: ${fixturesDir}
+    pattern: "**/*.md"
+`);
+    expect((await runQmd(["collection", "list"], {
+      dbPath: env.dbPath,
+      configDir: env.configDir,
+    })).exitCode).toBe(0);
+
+    const db = openDatabase(env.dbPath);
+    db.prepare(`DELETE FROM store_collections WHERE name = ?`).run("alpha");
+    db.close();
+
+    const repaired = await runQmd(["doctor"], { dbPath: env.dbPath, configDir: env.configDir });
+    expect(repaired.stdout).toContain("added alpha");
+
+    const clean = await runQmd(["doctor"], { dbPath: env.dbPath, configDir: env.configDir });
+    expect(clean.exitCode).toBe(0);
+    expect(clean.stdout).toContain("external config and SQLite metadata are in sync");
+    expect(clean.stdout).not.toContain("startup repaired store_collections drift");
+  }, 20000);
+
   test("qmd doctor warns when configured models differ from code defaults", async () => {
     const env = await createIsolatedTestEnv("doctor-custom-models");
     await writeFile(join(env.configDir, "index.yml"), `collections: {}\nmodels:\n  embed: hf:example/custom-embed/custom.gguf\n  generate: ${DEFAULT_GENERATE_MODEL_URI}\n  rerank: ${DEFAULT_RERANK_MODEL_URI}\n`);

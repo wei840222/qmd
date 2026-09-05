@@ -287,12 +287,16 @@ function getStore(): ReturnType<typeof createStore> {
   return store;
 }
 
-function getDoctorStore(): ReturnType<typeof createStore> {
+function getDoctorStore(options: { reconcileConfig?: CollectionConfig } = {}): ReturnType<typeof createStore> {
   if (!store) {
     const dbPath = getDbPath();
+    const shouldReconcile = existsSync(dbPath) && options.reconcileConfig !== undefined;
     store = existsSync(dbPath)
-      ? createStore(dbPath, { readOnly: true })
+      ? createStore(dbPath, { readOnly: !shouldReconcile })
       : createStore(":memory:");
+    if (shouldReconcile) {
+      syncConfigToDb(store.db, options.reconcileConfig!);
+    }
   }
   return store;
 }
@@ -4471,10 +4475,6 @@ async function runDoctorDeviceChecks(nextSteps: string[]): Promise<void> {
 }
 
 async function showDoctor(): Promise<void> {
-  const storeInstance = getDoctorStore();
-  const db = storeInstance.db;
-  const pkg = readPackageJson();
-  const activeModels = resolveModelsForCli();
   let doctorConfig: ReturnType<typeof loadConfig> | undefined;
   try {
     doctorConfig = loadConfig();
@@ -4482,6 +4482,10 @@ async function showDoctor(): Promise<void> {
     // The dedicated index-config check below reports parse errors. Keep the
     // remaining diagnostics available by falling back to DB/default config.
   }
+  const storeInstance = getDoctorStore({ reconcileConfig: doctorConfig });
+  const db = storeInstance.db;
+  const pkg = readPackageJson();
+  const activeModels = resolveModelsForCli();
   const doctorEmbedding = resolveEmbeddingConfig({
     config: doctorConfig,
     dbConfig: readCanonicalEmbeddingConfig(db),

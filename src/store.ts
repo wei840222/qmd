@@ -1875,6 +1875,13 @@ export type ConfigSyncDiagnostic = {
   globalContextUpdated: boolean;
 };
 
+function writeConfigSyncDiagnostic(db: Database, diagnostic: ConfigSyncDiagnostic): void {
+  db.prepare(`
+    INSERT INTO store_config (key, value) VALUES ('config_sync_diagnostic', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(JSON.stringify(diagnostic));
+}
+
 function storeCollectionMatchesConfig(row: StoreCollectionRow, collection: Collection): boolean {
   return row.path === collection.path
     && row.pattern === (collection.pattern || '**/*.md')
@@ -1901,12 +1908,14 @@ export function syncConfigToDb(db: Database, config: CollectionConfig): ConfigSy
       });
       const currentGlobalContext = getStoreGlobalContext(db);
       if (allMatch && currentGlobalContext === config.global_context) {
-        return {
+        const diagnostic: ConfigSyncDiagnostic = {
           configHashChanged: false,
           reconciled: false,
           collections: { added: [], updated: [], removed: [] },
           globalContextUpdated: false,
         };
+        writeConfigSyncDiagnostic(db, diagnostic);
+        return diagnostic;
       }
     }
   }

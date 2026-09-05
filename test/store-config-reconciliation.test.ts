@@ -68,6 +68,33 @@ describe("config to SQLite reconciliation", () => {
     }
   });
 
+  test("clears a persisted reconciliation warning after the next no-op sync", async () => {
+    const store = createStore(await fixturePath());
+    try {
+      const config: CollectionConfig = {
+        collections: {
+          alpha: { path: "/config/alpha", pattern: "**/*.md" },
+        },
+      };
+      syncConfigToDb(store.db, config);
+      store.db.prepare(`UPDATE store_collections SET path = ? WHERE name = ?`).run("/drifted/alpha", "alpha");
+
+      expect(syncConfigToDb(store.db, config).reconciled).toBe(true);
+      const diagnostic = syncConfigToDb(store.db, config);
+      const persisted = store.db.prepare(`SELECT value FROM store_config WHERE key = 'config_sync_diagnostic'`).get() as { value: string };
+
+      expect(diagnostic).toEqual({
+        configHashChanged: false,
+        reconciled: false,
+        collections: { added: [], updated: [], removed: [] },
+        globalContextUpdated: false,
+      });
+      expect(JSON.parse(persisted.value)).toEqual(diagnostic);
+    } finally {
+      store.close();
+    }
+  });
+
   test("rolls back all collection, global-context, hash, and diagnostic changes when reconciliation fails", async () => {
     const store = createStore(await fixturePath());
     try {
