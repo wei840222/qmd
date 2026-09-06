@@ -1,19 +1,22 @@
 /**
  * db.ts - SQLite database connection and extension management
  *
- * Provides Database export and connection management using better-sqlite3
- * and sqlite-vec.
+ * Provides a synchronous node:sqlite connection with QMD's transaction helper
+ * and sqlite-vec extension loading.
  */
 
-import BetterSqlite3 from "better-sqlite3";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import * as sqliteVec from "sqlite-vec";
 
 export type SQLiteValue = string | number | bigint | Buffer | Uint8Array | Float32Array | null;
 export type SQLiteParams = readonly SQLiteValue[];
 
-type DatabaseOpenOptions = {
-  readonly?: boolean;
-  fileMustExist?: boolean;
+let savepointSequence = 0;
+
+export type Transaction<TArgs extends unknown[], TResult> = ((...args: TArgs) => TResult) & {
+  deferred: (...args: TArgs) => TResult;
+  immediate: (...args: TArgs) => TResult;
+  exclusive: (...args: TArgs) => TResult;
 };
 
 function isBusyError(err: unknown): boolean {
@@ -28,12 +31,58 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+/** Synchronous SQLite connection with QMD-compatible transactions. */
+export class Database extends DatabaseSync {
+  transaction<TArgs extends unknown[], TResult>(operation: (...args: TArgs) => TResult): Transaction<TArgs, TResult> {
+    const execute = (mode: "DEFERRED" | "IMMEDIATE" | "EXCLUSIVE", args: TArgs): TResult => {
+      if (!this.isTransaction) {
+        this.exec(`BEGIN ${mode}`);
+        try {
+          const result = operation(...args);
+          this.exec("COMMIT");
+          return result;
+        } catch (error) {
+          try { this.exec("ROLLBACK"); } catch {}
+          throw error;
+        }
+      }
+
+      const savepoint = `qmd_${++savepointSequence}`;
+      this.exec(`SAVEPOINT ${savepoint}`);
+      try {
+        const result = operation(...args);
+        this.exec(`RELEASE ${savepoint}`);
+        return result;
+      } catch (error) {
+        try {
+          this.exec(`ROLLBACK TO ${savepoint}`);
+          this.exec(`RELEASE ${savepoint}`);
+        } catch {}
+        throw error;
+      }
+    };
+
+    const transaction = ((...args: TArgs) => execute("DEFERRED", args)) as Transaction<TArgs, TResult>;
+    transaction.deferred = (...args: TArgs) => execute("DEFERRED", args);
+    transaction.immediate = (...args: TArgs) => execute("IMMEDIATE", args);
+    transaction.exclusive = (...args: TArgs) => execute("EXCLUSIVE", args);
+    return transaction;
+  }
+}
+
+/** Statement type used throughout QMD. */
+export type Statement<T extends SQLiteParams = SQLiteParams> = StatementSync;
+
+function resolveBusyTimeout(): number {
+  const raw = process.env.QMD_SQLITE_BUSY_TIMEOUT;
+  const parsed = raw !== undefined && raw !== "" ? Number(raw) : Number.NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 120_000;
+}
+
 /**
  * Switch a connection to WAL, retrying on `SQLITE_BUSY` within the busy-timeout
- * budget. Unlike ordinary writes, migrating the journal needs a brief exclusive
- * lock and does NOT invoke the busy handler, so concurrent first-time opens of a
- * cold database throw "database is locked" even with `busy_timeout` set. Once the
- * database is already WAL the pragma is a cheap no-op that does not contend.
+ * budget. Migrating the journal needs a brief exclusive lock and does not invoke
+ * SQLite's busy handler on every supported runtime.
  */
 function enableWal(db: Database, budgetMs: number): void {
   const deadline = Date.now() + Math.max(budgetMs, 0);
@@ -48,54 +97,25 @@ function enableWal(db: Database, budgetMs: number): void {
   }
 }
 
-/**
- * Open a SQLite database using better-sqlite3.
- *
- * `better-sqlite3` defaults `busy_timeout` to 0, so concurrent writers throw
- * `SQLITE_BUSY` instead of waiting. WAL improves read-while-write concurrency
- * but does not serialise writers. Setting the timeout at connection open makes
- * parallel processes queue at batch boundaries instead of failing on contact.
- *
- * WAL is enabled here too (with a bounded retry) so connection-level pragmas
- * live in one place and the cold-database journal migration survives concurrent
- * opens.
- *
- * Default 120_000 ms outlasts the worst-case batch commit on a multi-GB
- * index. Override with `QMD_SQLITE_BUSY_TIMEOUT` (value in milliseconds; `0`
- * restores the upstream fail-fast behaviour).
- */
+/** Open a writable QMD database using Node's built-in SQLite runtime. */
 export function openDatabase(path: string): Database {
-  const db: Database = new BetterSqlite3(path);
-  const raw = process.env.QMD_SQLITE_BUSY_TIMEOUT;
-  const parsed = raw !== undefined && raw !== "" ? Number(raw) : Number.NaN;
-  const busyTimeoutMs = Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 120_000;
-  db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
+  const busyTimeoutMs = resolveBusyTimeout();
+  const db = new Database(path, { allowExtension: true, timeout: busyTimeoutMs });
   enableWal(db, busyTimeoutMs);
   return db;
 }
 
 /** Open an existing database without changing journal mode, schema, or user data. */
 export function openReadOnlyDatabase(path: string): Database {
-  const options: DatabaseOpenOptions = { readonly: true, fileMustExist: true };
-  const db: Database = new BetterSqlite3(path, options);
-  const raw = process.env.QMD_SQLITE_BUSY_TIMEOUT;
-  const parsed = raw !== undefined && raw !== "" ? Number(raw) : Number.NaN;
-  const busyTimeoutMs = Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 120_000;
-  db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
-  return db;
+  const busyTimeoutMs = resolveBusyTimeout();
+  return new Database(path, {
+    readOnly: true,
+    allowExtension: true,
+    timeout: busyTimeoutMs,
+  });
 }
 
-/**
- * Database and Statement types used throughout QMD.
- */
-export type Database = BetterSqlite3.Database;
-export type Statement<T extends SQLiteParams = SQLiteParams> = BetterSqlite3.Statement<T>;
-
-/**
- * Load the sqlite-vec extension into a database.
- *
- * Throws with fix instructions when the extension is unavailable.
- */
+/** Load the sqlite-vec extension into a database. */
 export function loadSqliteVec(db: Database): void {
   try {
     sqliteVec.load(db);

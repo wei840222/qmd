@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Replace `better-sqlite3` with Node.js built-in `node:sqlite`, preventing SQLite runtime symbol collisions when QMD is embedded alongside other `node:sqlite` consumers. The minimum supported Node.js version is now 22.16.0.
+
 ### Added
 
 - **Disable HyDE Expansion Control**: Added `--no-hyde` CLI option for `qmd query` and `qmd vsearch`, `includeHyde` parameter to SDK (`store.search`, `store.expandQuery`) and MCP `query` tool, allowing users to disable generating hypothetical document embeddings during query expansion.

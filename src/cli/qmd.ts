@@ -4484,7 +4484,6 @@ async function showDoctor(): Promise<void> {
   }
   const storeInstance = getDoctorStore({ reconcileConfig: doctorConfig });
   const db = storeInstance.db;
-  const pkg = readPackageJson();
   const activeModels = resolveModelsForCli();
   const doctorEmbedding = resolveEmbeddingConfig({
     config: doctorConfig,
@@ -4497,7 +4496,7 @@ async function showDoctor(): Promise<void> {
 
   console.log(`${c.bold}QMD Doctor${c.reset}\n`);
   console.log(`Index: ${getDbPath()}`);
-  console.log(`Runtime: better-sqlite3`);
+  console.log(`Runtime: node:sqlite`);
 
   try {
     const row = db.prepare(`SELECT sqlite_version() AS version`).get() as { version: string };
@@ -4506,8 +4505,7 @@ async function showDoctor(): Promise<void> {
     doctorCheck("SQLite runtime", false, error instanceof Error ? error.message : String(error));
   }
 
-  const betterSqliteVersion = pkg.dependencies?.["better-sqlite3"] ?? pkg.devDependencies?.["better-sqlite3"] ?? "not declared";
-  doctorCheck("better-sqlite3 package", true, String(betterSqliteVersion));
+  doctorCheck("node:sqlite", true, process.versions.node);
 
   try {
     loadSqliteVec(db);

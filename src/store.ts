@@ -1489,7 +1489,7 @@ function rebuildFTSForCjkNormalization(db: Database): void {
     });
 
     // Pull bounded batches and finalize each SELECT before starting the insert
-    // transaction. Holding a better-sqlite3 iterator open while beginning a
+    // transaction. Holding an SQLite iterator open while beginning a
     // transaction on the same connection raises "database is busy".
     const selectBatch = db.prepare(`
       SELECT d.id, d.collection, d.path, d.title, content.doc as body
@@ -3929,7 +3929,7 @@ export async function maybeAdoptLegacyEmbeddingFingerprint(store: Store, model: 
     }
 
     const update = withLazyContentVectorMigration(db, () => db.prepare(`UPDATE content_vectors SET embed_fingerprint = ? WHERE model = ? AND embed_fingerprint = ''`).run(fingerprint, model));
-    return { checked: true, adopted: update.changes, reason: `sample ${expectedHashSeq} matched current fingerprint at distance ${nearest.distance.toFixed(6)}` };
+    return { checked: true, adopted: Number(update.changes), reason: `sample ${expectedHashSeq} matched current fingerprint at distance ${nearest.distance.toFixed(6)}` };
   });
 }
 
@@ -3999,7 +3999,7 @@ export function clearCache(db: Database): void {
  */
 export function deleteLLMCache(db: Database): number {
   const result = db.prepare(`DELETE FROM llm_cache`).run();
-  return result.changes;
+  return Number(result.changes);
 }
 
 /**
@@ -4025,7 +4025,7 @@ export function cleanupOrphanedContent(db: Database): number {
     DELETE FROM content
     WHERE hash NOT IN (SELECT DISTINCT hash FROM documents)
   `).run();
-  return result.changes;
+  return Number(result.changes);
 }
 
 /**

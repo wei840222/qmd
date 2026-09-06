@@ -13,7 +13,7 @@
  *     cursor; now enforced via bounded, keyset-paginated .all() batches
  *     (`WHERE id > ? ORDER BY id LIMIT ?`) — each call materializes at most
  *     one bounded batch, then the batch is discarded before the next SELECT.
- *   - "database is busy" (a later regression): a better-sqlite3 .iterate()
+ *   - "database is busy" (a later regression): an SQLite .iterate()
  *     cursor left open while a transaction begins on the same connection
  *     raises "database is busy". Bounded LIMIT/OFFSET-style batches instead
  *     fully finalize each SELECT before the insert transaction starts, so the
@@ -180,7 +180,7 @@ describe("rebuildFTSForCjkNormalization — bounded source scan", () => {
       .map(line => line.replace(/\/\/.*$/, ""))
       .join("\n");
 
-    // The guarded invariant is "bounded memory", not a specific better-sqlite3
+    // The guarded invariant is "bounded memory", not a specific SQLite
     // API. Any .all() used for the source-body scan must be paired with a
     // LIMIT and a keyset cursor (id > ?), so each call only ever materializes
     // one bounded batch — never every active document's body at once (the
@@ -269,7 +269,7 @@ describe("rebuildFTSForCjkNormalization — large-library full migration", () =>
       const shadow = db.prepare(
         `SELECT name FROM sqlite_master WHERE name = 'documents_fts_rebuild'`
       ).get();
-      // bun:sqlite .get() returns null, better-sqlite3 returns undefined for no-row.
+      // SQLite bindings may return null or undefined for no row.
       expect(shadow ?? undefined).toBeUndefined();
     } finally {
       store.close();
@@ -390,7 +390,7 @@ describe("rebuildFTSForCjkNormalization — recovery from a crashed prior run", 
       const shadow = db.prepare(
         `SELECT name FROM sqlite_master WHERE name = 'documents_fts_rebuild'`
       ).get();
-      // bun:sqlite .get() returns null, better-sqlite3 returns undefined for no-row.
+      // SQLite bindings may return null or undefined for no row.
       expect(shadow ?? undefined).toBeUndefined();
     } finally {
       store.close();

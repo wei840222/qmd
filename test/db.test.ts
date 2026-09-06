@@ -3,10 +3,11 @@
  */
 
 import { describe, test, expect, afterEach } from "vitest";
-import { openDatabase } from "../src/db.js";
+import { loadSqliteVec, openDatabase } from "../src/db.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 const DEFAULT_BUSY_TIMEOUT_MS = 120_000;
 
@@ -17,10 +18,69 @@ function readBusyTimeout(db: ReturnType<typeof openDatabase>): number {
 }
 
 describe("openDatabase", () => {
+  test("uses the built-in node:sqlite runtime", () => {
+    const db = openDatabase(":memory:");
+    try {
+      expect(db).toBeInstanceOf(DatabaseSync);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("rolls back nested transactions with savepoints", () => {
+    const db = openDatabase(":memory:");
+    try {
+      db.exec("CREATE TABLE entries (value TEXT)");
+      const outer = db.transaction(() => {
+        db.prepare("INSERT INTO entries VALUES (?)").run("outer");
+        const inner = db.transaction(() => {
+          db.prepare("INSERT INTO entries VALUES (?)").run("inner");
+          throw new Error("rollback inner");
+        });
+        expect(inner).toThrow("rollback inner");
+        db.prepare("INSERT INTO entries VALUES (?)").run("after");
+      });
+
+      outer();
+
+      expect(db.prepare("SELECT value FROM entries ORDER BY rowid").all()).toEqual([
+        { value: "outer" },
+        { value: "after" },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
   const originalEnv = process.env.QMD_SQLITE_BUSY_TIMEOUT;
   afterEach(() => {
     if (originalEnv === undefined) delete process.env.QMD_SQLITE_BUSY_TIMEOUT;
     else process.env.QMD_SQLITE_BUSY_TIMEOUT = originalEnv;
+  });
+
+  test("loads sqlite-vec through node:sqlite", () => {
+    const db = openDatabase(":memory:");
+    try {
+      loadSqliteVec(db);
+      expect(db.prepare("SELECT vec_version() AS version").get()).toMatchObject({
+        version: expect.any(String),
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  test("supports immediate transaction mode", () => {
+    const db = openDatabase(":memory:");
+    try {
+      db.exec("CREATE TABLE entries (value TEXT)");
+      db.transaction(() => {
+        db.prepare("INSERT INTO entries VALUES (?)").run("committed");
+      }).immediate();
+      expect(db.prepare("SELECT value FROM entries").get()).toEqual({ value: "committed" });
+    } finally {
+      db.close();
+    }
   });
 
   test("sets the default busy_timeout so concurrent writers wait for the lock", () => {

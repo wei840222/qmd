@@ -371,7 +371,7 @@ function cleanupExpiredBuildsWithinTransaction(db: Database, nowMs: number): str
     FROM cjk_index_builds
     WHERE state = 'building' AND lease_expires_at < ?
     ORDER BY started_at, build_id
-  `).all(nowMs) as CjkBuildRow[];
+  `).all(nowMs) as unknown as CjkBuildRow[];
   const cleaned: string[] = [];
 
   for (const row of rows) {

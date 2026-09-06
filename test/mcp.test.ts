@@ -693,7 +693,7 @@ describe("MCP Server", () => {
         WHERE d.path = ? AND d.active = 1
       `).get(path) as { filepath: string; display_path: string; body: string } | null;
 
-      expect(doc == null).toBe(true); // bun:sqlite returns null, better-sqlite3 returns undefined
+      expect(doc == null).toBe(true); // SQLite bindings may return null or undefined
     });
 
     test("includes context in document body", () => {
