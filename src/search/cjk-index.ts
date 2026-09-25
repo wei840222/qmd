@@ -106,7 +106,7 @@ interface CjkIndexStateRow {
   updated_at: number;
 }
 
-interface CjkBuildRow {
+type CjkBuildRow = {
   build_id: string;
   state: string;
   owner_pid: number;
@@ -114,7 +114,7 @@ interface CjkBuildRow {
   lease_expires_at: number;
   words_table: string;
   bigrams_table: string;
-}
+};
 
 interface RetiredCjkTablesRow {
   build_id: string;
@@ -371,7 +371,7 @@ function cleanupExpiredBuildsWithinTransaction(db: Database, nowMs: number): str
     FROM cjk_index_builds
     WHERE state = 'building' AND lease_expires_at < ?
     ORDER BY started_at, build_id
-  `).all(nowMs) as unknown as CjkBuildRow[];
+  `).all(nowMs) as CjkBuildRow[];
   const cleaned: string[] = [];
 
   for (const row of rows) {
