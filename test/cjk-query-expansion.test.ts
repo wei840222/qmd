@@ -86,7 +86,7 @@ function fakeStore(options: {
   expandQuery?: Store["expandQuery"];
 } = {}): Store {
   const db = {
-    prepare: () => ({ get: () => undefined }),
+    prepare: () => ({ get: () => undefined, all: () => [] }),
     close: () => undefined,
   } as any;
   return {
@@ -198,6 +198,7 @@ describe("hybrid query expansion integration", () => {
         source: "fts",
         collectionName: "notes",
         docid: "abc123",
+        metadata: {},
       }],
     });
     try {

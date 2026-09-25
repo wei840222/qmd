@@ -76,6 +76,16 @@ import type { IndexDiagnostics } from "./diagnostics.js";
 
 const readOnlyDatabases = new WeakSet<Database>();
 
+import { METADATA_EXTRACTION_VERSION, type DocumentMetadata } from "./metadata.js";
+import { compileMetadataFilter, type MetadataFilter } from "./metadata-filter.js";
+import {
+  initializeMetadataSchema,
+  syncDocumentMetadata,
+  countDocumentsPendingMetadata,
+  getMetadataByFilepath,
+  parseMetadataJson,
+} from "./metadata-store.js";
+
 // =============================================================================
 // Configuration
 // =============================================================================
@@ -1173,18 +1183,15 @@ export function normalizeCjkForFTS(text: string): string {
 
 
 function sanitizeFTS5Phrase(phrase: string): string {
-  // Dotted tokens (1.0.21, 2026.4.10) are indexed as adjacent parts by the
-  // porter unicode61 tokenizer. Stripping the dots would produce "1021",
-  // which never matches — split them into phrase terms instead (#757).
+  // A quoted phrase is matched against tokens the porter unicode61 tokenizer
+  // produced, and that tokenizer splits document text on every separator.
+  // Deleting the separators here instead would collapse "1.0.21" to "1021" and
+  // "PIO-1384" to "pio1384", tokens no document holds, so the query returns
+  // nothing with no error (#757 for dots, #916 for the rest). Split on the same
+  // separators the tokenizer does and emit the parts as adjacent phrase terms.
   return normalizeCjkForFTS(phrase)
     .split(/\s+/)
-    .flatMap(t => {
-      if (isDottedToken(t)) {
-        return t.split('.').map(p => sanitizeFTS5Term(p)).filter(p => p);
-      }
-      const sanitized = sanitizeFTS5Term(t);
-      return sanitized ? [sanitized] : [];
-    })
+    .flatMap(t => splitFTS5CompoundTerm(t))
     .join(' ');
 }
 
@@ -1690,6 +1697,10 @@ function initializeDatabase(db: Database): void {
 
   ensureContentVectorsStatusIndex(db);
 
+  // Document metadata — extraction state plus normalized value rows for
+  // metadata filtering. Keyed by document identity, not content hash.
+  initializeMetadataSchema(db);
+
   // Store collections — makes the DB self-contained (no external config needed)
   db.exec(`
     CREATE TABLE IF NOT EXISTS store_collections (
@@ -2113,9 +2124,9 @@ export type Store = {
   toVirtualPath: (absolutePath: string) => string | null;
 
   // Search
-  searchCharFTS: (query: string, limit?: number, collectionFilter?: CollectionFilter) => SearchResult[];
-  searchFTS: (query: string, limit?: number, collectionFilter?: CollectionFilter) => SearchResult[];
-  searchVec: (query: string, model: string, limit?: number, collectionFilter?: CollectionFilter, session?: ILLMSession, precomputedEmbedding?: number[]) => Promise<SearchResult[]>;
+  searchCharFTS: (query: string, limit?: number, collectionFilter?: CollectionFilter, filter?: MetadataFilter) => SearchResult[];
+  searchFTS: (query: string, limit?: number, collectionFilter?: CollectionFilter, filter?: MetadataFilter) => SearchResult[];
+  searchVec: (query: string, model: string, limit?: number, collectionFilter?: CollectionFilter, session?: ILLMSession, precomputedEmbedding?: number[], filter?: MetadataFilter) => Promise<SearchResult[]>;
 
   // Query expansion & reranking
   expandQuery: (query: string, model?: string, expansionContext?: string, options?: QueryExpansionOptions) => Promise<ExpandedQuery[]>;
@@ -2135,7 +2146,7 @@ export type Store = {
 
   // Document indexing operations
   insertContent: (hash: string, content: string, createdAt: string) => void;
-  insertDocument: (collectionName: string, path: string, title: string, hash: string, createdAt: string, modifiedAt: string) => void;
+  insertDocument: (collectionName: string, path: string, title: string, hash: string, createdAt: string, modifiedAt: string) => number;
   findActiveDocument: (collectionName: string, path: string) => { id: number; hash: string; title: string } | null;
   findOrMigrateLegacyDocument: (collectionName: string, path: string) => { id: number; hash: string; title: string } | null;
   updateDocumentTitle: (documentId: number, title: string, modifiedAt: string) => void;
@@ -2145,6 +2156,17 @@ export type Store = {
 
   // Vector/embedding operations
   getHashesForEmbedding: () => { hash: string; body: string; path: string }[];
+  insertEmbedding: (
+    hash: string,
+    seq: number,
+    pos: number,
+    embedding: Float32Array,
+    model: string,
+    embeddedAt: string,
+    totalChunks?: number,
+    fingerprint?: string,
+    lease?: EmbeddingBuildLease,
+  ) => void;
 };
 
 // =============================================================================
@@ -2178,6 +2200,8 @@ export type ReindexResult = {
   orphanedCleaned: number;
   skipped: number;
   skippedFiles: ReindexSkippedFile[];
+  /** Documents whose qmd.metadata frontmatter failed extraction this pass. */
+  metadataErrors: number;
 };
 
 /**
@@ -2216,7 +2240,7 @@ export async function reindexCollection(
   });
 
   const total = files.length;
-  let indexed = 0, updated = 0, unchanged = 0, processed = 0;
+  let indexed = 0, updated = 0, unchanged = 0, processed = 0, metadataErrors = 0;
   const skippedFiles: ReindexSkippedFile[] = [];
   const seenPaths = new Set<string>();
   // Literal paths of every file in this scan. Passed to the legacy-path
@@ -2263,8 +2287,13 @@ export async function reindexCollection(
 
     const existing = findOrMigrateLegacyDocument(db, collectionName, path, livePaths);
 
+    let documentId: number;
+    let contentChanged = true;
+
     if (existing) {
+      documentId = existing.id;
       if (existing.hash === hash) {
+        contentChanged = false;
         if (existing.title !== title) {
           updateDocumentTitle(db, existing.id, title, now);
           updated++;
@@ -2287,10 +2316,15 @@ export async function reindexCollection(
     } else {
       indexed++;
       const stat = statSync(filepath);
-      insertDocumentWithContent(db, hash, content, now, collectionName, path, title,
+      documentId = insertDocumentWithContent(db, hash, content, now, collectionName, path, title,
         stat ? new Date(stat.birthtime).toISOString() : now,
         stat ? new Date(stat.mtime).toISOString() : now);
     }
+
+    // Unchanged content still backfills missing or stale extraction state.
+    const extraction = syncDocumentMetadata(db, documentId, content, path,
+      contentChanged ? undefined : { onlyIfStale: true });
+    if (extraction?.error) metadataErrors++;
 
     processed++;
     options?.onProgress?.({ file: relativeFile, current: processed, total });
@@ -2308,7 +2342,7 @@ export async function reindexCollection(
 
   const orphanedCleaned = cleanupOrphanedContent(db);
 
-  return { indexed, updated, unchanged, removed, orphanedCleaned, skipped: skippedFiles.length, skippedFiles };
+  return { indexed, updated, unchanged, removed, orphanedCleaned, skipped: skippedFiles.length, skippedFiles, metadataErrors };
 }
 
 export type EmbedFailure = {
@@ -3194,7 +3228,8 @@ export async function generateEmbeddings(
               pos: chunk.pos,
               tokens: chunk.tokenUpperBound,
             }))
-          : await chunkDocumentByTokens(
+          : await chunkDocumentByTokensWithLlm(
+              (llm ?? getLlm(store) ?? getDefaultLlamaCpp()),
               doc.body,
               undefined, undefined, undefined,
               doc.path,
@@ -3417,13 +3452,12 @@ export function createStore(dbPath?: string, options: CreateStoreOptions = {}): 
     hash: string,
     createdAt: string,
     modifiedAt: string,
-  ): void => {
+  ): number => {
     const pending = pendingContent.get(hash);
     if (!pending) {
-      insertDocument(db, collectionName, path, title, hash, createdAt, modifiedAt);
-      return;
+      return insertDocument(db, collectionName, path, title, hash, createdAt, modifiedAt);
     }
-    insertDocumentWithContent(
+    const docId = insertDocumentWithContent(
       db,
       hash,
       pending.content,
@@ -3435,6 +3469,7 @@ export function createStore(dbPath?: string, options: CreateStoreOptions = {}): 
       modifiedAt,
     );
     pendingContent.delete(hash);
+    return docId;
   };
 
   const commitPendingDocumentUpdate = (
@@ -3495,9 +3530,9 @@ export function createStore(dbPath?: string, options: CreateStoreOptions = {}): 
     toVirtualPath: (absolutePath: string) => toVirtualPath(db, absolutePath),
 
     // Search
-    searchCharFTS: (query, limit, collectionName) => searchCharFTS(db, query, limit, collectionName),
-    searchFTS: (query, limit, collectionName) => searchFTS(db, query, limit, collectionName),
-    searchVec: (query: string, model: string, limit?: number, collectionFilter?: CollectionFilter, session?: ILLMSession, precomputedEmbedding?: number[]) => searchVec(
+    searchCharFTS: (query, limit, collectionName, filter) => searchCharFTS(db, query, limit, collectionName, filter),
+    searchFTS: (query, limit, collectionName, filter) => searchFTS(db, query, limit, collectionName, filter),
+    searchVec: (query: string, model: string, limit?: number, collectionFilter?: CollectionFilter, session?: ILLMSession, precomputedEmbedding?: number[], filter?: MetadataFilter) => searchVec(
       db,
       query,
       model,
@@ -3508,6 +3543,7 @@ export function createStore(dbPath?: string, options: CreateStoreOptions = {}): 
       store.embeddingProvider,
       store.authorizeRemoteRequest,
       store.llm,
+      filter,
     ),
 
     // Query expansion & reranking
@@ -3548,6 +3584,39 @@ export function createStore(dbPath?: string, options: CreateStoreOptions = {}): 
 
     // Vector/embedding operations
     getHashesForEmbedding: () => getHashesForEmbedding(db),
+    insertEmbedding: (
+      hash: string,
+      seq: number,
+      pos: number,
+      embedding: Float32Array,
+      model: string,
+      embeddedAt: string,
+      totalChunks?: number,
+      fingerprint?: string,
+      lease?: EmbeddingBuildLease,
+    ) => {
+      const state = db.prepare(`
+        SELECT status, fingerprint, model, generation, lease_owner, lease_expires_at
+        FROM embedding_index_state
+        WHERE singleton = 1
+      `).get();
+      if (!state && !lease) {
+        withLazyContentVectorMigration(db, () => {
+          db.prepare(`
+            INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+          `).run(hash, seq, pos, model, fingerprint ?? "", totalChunks ?? 1, embeddedAt);
+          const hasCollectionCol = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get() as { sql?: string } | undefined;
+          if (hasCollectionCol?.sql?.includes("collection")) {
+            db.prepare(`INSERT OR REPLACE INTO vectors_vec (hash_seq, collection, embedding) VALUES (?, ?, ?)`).run(`${hash}_${seq}`, "", embedding);
+          } else {
+            db.prepare(`INSERT OR REPLACE INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_${seq}`, embedding);
+          }
+        });
+        return;
+      }
+      insertEmbedding(db, hash, seq, pos, embedding, model, embeddedAt, totalChunks, fingerprint, lease);
+    },
   };
 
   return store;
@@ -3655,6 +3724,7 @@ export function handelize(path: string): string {
  * Search result extends DocumentResult with score and source info
  */
 export type SearchResult = DocumentResult & {
+  metadata: DocumentMetadata;
   score: number;              // Relevance score (0-1)
   source: "fts" | "vec";      // Search source (full-text or vector)
   chunkPos?: number;          // Character position of matching chunk (for vector search)
@@ -3819,6 +3889,8 @@ export type IndexStatus = {
   totalDocuments: number;
   needsEmbedding: number;
   hasVectorIndex: boolean;
+  /** Active documents without current, error-free metadata extraction. */
+  pendingMetadata: number;
   collections: CollectionInfo[];
   /** Additive diagnostics populated by high-level composition roots. */
   diagnostics?: IndexDiagnostics;
@@ -3902,7 +3974,16 @@ export async function maybeAdoptLegacyEmbeddingFingerprint(store: Store, model: 
   const llm = getLlm(store);
 
   return await withLLMSessionForLlm(llm, async (session) => {
-    const chunks = await chunkDocumentByTokens(sample.body, undefined, undefined, undefined, sample.path, undefined, session.signal);
+    const chunks = await chunkDocumentByTokensWithLlm(
+      llm,
+      sample.body,
+      undefined,
+      undefined,
+      undefined,
+      sample.path,
+      undefined,
+      session.signal,
+    );
     const chunk = chunks[sample.seq];
     if (!chunk) {
       return { checked: true, adopted: 0, reason: `sample chunk ${expectedHashSeq} no longer exists` };
@@ -4264,6 +4345,7 @@ function rebuildDocumentFTS(db: Database, documentId: number): void {
 
 /**
  * Insert a new document into the documents table.
+ * Returns the document's id so callers can attach document-scoped state.
  */
 export function insertDocument(
   db: Database,
@@ -4273,8 +4355,8 @@ export function insertDocument(
   hash: string,
   createdAt: string,
   modifiedAt: string
-): void {
-  runCjkSynchronizedMutation(db, () => {
+): number {
+  return runCjkSynchronizedMutation(db, () => {
     db.prepare(`
       INSERT INTO documents (collection, path, title, hash, created_at, modified_at, active)
       VALUES (?, ?, ?, ?, ?, ?, 1)
@@ -4286,7 +4368,9 @@ export function insertDocument(
     `).run(collectionName, path, title, hash, createdAt, modifiedAt);
 
     const row = db.prepare(`SELECT id FROM documents WHERE collection = ? AND path = ?`).get(collectionName, path) as { id: number } | undefined;
-    if (row) rebuildDocumentFTS(db, row.id);
+    if (!row) throw new Error(`Document row missing after insert: ${collectionName}/${path}`);
+    rebuildDocumentFTS(db, row.id);
+    return row.id;
   });
 }
 
@@ -4301,10 +4385,10 @@ export function insertDocumentWithContent(
   title: string,
   documentCreatedAt: string,
   modifiedAt: string,
-): void {
-  runCjkSynchronizedMutation(db, () => {
+): number {
+  return runCjkSynchronizedMutation(db, () => {
     insertContent(db, hash, content, contentCreatedAt);
-    insertDocument(db, collectionName, path, title, hash, documentCreatedAt, modifiedAt);
+    return insertDocument(db, collectionName, path, title, hash, documentCreatedAt, modifiedAt);
   });
 }
 
@@ -4580,7 +4664,8 @@ function stripUnpairedSurrogates(text: string): string {
  * When filepath and chunkStrategy are provided, uses AST-aware break points
  * for supported code files.
  */
-export async function chunkDocumentByTokens(
+async function chunkDocumentByTokensWithLlm(
+  llm: LlamaCpp,
   content: string,
   maxTokens: number = CHUNK_SIZE_TOKENS,
   overlapTokens: number = CHUNK_OVERLAP_TOKENS,
@@ -4589,8 +4674,6 @@ export async function chunkDocumentByTokens(
   chunkStrategy: ChunkStrategy = "regex",
   signal?: AbortSignal
 ): Promise<{ text: string; pos: number; tokens: number }[]> {
-  const llm = getDefaultLlamaCpp();
-
   // Use moderate chars/token estimate (prose ~4, code ~2, mixed ~3)
   // If chunks exceed limit, they'll be re-split with actual ratio
   const avgCharsPerToken = 3;
@@ -4677,6 +4760,27 @@ export async function chunkDocumentByTokens(
   }
 
   return results;
+}
+
+export async function chunkDocumentByTokens(
+  content: string,
+  maxTokens: number = CHUNK_SIZE_TOKENS,
+  overlapTokens: number = CHUNK_OVERLAP_TOKENS,
+  windowTokens: number = CHUNK_WINDOW_TOKENS,
+  filepath?: string,
+  chunkStrategy: ChunkStrategy = "regex",
+  signal?: AbortSignal,
+): Promise<{ text: string; pos: number; tokens: number }[]> {
+  return await chunkDocumentByTokensWithLlm(
+    getDefaultLlamaCpp(),
+    content,
+    maxTokens,
+    overlapTokens,
+    windowTokens,
+    filepath,
+    chunkStrategy,
+    signal,
+  );
 }
 
 // =============================================================================
@@ -5207,41 +5311,30 @@ export function sanitizeFTS5Term(term: string): string {
 }
 
 /**
- * Check if a token is a hyphenated compound word (e.g., multi-agent, DEC-0054, gpt-4).
- * Returns true if the token contains internal hyphens between word/digit characters.
+ * A run of characters the FTS tokenizer treats as a separator.
+ *
+ * `documents_fts` is tokenized with `porter unicode61`, which starts a new
+ * token at every character that is not a letter or a digit. Underscore is one
+ * of those, but it is deliberately kept here rather than split on: FTS5 applies
+ * the same tokenizer to a quoted phrase, so leaving `apply_secrets` intact lets
+ * it split symmetrically into `apply secrets` on both sides, and that is the
+ * behaviour #305 shipped. The apostrophe is kept for the same reason.
  */
-function isHyphenatedToken(token: string): boolean {
-  return /^[\p{L}\p{N}][\p{L}\p{N}'-]*-[\p{L}\p{N}][\p{L}\p{N}'-]*$/u.test(token);
-}
+const FTS5_SEPARATOR_RUN = /[^\p{L}\p{N}'_]+/u;
 
 /**
- * Sanitize a hyphenated term into an FTS5 phrase by splitting on hyphens
- * and sanitizing each part. Returns the parts joined by spaces for use
- * inside FTS5 quotes: "multi agent" matches "multi-agent" in porter tokenizer.
+ * Split one query term the way the tokenizer split the document text, and
+ * sanitize each part.
+ *
+ * `PIO-1384` becomes ["pio", "1384"], `src/lib/i18n.ts` becomes
+ * ["src", "lib", "i18n", "ts"], and a term with no separator in it comes back
+ * as a single part. Callers join the parts into an FTS5 phrase, which is what
+ * makes the parts have to be adjacent in the document rather than merely all
+ * present. Parts that sanitize to nothing are dropped, so a term that is all
+ * punctuation yields an empty list and the caller skips it.
  */
-function sanitizeHyphenatedTerm(term: string): string {
-  return term.split('-').map(t => sanitizeFTS5Term(t)).filter(t => t).join(' ');
-}
-
-/**
- * Check if a token is a dotted version/version-like string (e.g., 2026.4.10, 3.14.0).
- * Returns true if splitting on dots yields at least 2 non-empty parts consisting of
- * word/digit characters only. This avoids incorrectly splitting tokens with leading/
- * trailing dots. Version strings like "2026.4.10" split into ["2026","4","10"] (3 parts).
- */
-function isDottedToken(token: string): boolean {
-  const parts = token.split('.');
-  return parts.length >= 2 && parts.every(p => p.length > 0 && /^[\p{L}\p{N}_]+$/u.test(p));
-}
-
-/**
- * Sanitize a dotted term into individual FTS5 tokens joined with AND.
- * e.g. "2026.4.10" → '"2026"* AND "4"* AND "10"*'
- * The AND ensures all parts must appear, matching how the porter tokenizer
- * indexes dotted strings.
- */
-function sanitizeDottedTerm(term: string): string {
-  return term.split('.').map(t => sanitizeFTS5Term(t)).filter(t => t).map(t => `"${t}"*`).join(' AND ');
+function splitFTS5CompoundTerm(term: string): string[] {
+  return term.split(FTS5_SEPARATOR_RUN).map(p => sanitizeFTS5Term(p)).filter(p => p);
 }
 
 /**
@@ -5250,7 +5343,8 @@ function sanitizeDottedTerm(term: string): string {
  * Supports:
  * - Quoted phrases: "exact phrase" → "exact phrase" (exact match)
  * - Negation: -term or -"phrase" → uses FTS5 NOT operator
- * - Hyphenated tokens: multi-agent, DEC-0054, gpt-4 → treated as phrases
+ * - Terms holding a separator: multi-agent, DEC-0054, gpt-4, 2026.4.10,
+ *   src/lib/i18n.ts, @tobilu/qmd → treated as phrases over their parts
  * - Plain terms: term → "term"* (prefix match)
  *
  * FTS5 NOT is a binary operator: `term1 NOT term2` means "match term1 but not term2".
@@ -5267,6 +5361,8 @@ function sanitizeDottedTerm(term: string): string {
  *   multi-agent memory      → "multi agent" AND "memory"*
  *   DEC-0054               → "dec 0054"
  *   -multi-agent            → NOT "multi agent"
+ *   "DEC-0054"              → "dec 0054"
+ *   src/lib/i18n.ts         → "src lib i18n ts"
  */
 function buildFTS5Query(query: string): string | null {
   const positive: string[] = [];
@@ -5308,37 +5404,7 @@ function buildFTS5Query(query: string): string | null {
       while (i < s.length && !/[\s"]/.test(s[i]!)) i++;
       const term = s.slice(start, i);
 
-      // Handle hyphenated tokens: multi-agent, DEC-0054, gpt-4
-      // These get split into phrase queries so FTS5 porter tokenizer matches them.
-      if (isHyphenatedToken(term)) {
-        const sanitized = sanitizeHyphenatedTerm(term);
-        if (sanitized) {
-          const ftsPhrase = `"${sanitized}"`;  // Phrase match (no prefix)
-          if (negated) {
-            negative.push(ftsPhrase);
-          } else {
-            positive.push(ftsPhrase);
-          }
-        }
-      } else if (isDottedToken(term)) {
-        // Handle dotted version strings: 2026.4.10, 3.14.0, v1.2.3
-        // The porter tokenizer splits on dots, so the index has individual tokens.
-        // We AND all parts together so the query matches documents containing all parts.
-        const sanitized = sanitizeDottedTerm(term);
-        if (sanitized) {
-          // sanitizeDottedTerm already wraps each part in quotes with prefix match
-          if (negated) {
-            // Wrap multi-token AND expression in parens for NOT negation
-            negative.push(`(${sanitized})`);
-          } else {
-            // Flatten individual AND'd terms into the positive list so they combine
-            // correctly with other terms (avoids double-wrapping in outer AND).
-            for (const part of sanitized.split(' AND ')) {
-              positive.push(part.trim());
-            }
-          }
-        }
-      } else if (containsCjk(term)) {
+      if (containsCjk(term)) {
         const sanitized = sanitizeFTS5Phrase(term);
         if (sanitized) {
           const ftsPhrase = `"${sanitized}"`;  // CJK phrase over character tokens
@@ -5349,9 +5415,16 @@ function buildFTS5Query(query: string): string | null {
           }
         }
       } else {
-        const sanitized = sanitizeFTS5Term(term);
-        if (sanitized) {
-          const ftsTerm = `"${sanitized}"*`;  // Prefix match
+        // Any separator inside the term (multi-agent, DEC-0054, 2026.4.10,
+        // src/lib/i18n.ts, @tobilu/qmd) split it at index time too, so the term
+        // has to be matched as the phrase those parts form. A term with no
+        // separator is one part and keeps its prefix match, which is what makes
+        // a plain word still match longer words that start with it.
+        const parts = splitFTS5CompoundTerm(term);
+        if (parts.length > 0) {
+          const ftsTerm = parts.length > 1
+            ? `"${parts.join(' ')}"`   // Phrase match (no prefix)
+            : `"${parts[0]}"*`;        // Prefix match
           if (negated) {
             negative.push(ftsTerm);
           } else {
@@ -5421,12 +5494,34 @@ function normalizeCollectionFilter(filter: CollectionFilter | undefined): string
   return [...new Set(names.filter(name => name.length > 0))];
 }
 
+function scopedCollectionNames(scope: CollectionScope): string[] | undefined {
+  if (scope == null) return undefined;
+  const names = (typeof scope === "string" ? [scope] : Array.from(scope))
+    .map(n => n.trim())
+    .filter(n => n.length > 0);
+  return names.length > 0 ? names : undefined;
+}
+
+function mergeSearchResultsByScore(lists: SearchResult[][], limit: number): SearchResult[] {
+  const best = new Map<string, SearchResult>();
+  for (const list of lists) {
+    for (const r of list) {
+      const prev = best.get(r.filepath);
+      if (!prev || r.score > prev.score) best.set(r.filepath, r);
+    }
+  }
+  return Array.from(best.values())
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
 function searchFtsChannel(
   db: Database,
   table: CjkFtsTable,
   ftsQuery: string,
   limit: number,
   collectionFilter?: CollectionFilter,
+  filter?: MetadataFilter,
 ): SearchResult[] {
   // Keep collection membership inside the ranked FTS candidate set. Filtering
   // after LIMIT can lose every matching row from a smaller collection.
@@ -5439,7 +5534,11 @@ function searchFtsChannel(
     ? `AND filtered_d.active = 1 AND filtered_d.collection IN (${collections.map(() => "?").join(", ")})`
     : "";
   params.push(...collections);
-  params.push(limit);
+
+  // When filtering by metadata, fetch extra candidates from the FTS index
+  // since some will be filtered out. Without a filter we can fetch exactly the requested limit.
+  const ftsLimit = filter ? limit * 10 : limit;
+  params.push(ftsLimit);
 
   let sql = `
     WITH fts_matches AS (
@@ -5457,17 +5556,28 @@ function searchFtsChannel(
       d.title,
       content.doc as body,
       d.hash,
-      fm.bm25_score
+      fm.bm25_score,
+      dm.metadata_json
     FROM fts_matches fm
     JOIN documents d ON d.id = fm.rowid
     JOIN content ON content.hash = d.hash
+    LEFT JOIN document_metadata dm ON dm.document_id = d.id
     WHERE d.active = 1
   `;
+
+  if (filter) {
+    // Only documents with current, error-free extraction can match — an
+    // unprocessed document must not accidentally satisfy `exists: false`.
+    const compiledFilter = compileMetadataFilter(filter, "d");
+    sql += ` AND dm.extraction_version = ${METADATA_EXTRACTION_VERSION} AND dm.extraction_error IS NULL AND ${compiledFilter.sql}`;
+    params.push(...compiledFilter.params);
+  }
+
   // bm25 lower is better; sort ascending.
   sql += ` ORDER BY fm.bm25_score ASC LIMIT ?`;
   params.push(limit);
 
-  const rows = db.prepare(sql).all(...params) as { filepath: string; display_path: string; title: string; body: string; hash: string; bm25_score: number }[];
+  const rows = db.prepare(sql).all(...params) as { filepath: string; display_path: string; title: string; body: string; hash: string; bm25_score: number; metadata_json: string | null }[];
   return rows.map(row => {
     const collectionName = row.filepath.split('//')[1]?.split('/')[0] || "";
     // Convert bm25 (negative, lower is better) into a stable [0..1) score where higher is better.
@@ -5486,6 +5596,7 @@ function searchFtsChannel(
       bodyLength: row.body.length,
       body: row.body,
       context: getContextForFile(db, row.filepath),
+      metadata: parseMetadataJson(row.metadata_json),
       score,
       source: "fts" as const,
     };
@@ -5503,15 +5614,27 @@ export function searchCharFTS(
   query: string,
   limit: number = 20,
   collectionFilter?: CollectionFilter,
+  filter?: MetadataFilter,
 ): SearchResult[] {
   if (!readOnlyDatabases.has(db)) repairDirtyCjkCharFallback(db);
   const charQuery = buildFTS5Query(query);
   if (!charQuery) return [];
-  return searchFtsChannel(db, "documents_fts", charQuery, limit, collectionFilter);
+  return searchFtsChannel(db, "documents_fts", charQuery, limit, collectionFilter, filter);
 }
 
-export function searchFTS(db: Database, query: string, limit: number = 20, collectionFilter?: CollectionFilter): SearchResult[] {
-  if (!containsCjk(query)) return searchCharFTS(db, query, limit, collectionFilter);
+export function searchFTS(
+  db: Database,
+  query: string,
+  limit: number = 20,
+  collectionFilter?: CollectionScope,
+  filter?: MetadataFilter,
+): SearchResult[] {
+  const names = scopedCollectionNames(collectionFilter);
+  if (names && names.length > 1) {
+    return mergeSearchResultsByScore(names.map(name => searchFTS(db, query, limit, name, filter)), limit);
+  }
+
+  if (!containsCjk(query)) return searchCharFTS(db, query, limit, collectionFilter, filter);
   const charQuery = buildFTS5Query(query);
   if (!charQuery) return [];
 
@@ -5520,7 +5643,7 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
   const candidateDepth = Math.max(limit, CJK_LEXICAL_CANDIDATE_DEPTH);
   const rankedChannels: Array<{ channel: CjkLexicalChannel; results: SearchResult[] }> = [{
     channel: "char",
-    results: searchCharFTS(db, query, candidateDepth, collectionFilter),
+    results: searchCharFTS(db, query, candidateDepth, collectionFilter, filter),
   }];
 
   let secondaryReason: string | null = null;
@@ -5561,7 +5684,7 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
     }
     rankedChannels.push({
       channel: entry.channel,
-      results: searchFtsChannel(db, entry.table, ftsQuery, candidateDepth, collectionFilter),
+      results: searchFtsChannel(db, entry.table, ftsQuery, candidateDepth, collectionFilter, filter),
     });
     channels.push({ channel: entry.channel, status: "used" });
   }
@@ -5606,6 +5729,65 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
 // =============================================================================
 // Vector Search
 // =============================================================================
+
+/** sqlite-vec rejects k above this in MATCH queries (v0.1.9). */
+const SQLITE_VEC_MAX_K = 4096;
+
+/**
+ * Max filter-eligible vectors for an exact cosine scan. Above this we fall
+ * back to global ANN with a capped over-fetch. Exact scan avoids the
+ * post-filter starvation of small eligible sets — originally small
+ * collections (#791, #803), now also selective metadata filters; ANN remains
+ * for very large eligible sets where a full scan would be expensive.
+ */
+const FILTERED_VEC_EXACT_SCAN_MAX = 20_000;
+
+const VEC_HASH_SEQ_IN_CHUNK = 400;
+
+/**
+ * Exact cosine-distance scan over a known set of hash_seq keys.
+ * Uses vec_distance_cosine with chunked IN lists (no JOIN with vectors_vec).
+ */
+function exactVecScanByHashSeq(
+  db: Database,
+  embedding: number[],
+  hashSeqs: string[],
+  limit: number,
+): { hash_seq: string; distance: number }[] {
+  if (hashSeqs.length === 0 || limit <= 0) return [];
+
+  const queryVec = new Float32Array(embedding);
+  // Over-fetch a bit so multi-chunk docs can still yield `limit` unique files.
+  const fetchLimit = Math.max(limit * 3, limit);
+  const scored: { hash_seq: string; distance: number }[] = [];
+
+  for (let i = 0; i < hashSeqs.length; i += VEC_HASH_SEQ_IN_CHUNK) {
+    const chunk = hashSeqs.slice(i, i + VEC_HASH_SEQ_IN_CHUNK);
+    const placeholders = chunk.map(() => "?").join(",");
+    const rows = db.prepare(`
+      SELECT hash_seq, vec_distance_cosine(embedding, ?) AS distance
+      FROM vectors_vec
+      WHERE hash_seq IN (${placeholders})
+    `).all(queryVec, ...chunk) as { hash_seq: string; distance: number }[];
+    scored.push(...rows);
+  }
+
+  scored.sort((a, b) => a.distance - b.distance);
+  return scored.slice(0, fetchLimit);
+}
+
+function annVecScan(
+  db: Database,
+  embedding: number[],
+  k: number,
+): { hash_seq: string; distance: number }[] {
+  const vecK = Math.max(1, Math.min(SQLITE_VEC_MAX_K, k));
+  return db.prepare(`
+    SELECT hash_seq, distance
+    FROM vectors_vec
+    WHERE embedding MATCH ? AND k = ?
+  `).all(new Float32Array(embedding), vecK) as { hash_seq: string; distance: number }[];
+}
 
 function resolveReadyProviderEmbeddingIdentity(
   db: Database,
@@ -5660,12 +5842,33 @@ export async function searchVec(
   collectionFilter?: CollectionFilter,
   session?: ILLMSession,
   precomputedEmbedding?: number[],
-  provider?: EmbeddingProvider,
-  authorizeRemoteRequest?: Store["authorizeRemoteRequest"],
+  providerOrLlm?: EmbeddingProvider | LLM,
+  authorizeRemoteRequestOrFilter?: Store["authorizeRemoteRequest"] | MetadataFilter,
   llmOverride?: LLM,
+  metadataFilter?: MetadataFilter,
 ): Promise<SearchResult[]> {
   const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
   if (!tableExists) return [];
+
+  // Disambiguate overloaded arguments
+  let provider: EmbeddingProvider | undefined;
+  let authorizeRemoteRequest: Store["authorizeRemoteRequest"] | undefined;
+  let filter: MetadataFilter | undefined = metadataFilter;
+  let effectiveLlmOverride: LLM | undefined = llmOverride;
+
+  if (providerOrLlm && typeof providerOrLlm === "object") {
+    if ("providerId" in providerOrLlm) {
+      provider = providerOrLlm as EmbeddingProvider;
+    } else {
+      effectiveLlmOverride = providerOrLlm as LLM;
+    }
+  }
+
+  if (typeof authorizeRemoteRequestOrFilter === "function") {
+    authorizeRemoteRequest = authorizeRemoteRequestOrFilter;
+  } else if (typeof authorizeRemoteRequestOrFilter === "object" && authorizeRemoteRequestOrFilter !== null && !filter) {
+    filter = authorizeRemoteRequestOrFilter as MetadataFilter;
+  }
 
   if (provider && model !== provider.model) {
     throw new Error(`Embedding model ${model} does not match borrowed provider model ${provider.model}.`);
@@ -5682,6 +5885,7 @@ export async function searchVec(
     storedIdentity.model !== model
     || inspectEmbeddingIndexState(db, storedIdentity).status !== "ready"
   )) return [];
+
   let embedding: number[] | null | undefined = precomputedEmbedding;
   if (!embedding && provider) {
     if (!providerIdentity) return [];
@@ -5697,12 +5901,34 @@ export async function searchVec(
       identityFingerprint: providerIdentity.fingerprint,
     })).vector;
   } else if (!embedding) {
-    embedding = await getEmbedding(query, model, true, session, llmOverride as LlamaCpp);
+    embedding = await getEmbedding(query, model, true, session, effectiveLlmOverride as LlamaCpp);
   }
   if (!embedding) return [];
+
+  // Multi-collection union: search each collection separately to avoid starvation
+  const names = scopedCollectionNames(collectionFilter);
+  if (names && names.length > 1) {
+    const lists = await Promise.all(
+      names.map(name => searchVec(
+        db,
+        query,
+        model,
+        limit,
+        name,
+        session,
+        embedding,
+        provider ?? effectiveLlmOverride,
+        authorizeRemoteRequest ?? filter,
+        effectiveLlmOverride,
+        filter,
+      )),
+    );
+    return mergeSearchResultsByScore(lists, limit);
+  }
+
   const activeFingerprint = providerIdentity
     ? providerIdentity.fingerprint
-    : storedIdentity!.fingerprint;
+    : storedIdentity?.fingerprint;
 
   type VectorMetaRow = {
     hash_seq: string;
@@ -5712,6 +5938,7 @@ export async function searchVec(
     display_path: string;
     title: string;
     collection: string;
+    metadata_json?: string | null;
   };
 
   const toSearchResult = (row: VectorMetaRow, body: string, distance: number): SearchResult => {
@@ -5726,6 +5953,7 @@ export async function searchVec(
       bodyLength: body.length,
       body,
       context: getContextForFile(db, row.filepath),
+      metadata: parseMetadataJson(row.metadata_json),
       score: 1 - distance,  // Cosine similarity = 1 - cosine distance
       source: "vec",
       chunkPos: row.pos,
@@ -5733,45 +5961,82 @@ export async function searchVec(
   };
 
   const collections = normalizeCollectionFilter(collectionFilter);
-  const queryVec = embedding instanceof Float32Array ? embedding : new Float32Array(embedding);
-  const SQLITE_VEC_MAX_K = 4096;
 
-  let collectionFilterSql = "";
-  const queryParams: SQLiteValue[] = [queryVec];
-  if (collections.length === 1) {
-    collectionFilterSql = "AND collection = ?";
-    queryParams.push(collections[0]!);
-  } else if (collections.length > 1) {
-    const placeholders = collections.map(() => "?").join(", ");
-    collectionFilterSql = `AND collection IN (${placeholders})`;
-    queryParams.push(...collections);
-  }
+  let vecRows: Array<{ hash_seq: string; distance: number }>;
 
-  // Request generous k to account for multi-chunk deduplication per document
-  const fetchK = Math.min(SQLITE_VEC_MAX_K, Math.max(limit * 15, 60));
-  queryParams.push(fetchK);
+  if (filter) {
+    let eligibleSql = `
+      SELECT DISTINCT cv.hash || '_' || cv.seq AS hash_seq
+      FROM content_vectors cv
+      JOIN documents d ON d.hash = cv.hash AND d.active = 1
+      JOIN document_metadata dm ON dm.document_id = d.id
+    `;
+    const eligibleConditions: string[] = [];
+    const eligibleParams: (string | number)[] = [];
 
-  let vecRows: Array<{ hash_seq: string; collection?: string; distance: number }>;
-  try {
-    vecRows = withLazyContentVectorMigration(db, () =>
-      db.prepare(`
-        SELECT hash_seq, collection, distance
-        FROM vectors_vec
-        WHERE embedding MATCH ?
-          ${collectionFilterSql}
-          AND k = ?
-      `).all(...queryParams) as Array<{ hash_seq: string; collection: string; distance: number }>
-    );
-  } catch {
-    // Fallback if table lacks collection column before migration
-    vecRows = withLazyContentVectorMigration(db, () =>
-      db.prepare(`
-        SELECT hash_seq, distance
-        FROM vectors_vec
-        WHERE embedding MATCH ?
-          AND k = ?
-      `).all(queryVec, fetchK) as Array<{ hash_seq: string; distance: number }>
-    );
+    if (activeFingerprint) {
+      eligibleConditions.push(`cv.model = ? AND cv.embed_fingerprint = ?`);
+      eligibleParams.push(model, activeFingerprint);
+    }
+
+    if (collections.length === 1) {
+      eligibleConditions.push(`d.collection = ?`);
+      eligibleParams.push(collections[0]!);
+    } else if (collections.length > 1) {
+      eligibleConditions.push(`d.collection IN (${collections.map(() => "?").join(", ")})`);
+      eligibleParams.push(...collections);
+    }
+
+    const compiledFilter = compileMetadataFilter(filter, "d");
+    eligibleConditions.push(`dm.extraction_version = ${METADATA_EXTRACTION_VERSION}`);
+    eligibleConditions.push(`dm.extraction_error IS NULL`);
+    eligibleConditions.push(compiledFilter.sql);
+    eligibleParams.push(...compiledFilter.params);
+
+    eligibleSql += ` WHERE ${eligibleConditions.join(" AND ")}`;
+
+    const eligibleHashSeqs = withLazyContentVectorMigration(db, () =>
+      db.prepare(eligibleSql).all(...eligibleParams) as { hash_seq: string }[],
+    ).map((r) => r.hash_seq);
+
+    if (eligibleHashSeqs.length === 0) return [];
+
+    if (eligibleHashSeqs.length <= FILTERED_VEC_EXACT_SCAN_MAX) {
+      vecRows = exactVecScanByHashSeq(db, embedding, eligibleHashSeqs, limit);
+    } else {
+      vecRows = annVecScan(db, embedding, Math.max(limit * 30, limit * 3));
+    }
+  } else {
+    // No metadata filter: use fast ANN scan (with collection pushdown if supported)
+    const queryVec = embedding instanceof Float32Array ? embedding : new Float32Array(embedding);
+    let collectionFilterSql = "";
+    const queryParams: SQLiteValue[] = [queryVec];
+    if (collections.length === 1) {
+      collectionFilterSql = "AND collection = ?";
+      queryParams.push(collections[0]!);
+    } else if (collections.length > 1) {
+      const placeholders = collections.map(() => "?").join(", ");
+      collectionFilterSql = `AND collection IN (${placeholders})`;
+      queryParams.push(...collections);
+    }
+
+    const fetchK = Math.min(SQLITE_VEC_MAX_K, Math.max(limit * 15, 60));
+    queryParams.push(fetchK);
+
+    try {
+      vecRows = withLazyContentVectorMigration(db, () =>
+        db.prepare(`
+          SELECT hash_seq, distance
+          FROM vectors_vec
+          WHERE embedding MATCH ?
+            ${collectionFilterSql}
+            AND k = ?
+        `).all(...queryParams) as Array<{ hash_seq: string; distance: number }>
+      );
+    } catch {
+      // Fallback if table lacks collection column before migration
+      vecRows = annVecScan(db, embedding, fetchK);
+    }
   }
 
   if (vecRows.length === 0) return [];
@@ -5780,11 +6045,7 @@ export async function searchVec(
   const distMap = new Map(vecRows.map(r => [r.hash_seq, r.distance]));
   const placeholders = keys.map(() => "?").join(", ");
 
-  const collectionScope = collections.length > 0
-    ? `AND d.collection IN (${collections.map(() => "?").join(", ")})`
-    : "";
-
-  const metaRows = withLazyContentVectorMigration(db, () => db.prepare(`
+  let metaSql = `
     SELECT
       cv.hash || '_' || cv.seq AS hash_seq,
       cv.hash,
@@ -5792,14 +6053,37 @@ export async function searchVec(
       'qmd://' || d.collection || '/' || d.path AS filepath,
       d.collection || '/' || d.path AS display_path,
       d.title,
-      d.collection
+      d.collection,
+      dm.metadata_json
     FROM content_vectors cv
     JOIN documents d ON d.hash = cv.hash AND d.active = 1
-    WHERE cv.model = ?
-      AND cv.embed_fingerprint = ?
-      ${collectionScope}
-      AND (cv.hash || '_' || cv.seq) IN (${placeholders})
-  `).all(model, activeFingerprint, ...collections, ...keys) as VectorMetaRow[]);
+    LEFT JOIN document_metadata dm ON dm.document_id = d.id
+    WHERE (cv.hash || '_' || cv.seq) IN (${placeholders})
+  `;
+  const metaParams: SQLiteValue[] = [...keys];
+
+  if (activeFingerprint) {
+    metaSql += ` AND cv.model = ? AND cv.embed_fingerprint = ?`;
+    metaParams.push(model, activeFingerprint);
+  }
+
+  if (collections.length === 1) {
+    metaSql += ` AND d.collection = ?`;
+    metaParams.push(collections[0]!);
+  } else if (collections.length > 1) {
+    metaSql += ` AND d.collection IN (${collections.map(() => "?").join(", ")})`;
+    metaParams.push(...collections);
+  }
+
+  if (filter) {
+    const compiledFilter = compileMetadataFilter(filter, "d");
+    metaSql += ` AND dm.extraction_version = ${METADATA_EXTRACTION_VERSION} AND dm.extraction_error IS NULL AND ${compiledFilter.sql}`;
+    metaParams.push(...compiledFilter.params);
+  }
+
+  const metaRows = withLazyContentVectorMigration(db, () =>
+    db.prepare(metaSql).all(...metaParams) as VectorMetaRow[]
+  );
 
   const byFile = new Map<string, VectorMetaRow & { distance: number }>();
   for (const m of metaRows) {
@@ -6806,6 +7090,7 @@ export function getStatusReadOnly(db: Database, needsEmbedding: number): IndexSt
     totalDocuments: totalDocs,
     needsEmbedding,
     hasVectorIndex: hasVectors,
+    pendingMetadata: countDocumentsPendingMetadata(db),
     collections,
   };
 }
@@ -7001,6 +7286,7 @@ export type ExpansionErrorEvent = {
 export interface HybridQueryOptions {
   collection?: string | readonly string[];
   collections?: readonly string[];
+  filter?: MetadataFilter;  // metadata filter applied to every retrieval call
   limit?: number;           // default 10
   minScore?: number;        // default 0
   candidateLimit?: number;  // default RERANK_CANDIDATE_LIMIT
@@ -7026,7 +7312,21 @@ export interface HybridQueryResult {
   score: number;            // blended score (full precision)
   context: string | null;   // user-set context
   docid: string;            // content hash prefix (6 chars)
+  metadata: DocumentMetadata; // indexed qmd.metadata for the document
   explain?: HybridQueryExplain;
+}
+
+/**
+ * Attach canonical metadata to final search results with one batch query.
+ * Runs after RRF/reranking so metadata is never duplicated through the
+ * intermediate ranked lists.
+ */
+function attachResultMetadata<T extends { file: string }>(
+  db: Database,
+  results: T[],
+): (T & { metadata: DocumentMetadata })[] {
+  const metadataByFilepath = getMetadataByFilepath(db, results.map(r => r.file));
+  return results.map(r => ({ ...r, metadata: metadataByFilepath.get(r.file) ?? {} }));
 }
 
 export type RankedListMeta = {
@@ -7074,6 +7374,7 @@ export async function hybridQuery(
   const collectionFilter = options?.collections && options.collections.length > 0
     ? options.collections
     : options?.collection;
+  const filter = options?.filter;
   const explain = options?.explain ?? false;
   const expansionContext = options?.expansionContext;
   const rerankContext = options?.rerankContext;
@@ -7090,9 +7391,9 @@ export async function hybridQuery(
   // When either context is provided, disable strong-signal bypass — the obvious BM25
   // match may not be what the caller wants (e.g. "performance" with context
   // "web page load times" should NOT shortcut to a sports-performance doc).
-  // Pass collection directly into FTS query (filter at SQL level, not post-hoc)
+  // Pass collection and metadata filter directly into FTS query (filter at SQL level, not post-hoc)
   const parsedDirective = parseExpansionDirective(query);
-  const initialFts = store.searchFTS(parsedDirective.query, 20, collectionFilter);
+  const initialFts = store.searchFTS(parsedDirective.query, 20, collectionFilter, filter);
   const strongSignal = getLexicalStrongSignal(initialFts);
   const topScore = strongSignal.topScore;
   let expansionDecision: ExpansionDecision;
@@ -7161,7 +7462,7 @@ export async function hybridQuery(
   // 3a: Run FTS for all lex expansions right away (no LLM needed)
   for (const q of expanded) {
     if (q.type === 'lex') {
-      const ftsResults = store.searchFTS(q.query, 20, collectionFilter);
+      const ftsResults = store.searchFTS(q.query, 20, collectionFilter, filter);
       if (ftsResults.length > 0) {
         for (const r of ftsResults) docidMap.set(r.filepath, r.docid);
         rankedLists.push(ftsResults.map(r => ({
@@ -7200,7 +7501,7 @@ export async function hybridQuery(
 
       const vecResults = await store.searchVec(
         vecQueries[i]!.text, embedModel, 20, collectionFilter,
-        undefined, embedding
+        undefined, embedding, filter
       );
       if (vecResults.length > 0) {
         for (const r of vecResults) docidMap.set(r.filepath, r.docid);
@@ -7269,7 +7570,7 @@ export async function hybridQuery(
   if (skipRerank) {
     // Skip LLM reranking — return candidates scored by RRF only
     const seenFiles = new Set<string>();
-    return candidates
+    const rrfResults = candidates
       .map((cand, i) => {
         const chunkInfo = docChunkMap.get(cand.file);
         const bestIdx = chunkInfo?.bestIdx ?? 0;
@@ -7314,6 +7615,7 @@ export async function hybridQuery(
       })
       .filter(r => r.score >= minScore)
       .slice(0, limit);
+    return attachResultMetadata(store.db, rrfResults);
   }
 
   // Step 6: Rerank chunks (NOT full bodies)
@@ -7384,7 +7686,7 @@ export async function hybridQuery(
 
   // Step 8: Dedup by file (safety net — prevents duplicate output)
   const seenFiles = new Set<string>();
-  return blended
+  const finalResults = blended
     .filter(r => {
       if (seenFiles.has(r.file)) return false;
       seenFiles.add(r.file);
@@ -7392,11 +7694,13 @@ export async function hybridQuery(
     })
     .filter(r => r.score >= minScore)
     .slice(0, limit);
+  return attachResultMetadata(store.db, finalResults);
 }
 
 
 export interface VectorSearchOptions {
   collection?: CollectionFilter;
+  filter?: MetadataFilter;  // metadata filter applied to every retrieval call
   limit?: number;           // default 10
   minScore?: number;        // default 0.3
   /** Additional context used only while generating query expansions. */
@@ -7414,6 +7718,7 @@ export interface VectorSearchResult {
   score: number;
   context: string | null;
   docid: string;
+  metadata: DocumentMetadata;
 }
 
 /**
@@ -7433,6 +7738,7 @@ export async function vectorSearchQuery(
   const limit = options?.limit ?? 10;
   const minScore = options?.minScore ?? 0.3;
   const collection = options?.collection;
+  const filter = options?.filter;
   const expansionContext = options?.expansionContext;
   const includeHyde = options?.includeHyde ?? true;
 
@@ -7450,7 +7756,7 @@ export async function vectorSearchQuery(
   const queryTexts = [query, ...vecExpanded.map(q => q.query)];
   const allResults = new Map<string, VectorSearchResult>();
   for (const q of queryTexts) {
-    const vecResults = await store.searchVec(q, embedModel, limit, collection);
+    const vecResults = await store.searchVec(q, embedModel, limit, collection, undefined, undefined, filter);
     for (const r of vecResults) {
       const existing = allResults.get(r.filepath);
       if (!existing || r.score > existing.score) {
@@ -7462,6 +7768,7 @@ export async function vectorSearchQuery(
           score: r.score,
           context: store.getContextForFile(r.filepath),
           docid: r.docid,
+          metadata: r.metadata,
         });
       }
     }
@@ -7483,6 +7790,7 @@ export async function vectorSearchQuery(
  */
 export interface StructuredSearchOptions {
   collections?: string[];   // Filter to specific collections (OR match)
+  filter?: MetadataFilter;  // metadata filter applied to every retrieval call
   limit?: number;           // default 10
   minScore?: number;        // default 0
   candidateLimit?: number;  // default RERANK_CANDIDATE_LIMIT
@@ -7527,6 +7835,7 @@ export async function structuredSearch(
   const hooks = options?.hooks;
 
   const collections = options?.collections;
+  const filter = options?.filter;
 
   if (searches.length === 0) return [];
 
@@ -7562,7 +7871,7 @@ export async function structuredSearch(
   for (const [searchIndex, search] of searches.entries()) {
     if (search.type === 'lex') {
       for (const coll of collectionList) {
-        const ftsResults = store.searchFTS(search.query, 20, coll);
+        const ftsResults = store.searchFTS(search.query, 20, coll, filter);
         if (ftsResults.length > 0) {
           for (const r of ftsResults) docidMap.set(r.filepath, r.docid);
           rankedLists.push(ftsResults.map(r => ({
@@ -7604,7 +7913,7 @@ export async function structuredSearch(
         for (const coll of collectionList) {
           const vecResults = await store.searchVec(
             vecSearches[i]!.search.query, embedModel, 20, coll,
-            undefined, embedding
+            undefined, embedding, filter
           );
           if (vecResults.length > 0) {
             for (const r of vecResults) docidMap.set(r.filepath, r.docid);
@@ -7669,7 +7978,7 @@ export async function structuredSearch(
   if (skipRerank) {
     // Skip LLM reranking — return candidates scored by RRF only
     const seenFiles = new Set<string>();
-    return candidates
+    const rrfResults = candidates
       .map((cand, i) => {
         const chunkInfo = docChunkMap.get(cand.file);
         const bestIdx = chunkInfo?.bestIdx ?? 0;
@@ -7714,6 +8023,7 @@ export async function structuredSearch(
       })
       .filter(r => r.score >= minScore)
       .slice(0, limit);
+    return attachResultMetadata(store.db, rrfResults);
   }
 
   // Step 5: Rerank chunks
@@ -7783,7 +8093,7 @@ export async function structuredSearch(
 
   // Step 7: Dedup by file
   const seenFiles = new Set<string>();
-  return blended
+  const finalResults = blended
     .filter(r => {
       if (seenFiles.has(r.file)) return false;
       seenFiles.add(r.file);
@@ -7791,4 +8101,5 @@ export async function structuredSearch(
     })
     .filter(r => r.score >= minScore)
     .slice(0, limit);
+  return attachResultMetadata(store.db, finalResults);
 }

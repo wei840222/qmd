@@ -22,10 +22,13 @@ import {
   addLineNumbers,
   getDefaultDbPath,
   DEFAULT_MULTI_GET_MAX_BYTES,
+  parseMetadataFilter,
   type QMDStore,
   type ExpandedQuery,
   type HybridQueryExplain,
   type IndexStatus,
+  type DocumentMetadata,
+  type MetadataFilter,
 } from "../index.js";
 import { getConfigPath } from "../collections.js";
 import { enableProductionMode, type ExpansionErrorEvent } from "../store.js";
@@ -42,10 +45,24 @@ type SearchResultItem = {
   title: string;
   score: number;
   context: string | null;
+  metadata?: DocumentMetadata;  // Indexed qmd.metadata (present when non-empty)
   line: number;   // Absolute line in source markdown
   snippet: string;
   explain?: HybridQueryExplain;
 };
+
+/**
+ * Validate an untrusted `filter` argument through the shared runtime
+ * validator. Returns the parse error message when invalid.
+ */
+function validateFilterArgument(filter: unknown): { filter?: MetadataFilter; error?: string } {
+  if (filter === undefined) return {};
+  try {
+    return { filter: parseMetadataFilter(filter) };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 type StatusResult = IndexStatus;
 
@@ -323,11 +340,23 @@ Context-aware lex (C++ performance, not sports):
           "Maximum candidates to rerank (default: 40, lower = faster but may miss results)"
         ),
         collections: z.array(z.string()).optional().describe("Filter to collections (OR match)"),
+        filter: z.record(z.string(), z.unknown()).optional().describe(
+          "Metadata filter (recursive JSON AST). Every returned result satisfies it. " +
+          "Nodes are operator-discriminated: logical groups {operator:'and'|'or', operands:[...]}, " +
+          "negation {operator:'not', operand:{...}}, and conditions {key, operator, value} with " +
+          "operators eq/ne/gt/gte/lt/lte (comparison), in/nin/all (membership), exists (presence). " +
+          "Values are typed exactly (no coercion); missing keys do not match ne/nin. " +
+          "Example: {\"operator\":\"and\",\"operands\":[{\"key\":\"topics\",\"operator\":\"all\",\"value\":[\"typescript\"]}," +
+          "{\"key\":\"status\",\"operator\":\"ne\",\"value\":\"draft\"}]}"
+        ),
         expansionContext: z.string().optional().describe(
           "Additional context used only to generate lex, vec, and hyde query expansions."
         ),
         rerankContext: z.string().optional().describe(
           "Additional context used only to rerank results and select snippets/chunks."
+        ),
+        intent: z.string().optional().describe(
+          "Background context to disambiguate the query. Example: query='performance', intent='web page load times and Core Web Vitals'. Does not search on its own."
         ),
         rerank: z.boolean().optional().default(true).describe(
           "Rerank results using LLM (default: true). Set to false for faster results on CPU-only machines."
@@ -340,8 +369,7 @@ Context-aware lex (C++ performance, not sports):
         ),
       }),
     },
-    track(async ({ query, searches, expansion, includeHyde, limit, minScore, candidateLimit, collections, expansionContext, rerankContext, rerank, explain }) => {
-      // Require exactly one of `query` (plain text with an expansion policy) or `searches` (typed sub-queries).
+    track(async ({ query, searches, expansion, includeHyde, limit, minScore, candidateLimit, collections, filter, expansionContext, rerankContext, intent, rerank, explain }) => {
       if (!query && (!searches || searches.length === 0)) {
         return {
           content: [{ type: "text" as const, text: "Error: provide either 'query' (plain text) or 'searches' (typed sub-queries)" }],
@@ -355,6 +383,14 @@ Context-aware lex (C++ performance, not sports):
         };
       }
 
+      const filterValidation = validateFilterArgument(filter);
+      if (filterValidation.error) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${filterValidation.error}` }],
+          isError: true,
+        };
+      }
+
       // Use default collections if none specified
       const effectiveCollections = collections ?? defaultCollectionNames;
 
@@ -364,6 +400,8 @@ Context-aware lex (C++ performance, not sports):
         ? { query }
         : { queries: (searches ?? []).map(s => ({ type: s.type, query: s.query })) };
 
+      const effectiveExpansionContext = expansionContext ?? intent;
+      const effectiveRerankContext = rerankContext ?? intent;
       let expansionDecision: ExpansionDecision | undefined;
       let expansionError: ExpansionErrorEvent | undefined;
       let results: Awaited<ReturnType<QMDStore["search"]>>;
@@ -371,12 +409,13 @@ Context-aware lex (C++ performance, not sports):
         results = await store.search({
           ...searchOptions,
           collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
+          filter: filterValidation.filter,
           limit,
           minScore,
           candidateLimit,
           rerank,
-          expansionContext,
-          rerankContext,
+          expansionContext: effectiveExpansionContext,
+          rerankContext: effectiveRerankContext,
           explain,
           expansion: query ? expansion : undefined,
           includeHyde,
@@ -409,6 +448,7 @@ Context-aware lex (C++ performance, not sports):
           title: r.title,
           score: Math.round(r.score * 100) / 100,
           context: r.context,
+          ...(Object.keys(r.metadata).length > 0 ? { metadata: r.metadata } : {}),
           line,
           snippet: addLineNumbers(snippet, line),
           ...(explain && r.explain ? { explain: r.explain } : {}),
@@ -1018,7 +1058,20 @@ export async function startMcpHttpServer(
       // REST endpoint: POST /query (alias: /search) — structured search without MCP protocol
       if ((pathname === "/query" || pathname === "/search") && nodeReq.method === "POST") {
         const rawBody = await collectBody(nodeReq);
-        const params = JSON.parse(rawBody) as Record<string, unknown>;
+        let parsedParams: unknown;
+        try {
+          parsedParams = JSON.parse(rawBody);
+        } catch {
+          nodeRes.writeHead(400, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ error: "Invalid JSON body" }));
+          return;
+        }
+        if (typeof parsedParams !== "object" || parsedParams === null || Array.isArray(parsedParams)) {
+          nodeRes.writeHead(400, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ error: "JSON body must be an object" }));
+          return;
+        }
+        const params = parsedParams as Record<string, unknown>;
 
         // Validate required fields
         if (!params.searches || !Array.isArray(params.searches)) {
@@ -1034,12 +1087,30 @@ export async function startMcpHttpServer(
           query: String(s.query || ""),
         }));
 
+        // Optional metadata filter — must be an object and a valid filter AST
+        let restFilter: MetadataFilter | undefined;
+        if (params.filter !== undefined) {
+          if (typeof params.filter !== "object" || params.filter === null || Array.isArray(params.filter)) {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(JSON.stringify({ error: "Invalid field: filter (must be an object)" }));
+            return;
+          }
+          const filterValidation = validateFilterArgument(params.filter);
+          if (filterValidation.error) {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(JSON.stringify({ error: filterValidation.error }));
+            return;
+          }
+          restFilter = filterValidation.filter;
+        }
+
         // Use default collections if none specified
         const effectiveCollections = Array.isArray(params.collections) ? params.collections.map(String) : defaultCollectionNames;
 
         const results = await store.search({
           queries,
           collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
+          filter: restFilter,
           limit: typeof params.limit === "number" ? params.limit : 10,
           minScore: typeof params.minScore === "number" ? params.minScore : 0,
           candidateLimit: typeof params.candidateLimit === "number" ? params.candidateLimit : undefined,
@@ -1061,6 +1132,7 @@ export async function startMcpHttpServer(
             title: r.title,
             score: Math.round(r.score * 100) / 100,
             context: r.context,
+            ...(Object.keys(r.metadata).length > 0 ? { metadata: r.metadata } : {}),
             line,
             snippet: addLineNumbers(snippet, line),
           };

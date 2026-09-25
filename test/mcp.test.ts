@@ -8,15 +8,16 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { openDatabase, loadSqliteVec } from "../src/db.js";
 import type { Database } from "../src/db.js";
-import { getDefaultLlamaCpp, disposeDefaultLlamaCpp } from "../src/llm";
+import { getDefaultLlamaCpp, disposeDefaultLlamaCpp } from "../src/llm.js";
 import { readFileSync, unlinkSync } from "node:fs";
 import { mkdtemp, writeFile, readdir, unlink, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import YAML from "yaml";
-import type { CollectionConfig } from "../src/collections";
-import { setConfigIndexName } from "../src/collections";
-import { syncConfigToDb } from "../src/store";
+import type { CollectionConfig } from "../src/collections.js";
+import { setConfigIndexName } from "../src/collections.js";
+import { syncConfigToDb } from "../src/store.js";
+import { initializeMetadataSchema } from "../src/metadata-store.js";
 
 // =============================================================================
 // Test Database Setup
@@ -128,6 +129,9 @@ function initTestDatabase(db: Database): void {
       value TEXT
     )
   `);
+
+  // Document metadata tables — searchFTS/searchVec join them for result metadata
+  initializeMetadataSchema(db);
 }
 
 function seedTestData(db: Database): void {
@@ -219,8 +223,8 @@ import {
   DEFAULT_RERANK_MODEL,
   DEFAULT_MULTI_GET_MAX_BYTES,
   createStore,
-} from "../src/store";
-import type { RankedResult } from "../src/store";
+} from "../src/store.js";
+import type { RankedResult } from "../src/store.js";
 // Note: searchResultsToMcpCsv no longer used in MCP - using structuredContent instead
 
 // =============================================================================
@@ -936,8 +940,8 @@ describe("MCP Server", () => {
 // HTTP Transport Tests
 // =============================================================================
 
-import { startMcpHttpServer, type HttpServerHandle } from "../src/mcp/server";
-import { _resetProductionModeForTesting } from "../src/store";
+import { startMcpHttpServer, type HttpServerHandle } from "../src/mcp/server.js";
+import { _resetProductionModeForTesting } from "../src/store.js";
 
 describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
   let handle: HttpServerHandle;
@@ -1044,6 +1048,24 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
     expect(res.status).toBe(404);
   });
 
+  test("POST /query rejects malformed and non-object JSON with 400", async () => {
+    const malformed = await fetch(`${baseUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{not valid json",
+    });
+    expect(malformed.status).toBe(400);
+    expect((await malformed.json()).error).toBe("Invalid JSON body");
+
+    const nonObject = await fetch(`${baseUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "null",
+    });
+    expect(nonObject.status).toBe(400);
+    expect((await nonObject.json()).error).toBe("JSON body must be an object");
+  });
+
   // ---------------------------------------------------------------------------
   // MCP protocol over HTTP (2026-07-28, sessionless)
   // ---------------------------------------------------------------------------
@@ -1128,12 +1150,19 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
       }),
     });
     expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toMatch(/application\/json|text\/event-stream/);
+    const contentType = res.headers.get("content-type") ?? "";
+    expect(contentType).toMatch(/application\/json|text\/event-stream/);
     expect(res.headers.get("mcp-session-id")).toBeNull();
-    const text = await res.text();
-    const json = text.startsWith("event:")
-      ? JSON.parse(text.split("data: ")[1]?.trim() || "{}")
-      : JSON.parse(text);
+
+    // Streamable HTTP permits either a direct JSON response or one SSE
+    // message when the client advertises both. The MCP SDK currently chooses
+    // SSE for legacy initialize even when responseMode is "json".
+    const responseText = await res.text();
+    const payload = contentType.includes("text/event-stream")
+      ? responseText.split(/\r?\n/).find(line => line.startsWith("data: "))?.slice(6)
+      : responseText;
+    expect(payload).toBeDefined();
+    const json = JSON.parse(payload!) as any;
     expect(json.jsonrpc).toBe("2.0");
     expect(json.id).toBe(1);
     expect(json.result.serverInfo.name).toBe("qmd");

@@ -76,6 +76,20 @@ import {
   waitForLLMSessionsToDrain,
 } from "./llm.js";
 import { LocalEmbeddingProviderOwner } from "./embedding/local.js";
+import type {
+  DocumentMetadata,
+  MetadataScalar,
+  MetadataScalarArray,
+  MetadataValue,
+} from "./metadata.js";
+import {
+  parseMetadataFilter,
+  MetadataFilterError,
+  type MetadataFilter,
+  type MetadataFilterGroup,
+  type MetadataFilterNegation,
+  type MetadataCondition,
+} from "./metadata-filter.js";
 import {
   OpenAIEmbeddingProvider,
   UnavailableOpenAIEmbeddingProvider,
@@ -138,6 +152,19 @@ export type {
   ContextMap,
 };
 
+// Re-export metadata and metadata-filter types shared by every search surface
+export type {
+  DocumentMetadata,
+  MetadataScalar,
+  MetadataScalarArray,
+  MetadataValue,
+  MetadataFilter,
+  MetadataFilterGroup,
+  MetadataFilterNegation,
+  MetadataCondition,
+};
+export { parseMetadataFilter, MetadataFilterError };
+
 // Re-export the internal Store type for advanced consumers
 export type { InternalStore };
 export type { ExpansionMode } from "./search/query-expansion.js";
@@ -193,6 +220,8 @@ export interface SearchOptions {
   collection?: string;
   /** Filter to specific collections */
   collections?: string[];
+  /** Metadata filter — every returned result satisfies it */
+  filter?: MetadataFilter;
   /** Max results (default: 10) */
   limit?: number;
   /** Max candidates to rerank (default: 40) */
@@ -217,6 +246,8 @@ export interface SearchOptions {
 export interface LexSearchOptions {
   limit?: number;
   collection?: string | string[];
+  /** Metadata filter — every returned result satisfies it */
+  filter?: MetadataFilter;
 }
 
 /**
@@ -225,6 +256,8 @@ export interface LexSearchOptions {
 export interface VectorSearchOptions {
   limit?: number;
   collection?: string | string[];
+  /** Metadata filter — every returned result satisfies it */
+  filter?: MetadataFilter;
 }
 
 /**
@@ -558,11 +591,16 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         ...(opts.collections ?? []),
       ];
       const skipRerank = opts.rerank === false;
+      // The SDK is also a JavaScript boundary: TypeScript declarations do not
+      // protect plain-JS callers or deserialized input. Apply the same bounded,
+      // strict validation used by CLI, MCP, and HTTP before compiling SQL.
+      const filter = opts.filter === undefined ? undefined : parseMetadataFilter(opts.filter);
 
       if (opts.queries) {
         // Pre-expanded queries — use structuredSearch
         return structuredSearch(internal, opts.queries, {
           collections: collections.length > 0 ? collections : undefined,
+          filter,
           limit: opts.limit,
           minScore: opts.minScore,
           explain: opts.explain,
@@ -577,6 +615,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
       return hybridQuery(internal, opts.query!, {
         collections: collections.length > 0 ? collections : undefined,
         collection: collections.length === 1 ? collections[0] : (collections.length > 0 ? collections : undefined),
+        filter,
         limit: opts.limit,
         minScore: opts.minScore,
         explain: opts.explain,
@@ -590,14 +629,21 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         chunkStrategy: opts.chunkStrategy,
       });
     },
-    searchLex: async (q, opts) => internal.searchFTS(q, opts?.limit, opts?.collection),
+    searchLex: async (q, opts) => {
+      const filter = opts?.filter === undefined ? undefined : parseMetadataFilter(opts.filter);
+      return internal.searchFTS(q, opts?.limit, opts?.collection, filter);
+    },
     searchVector: async (q, opts) => {
+      const filter = opts?.filter === undefined ? undefined : parseMetadataFilter(opts.filter);
       const provider = internal.embeddingProvider;
       return internal.searchVec(
         q,
         provider?.model ?? (internal.llm as any)?.embedModelName ?? DEFAULT_EMBED_MODEL_URI,
         opts?.limit,
         opts?.collection,
+        undefined,
+        undefined,
+        filter,
       );
     },
     expandQuery: async (q, opts) => internal.expandQuery(q, undefined, opts?.expansionContext, {

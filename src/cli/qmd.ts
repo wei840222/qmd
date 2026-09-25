@@ -87,6 +87,9 @@ import {
   type ReindexResult,
   type ChunkStrategy,
 } from "../store.js";
+import { syncDocumentMetadata, countDocumentsPendingMetadata } from "../metadata-store.js";
+import type { DocumentMetadata } from "../metadata.js";
+import { parseMetadataFilter, type MetadataFilter } from "../metadata-filter.js";
 import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
 import { rebuildCjkLexicalIndex } from "../search/cjk-index.js";
 import { RemoteLLM } from "../remote-llm.js";
@@ -381,11 +384,16 @@ function mcpDaemonPaths(): { cacheDir: string; pidPath: string; logPath: string 
 
 function setIndexName(name: string | null): void {
   let normalizedName = name;
-  // Normalize relative paths to prevent malformed database paths
-  if (name && name.includes('/')) {
-    const absolutePath = pathResolve(process.cwd(), name);
-    // Replace path separators with underscores to create a valid filename
-    normalizedName = absolutePath.replace(/\//g, '_').replace(/^_/, '');
+  // Normalize relative paths to prevent malformed database paths. Windows
+  // absolute paths (C:\..., \\server\share) are already absolute -- skip
+  // pathResolve() for those and sanitize `:` and `\` alongside `/`.
+  if (name) {
+    const isWindowsAbsolute = /^[a-zA-Z]:[\\/]/.test(name) || /^\\/.test(name);
+    if (isWindowsAbsolute || /[\\/]/.test(name)) {
+      const absolutePath = isWindowsAbsolute ? name : pathResolve(process.cwd(), name);
+      // Replace path separators with underscores to create a valid filename
+      normalizedName = absolutePath.replace(/[:\\/]+/g, '_').replace(/^_+/, '');
+    }
   }
   currentIndexName = normalizedName || "index";
   storeDbPathOverride = normalizedName ? getDefaultDbPath(normalizedName) : undefined;
@@ -751,6 +759,10 @@ async function showStatus(): Promise<void> {
   }
   if (needsEmbedding > 0) {
     console.log(`  ${c.yellow}Pending:  ${needsEmbedding} need embedding${c.reset} (run 'qmd embed')`);
+  }
+  const pendingMetadata = countDocumentsPendingMetadata(db);
+  if (pendingMetadata > 0) {
+    console.log(`  ${c.yellow}Metadata: ${pendingMetadata} need extraction${c.reset} (run 'qmd update'; excluded from --filter searches)`);
   }
   if (mostRecent.latest) {
     const lastUpdate = new Date(mostRecent.latest);
@@ -1194,6 +1206,7 @@ async function updateCollections(): Promise<void> {
     progress.clear();
     console.log(`\nIndexed: ${result.indexed} new, ${result.updated} updated, ${result.unchanged} unchanged, ${result.removed} removed`);
     reportSkippedReads(result.skippedFiles);
+    reportMetadataErrors(result.metadataErrors);
     if (result.orphanedCleaned > 0) {
       console.log(`Cleaned up ${result.orphanedCleaned} orphaned content hash(es)`);
     }
@@ -2167,7 +2180,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
     // Continue so the deactivation pass can mark previously indexed docs as inactive.
   }
 
-  let indexed = 0, updated = 0, unchanged = 0, processed = 0;
+  let indexed = 0, updated = 0, unchanged = 0, processed = 0, metadataErrors = 0;
   const skippedFiles: { file: string; code: string }[] = [];
   const seenPaths = new Set<string>();
   // Literal paths of every file in this scan. Passed to the legacy-path
@@ -2210,8 +2223,13 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
     // Check if document exists (also migrates legacy lowercase paths)
     const existing = findOrMigrateLegacyDocument(db, collectionName, path, livePaths);
 
+    let documentId: number;
+    let contentChanged = true;
+
     if (existing) {
+      documentId = existing.id;
       if (existing.hash === hash) {
+        contentChanged = false;
         // Hash unchanged, but check if title needs updating
         if (existing.title !== title) {
           updateDocumentTitle(db, existing.id, title, now);
@@ -2237,10 +2255,15 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
       // New document - insert content and document
       indexed++;
       const stat = statSync(filepath);
-      insertDocumentWithContent(db, hash, content, now, collectionName, path, title,
+      documentId = insertDocumentWithContent(db, hash, content, now, collectionName, path, title,
         stat ? new Date(stat.birthtime).toISOString() : now,
         stat ? new Date(stat.mtime).toISOString() : now);
     }
+
+    // Unchanged content still backfills missing or stale extraction state.
+    const extraction = syncDocumentMetadata(db, documentId, content, path,
+      contentChanged ? undefined : { onlyIfStale: true });
+    if (extraction?.error) metadataErrors++;
 
     processed++;
     progress.set((processed / total) * 100);
@@ -2270,6 +2293,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   progress.clear();
   console.log(`\nIndexed: ${indexed} new, ${updated} updated, ${unchanged} unchanged, ${removed} removed`);
   reportSkippedReads(skippedFiles);
+  reportMetadataErrors(metadataErrors);
   if (orphanedContent > 0) {
     console.log(`Cleaned up ${orphanedContent} orphaned content hash(es)`);
   }
@@ -2288,6 +2312,11 @@ function fsErrorCode(err: unknown): string {
     if (typeof code === "string" && code.length > 0) return code;
   }
   return "ERROR";
+}
+
+function reportMetadataErrors(metadataErrors: number): void {
+  if (metadataErrors === 0) return;
+  console.warn(`⚠ ${metadataErrors} file(s) have invalid qmd.metadata frontmatter and are excluded from filtered search`);
 }
 
 function reportSkippedReads(skippedFiles: { file: string; code: string }[]): void {
@@ -2597,6 +2626,7 @@ type OutputOptions = {
   skipRerank?: boolean;  // Skip LLM reranking, use RRF scores only
   chunkStrategy?: ChunkStrategy;  // "auto" (default) or "regex"
   fullPath?: boolean;    // Show realpath instead of qmd:// URI (relative to $PWD when subpath)
+  filter?: MetadataFilter;  // Metadata filter (--filter JSON)
 };
 
 // Highlight query terms in text (skip short words < 3 chars)
@@ -2671,6 +2701,7 @@ type OutputRow = {
   chunkLen?: number;
   hash?: string;
   docid?: string;
+  metadata?: DocumentMetadata;
   explain?: HybridQueryExplain;
 };
 
@@ -2795,6 +2826,7 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
         line: snippetInfo.line,
         title: row.title,
         ...(row.context && { context: row.context }),
+        ...(row.metadata && Object.keys(row.metadata).length > 0 && { metadata: row.metadata }),
         ...(body && { body }),
         ...(snippet && { snippet }),
         ...(opts.explain && row.explain && { explain: row.explain }),
@@ -3074,6 +3106,36 @@ export function parseStructuredQuery(query: string): ParsedStructuredQuery | nul
   return typed.length > 0 ? { searches: typed, intent } : null;
 }
 
+// Parse and validate a --filter JSON string; exits with an actionable
+// message on malformed JSON or an invalid filter AST.
+function parseCliMetadataFilter(rawFilter: unknown): MetadataFilter | undefined {
+  if (rawFilter === undefined) return undefined;
+
+  let filterJson: unknown;
+  try {
+    filterJson = JSON.parse(String(rawFilter));
+  } catch (err) {
+    console.error(`Invalid --filter JSON: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`Example: --filter '{"key":"status","operator":"eq","value":"published"}'`);
+    process.exit(1);
+  }
+
+  try {
+    return parseMetadataFilter(filterJson);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+}
+
+// Filtered search excludes documents without current metadata extraction;
+// tell the user when that makes results incomplete.
+function warnPendingMetadata(db: Database): void {
+  const pendingMetadata = countDocumentsPendingMetadata(db);
+  if (pendingMetadata === 0) return;
+  process.stderr.write(`${c.yellow}Warning: ${pendingMetadata} document(s) lack current metadata extraction and are excluded from filtered results. Run 'qmd update'.${c.reset}\n`);
+}
+
 function search(query: string, opts: OutputOptions): void {
   const db = getDb();
 
@@ -3081,9 +3143,11 @@ function search(query: string, opts: OutputOptions): void {
   // Use default collections if none specified
   const collectionNames = resolveCollectionFilter(opts.collection, true);
 
+  if (opts.filter) warnPendingMetadata(db);
+
   // Use large limit for --all, otherwise fetch more than needed and let outputResults filter
   const fetchLimit = opts.all ? 100000 : Math.max(50, opts.limit * 2);
-  const results = searchFTS(db, query, fetchLimit, collectionNames);
+  const results = searchFTS(db, query, fetchLimit, collectionSearchFilter(collectionNames), opts.filter);
 
   // Add context to results
   const resultsWithContext = results.map(r => ({
@@ -3095,6 +3159,7 @@ function search(query: string, opts: OutputOptions): void {
     context: getContextForFile(db, r.filepath),
     hash: r.hash,
     docid: r.docid,
+    metadata: r.metadata,
   }));
 
   closeDb();
@@ -3129,10 +3194,12 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
   const collectionNames = resolveCollectionFilter(opts.collection, true);
 
   checkIndexHealth(store.db);
+  if (opts.filter) warnPendingMetadata(store.db);
 
   await withLLMSession(async () => {
     const results = await vectorSearchQuery(store, query, {
-      collection: collectionNames,
+      collection: collectionSearchFilter(collectionNames),
+      filter: opts.filter,
       limit: opts.all ? 500 : (opts.limit || 10),
       minScore: opts.minScore || 0.3,
       expansionContext: opts.intent,
@@ -3160,6 +3227,7 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
       score: r.score,
       context: r.context,
       docid: r.docid,
+      metadata: r.metadata,
     })), query, { ...opts, limit: results.length });
   }, { maxDuration: 10 * 60 * 1000, name: 'vectorSearch' });
 }
@@ -3172,6 +3240,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
   const collectionNames = resolveCollectionFilter(opts.collection, true);
 
   checkIndexHealth(store.db);
+  if (opts.filter) warnPendingMetadata(store.db);
 
   // Check for structured query syntax (lex:/vec:/hyde:/intent: prefixes)
   const parsed = parseStructuredQuery(query);
@@ -3203,6 +3272,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
 
       results = await structuredSearch(store, structuredQueries, {
         collections: collectionNames.length > 0 ? collectionNames : undefined,
+        filter: opts.filter,
         limit: opts.all ? 500 : (opts.limit || 10),
         minScore: opts.minScore || 0,
         candidateLimit: opts.candidateLimit,
@@ -3231,6 +3301,8 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
       // Standard hybrid query with automatic expansion
       results = await hybridQuery(store, query, {
         collections: collectionNames.length > 0 ? collectionNames : undefined,
+        collection: collectionSearchFilter(collectionNames),
+        filter: opts.filter,
         limit: opts.all ? 500 : (opts.limit || 10),
         minScore: opts.minScore || 0,
         candidateLimit: opts.candidateLimit,
@@ -3301,6 +3373,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
       score: r.score,
       context: r.context,
       docid: r.docid,
+      metadata: r.metadata,
       explain: r.explain,
     })), displayQuery, { ...opts, limit: results.length });
   }, { maxDuration: 10 * 60 * 1000, name: 'querySearch' });
@@ -3338,6 +3411,7 @@ function parseCLI() {
       json: { type: "boolean" },
       explain: { type: "boolean" },
       collection: { type: "string", short: "c", multiple: true },  // Filter by collection(s)
+      filter: { type: "string" },  // Metadata filter (JSON AST) for search/vsearch/query
       // Collection options
       name: { type: "string" },  // collection name
       mask: { type: "string" },  // glob pattern
@@ -3964,6 +4038,8 @@ function showHelp(): void {
   console.log("  --explain                  - Include retrieval score traces (query, CLI/--format json)");
   console.log("  --format <kind>            - Output format: cli (default) | json | csv | md | xml | files");
   console.log("  -c, --collection <name>    - Filter by one or more collections");
+  console.log("  --filter <json>            - Metadata filter (recursive JSON AST; search/vsearch/query)");
+  console.log("                                e.g. '{\"key\":\"status\",\"operator\":\"eq\",\"value\":\"published\"}'");
   console.log("");
   console.log("Embed/query options:");
   console.log("  --chunk-strategy <auto|regex> - Chunking mode (default: regex; auto uses AST for code files)");
@@ -5162,6 +5238,7 @@ if (isMain) {
         console.error("Usage: qmd search [options] <query>");
         process.exit(1);
       }
+      cli.opts.filter = parseCliMetadataFilter(cli.values.filter);
       search(cli.query, cli.opts);
       break;
 
@@ -5175,6 +5252,7 @@ if (isMain) {
       if (!cli.values["min-score"]) {
         cli.opts.minScore = 0.3;
       }
+      cli.opts.filter = parseCliMetadataFilter(cli.values.filter);
       await resolveLocalConfigTrust();
       await vectorSearch(cli.query, cli.opts);
       break;
@@ -5185,6 +5263,7 @@ if (isMain) {
         console.error("Usage: qmd query [options] <query>");
         process.exit(1);
       }
+      cli.opts.filter = parseCliMetadataFilter(cli.values.filter);
       await resolveLocalConfigTrust();
       await querySearch(cli.query, cli.opts);
       break;
