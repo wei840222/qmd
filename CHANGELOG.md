@@ -5,12 +5,15 @@
 ### Changed
 
 - Replace `better-sqlite3` with Node.js built-in `node:sqlite`, preventing SQLite runtime symbol collisions when QMD is embedded alongside other `node:sqlite` consumers. The minimum supported Node.js version is now 22.16.0.
+- Upgraded `@node-rs/jieba` to `2.0.3` and synchronized bundled Traditional Chinese dictionary assets (`zh-dict.txt`) with upstream `sysprog21/zhtw-mcp`.
+- Relocated repository release management skill to `.agents/skills/release`.
 
 ### Added
 
 - Added Oxlint lint fence.
 - Document metadata and metadata filtering. Markdown documents can opt into typed metadata through a namespaced frontmatter block (`qmd.metadata` with strings, numbers, booleans, or flat homogeneous arrays), and every search surface — CLI `search`/`vsearch`/`query` via `--filter <json>`, the SDK's `filter` option on `search()`/`searchLex()`/`searchVector()`, the MCP `query` tool, and HTTP `POST /query` and `/search` — accepts one shared recursive filter AST discriminated by `operator`: `and`/`or`/`not` logical groups, `eq`/`ne`/`gt`/`gte`/`lt`/`lte` comparisons, `in`/`nin`/`all` membership, and `exists` presence. Every returned result satisfies the filter (applied before RRF fusion and reranking); like collection filtering, highly selective filters remain best-effort for top-K completeness. Frontmatter stays ordinary searchable content — no chunking, embedding, snippet, or line-number changes — and documents without `qmd.metadata` behave exactly as before. JSON/SDK/MCP/HTTP results now include each document's indexed metadata, and `qmd status` reports how many documents still need metadata extraction (a normal `qmd update` backfills existing indexes).
 - **Disable HyDE Expansion Control**: Added `--no-hyde` CLI option for `qmd query` and `qmd vsearch`, `includeHyde` parameter to SDK (`store.search`, `store.expandQuery`) and MCP `query` tool, allowing users to disable generating hypothetical document embeddings during query expansion.
+- Added `typesafe-ai` skill to `.agents/skills/typesafe-ai`.
 
 ### Fixed
 
