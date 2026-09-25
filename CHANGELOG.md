@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2026.9.25] - 2026-09-26
+
 ### Changed
 
 - Replace `better-sqlite3` with Node.js built-in `node:sqlite`, preventing SQLite runtime symbol collisions when QMD is embedded alongside other `node:sqlite` consumers. The minimum supported Node.js version is now 22.16.0.
