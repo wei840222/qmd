@@ -18,8 +18,8 @@ BUMP="${1:?Usage: release.sh [patch|minor|major|<version>]}"
 
 # Ensure we're on main and clean
 BRANCH=$(git branch --show-current)
-if [[ "$BRANCH" != "main" ]]; then
-  echo "Error: must be on main branch (currently on $BRANCH)" >&2
+if [[ "$BRANCH" != "main" && "$BRANCH" != "local" ]]; then
+  echo "Error: must be on main or local branch (currently on $BRANCH)" >&2
   exit 1
 fi
 
