@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "output": {
-    "sha256": "c2652d0f4fa3607cdd7232730efbc073a227bb0fe7a3863f8adae7ab14b12fe2"
+    "sha256": "62e927e299880e09d5ec3911919a4cc24ece65578bab25aa67976b64c7ad58e8"
   },
   "nodeRs": {
     "package": "@node-rs/jieba",
-    "version": "2.0.2",
+    "version": "2.0.3",
     "path": "dict.txt",
     "gitBlobSha": "8a9837551ef4f0833835565b5ca654bd6d786a42",
     "sha256": "139519822fe8ab9e10d9d07e68ea0451045380aedaf54ecc51e2a28c6b42a13f"
@@ -21,10 +21,10 @@
   "zhtwMcp": {
     "repository": "https://github.com/sysprog21/zhtw-mcp",
     "branch": "main",
-    "commit": "40e669a769bfcafc5f21f9ca6e2f5152b54c8831",
+    "commit": "cae49bb03a2aad1cf9da848a8214688ef136a32e",
     "path": "assets/ruleset.json",
-    "gitBlobSha": "e0047c9ed33ab3f541b111b4b172df71d051d736",
-    "sha256": "6896c0f43b761efd33f01d91e0706ac43ce45c83812b0a040330fcf3622064b5"
+    "gitBlobSha": "49320ea8a2d4791c8c131558bbcbf0a88f82dbec",
+    "sha256": "c0554a30bee9a5fedba77f692ea4df7643d719e560a50c5fac7a6abe9192b5a6"
   },
   "technicalTerms": {
     "frequency": 1000000,

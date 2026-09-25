@@ -77,7 +77,10 @@ async function downloadPinnedSource(source, label) {
 
 async function updateRemotePin(source, label) {
   const response = await fetch(apiUrl(source), {
-    headers: { Accept: "application/vnd.github+json" },
+    headers: {
+      Accept: "application/vnd.github+json",
+      "User-Agent": "qmd-dict-sync",
+    },
     redirect: "error",
   });
   if (!response.ok) throw new Error(`${label} commit lookup failed with HTTP ${response.status}.`);
