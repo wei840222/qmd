@@ -108,18 +108,15 @@ awk '
 
 jq --arg v "$NEW" '.version = $v' package.json > package.json.tmp && mv package.json.tmp package.json
 
-# Keep the Claude Code plugin version in lockstep with the package version.
-# The plugin cache is keyed on this version: if it never changes, installed
-# plugins never pick up skill updates shipped in this release. (sed, not jq,
-# to preserve the file's formatting; the file has a single "version" key.)
-# The grep guard fails the release if the stamp didn't land (a non-matching
-# sed exits 0, which set -e would never catch).
-sed 's/"version": "[^"]*"/"version": "'"$NEW"'"/' \
-  .claude-plugin/marketplace.json > .claude-plugin/marketplace.json.tmp
-grep -qF "\"version\": \"$NEW\"" .claude-plugin/marketplace.json.tmp
-mv .claude-plugin/marketplace.json.tmp .claude-plugin/marketplace.json
+if [[ -f .claude-plugin/marketplace.json ]]; then
+  sed 's/"version": "[^"]*"/"version": "'"$NEW"'"/' \
+    .claude-plugin/marketplace.json > .claude-plugin/marketplace.json.tmp
+  grep -qF "\"version\": \"$NEW\"" .claude-plugin/marketplace.json.tmp
+  mv .claude-plugin/marketplace.json.tmp .claude-plugin/marketplace.json
+  git add .claude-plugin/marketplace.json
+fi
 
-git add package.json CHANGELOG.md .claude-plugin/marketplace.json
+git add package.json CHANGELOG.md
 git commit -m "release: v$NEW"
 git tag -a "v$NEW" -m "v$NEW"
 
