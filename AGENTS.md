@@ -181,7 +181,7 @@ pnpm run measure:cjk    # Measure CJK rebuild latency, DB payload size, and reca
 
 Use `/release <version>` to cut a release. Full changelog standards,
 release workflow, and git hook setup are documented in the
-[release skill](skills/release/SKILL.md).
+[release skill](.agents/skills/release/SKILL.md).
 
 Key points:
 - Add changelog entries under `## [Unreleased]` **as you make changes**

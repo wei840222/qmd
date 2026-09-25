@@ -16,7 +16,7 @@ Cut a release, validate the changelog, and ensure git hooks are installed.
 
 When the user triggers `/release <version>`:
 
-1. **Gather context** — run `skills/release/scripts/release-context.sh <version>`.
+1. **Gather context** — run `.agents/skills/release/scripts/release-context.sh <version>`.
    This silently installs git hooks and prints everything needed: version info,
    working directory status, commits since last release, files changed, current
    `[Unreleased]` content, and the previous release entry for style reference.
@@ -137,5 +137,5 @@ The pre-push hook (`scripts/pre-push`) blocks `v*` tag pushes unless:
 3. CI passed on GitHub (warns in non-interactive shells, blocks in terminals)
 
 Hooks are installed silently by the context script. They can also be installed
-manually via `skills/release/scripts/install-hooks.sh` or automatically via
-`bun install` (prepare script).
+manually via `.agents/skills/release/scripts/install-hooks.sh` or automatically via
+`pnpm install` (prepare script).

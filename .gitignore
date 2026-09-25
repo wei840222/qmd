@@ -16,6 +16,7 @@ texts/
 !AGENTS.md
 !CHANGELOG.md
 !skills/**/*.md
+!.agents/**
 !finetune/*.md
 !docs/*.md
 tasks/

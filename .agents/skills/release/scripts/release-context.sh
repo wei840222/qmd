@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Gather release context for the /release skill (skills/release/SKILL.md step 1).
+# Gather release context for the /release skill (.agents/skills/release/SKILL.md step 1).
 # Silently installs git hooks, then prints version info, working-tree status,
 # commits and files since the last release tag, the current [Unreleased]
 # changelog block, and the previous release entry for style reference.
 #
-# Usage: skills/release/scripts/release-context.sh [patch|minor|major|<version>]
+# Usage: .agents/skills/release/scripts/release-context.sh [patch|minor|major|<version>]
 
 VERSION_ARG="${1:?Usage: release-context.sh [patch|minor|major|<version>]}"
 

@@ -14,10 +14,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-const scriptSrc = join(repoRoot, "skills", "release", "scripts", "release-context.sh");
-const installHooksSrc = join(repoRoot, "skills", "release", "scripts", "install-hooks.sh");
+const scriptSrc = join(repoRoot, ".agents", "skills", "release", "scripts", "release-context.sh");
+const installHooksSrc = join(repoRoot, ".agents", "skills", "release", "scripts", "install-hooks.sh");
 const prePushSrc = join(repoRoot, "scripts", "pre-push");
-const skillSrc = join(repoRoot, "skills", "release", "SKILL.md");
+const skillSrc = join(repoRoot, ".agents", "skills", "release", "SKILL.md");
 
 const fixtures: string[] = [];
 
@@ -51,13 +51,13 @@ function makeReleaseFixture(opts?: { dirty?: boolean }) {
   fixtures.push(root);
 
   mkdirSync(join(root, "scripts"), { recursive: true });
-  mkdirSync(join(root, "skills", "release", "scripts"), { recursive: true });
+  mkdirSync(join(root, ".agents", "skills", "release", "scripts"), { recursive: true });
 
-  writeFileSync(join(root, "skills", "release", "scripts", "release-context.sh"), readFileSync(scriptSrc));
-  writeFileSync(join(root, "skills", "release", "scripts", "install-hooks.sh"), readFileSync(installHooksSrc));
+  writeFileSync(join(root, ".agents", "skills", "release", "scripts", "release-context.sh"), readFileSync(scriptSrc));
+  writeFileSync(join(root, ".agents", "skills", "release", "scripts", "install-hooks.sh"), readFileSync(installHooksSrc));
   writeFileSync(join(root, "scripts", "pre-push"), readFileSync(prePushSrc));
-  chmodSync(join(root, "skills", "release", "scripts", "release-context.sh"), 0o755);
-  chmodSync(join(root, "skills", "release", "scripts", "install-hooks.sh"), 0o755);
+  chmodSync(join(root, ".agents", "skills", "release", "scripts", "release-context.sh"), 0o755);
+  chmodSync(join(root, ".agents", "skills", "release", "scripts", "install-hooks.sh"), 0o755);
   chmodSync(join(root, "scripts", "pre-push"), 0o755);
 
   writeFileSync(join(root, "package.json"), JSON.stringify({ name: "qmd", version: "2.6.3" }) + "\n");
@@ -87,7 +87,7 @@ function makeReleaseFixture(opts?: { dirty?: boolean }) {
   git(root, ["config", "user.email", "qmd-test@example.com"]);
   git(root, ["config", "commit.gpgsign", "false"]);
   git(root, ["config", "tag.gpgsign", "false"]);
-  git(root, ["add", "package.json", "CHANGELOG.md", "README.md", "scripts", "skills"]);
+  git(root, ["add", "package.json", "CHANGELOG.md", "README.md", "scripts", ".agents"]);
   git(root, ["commit", "-m", "initial"]);
   git(root, ["tag", "-a", "v2.6.3", "-m", "v2.6.3"]);
 
@@ -103,29 +103,29 @@ function makeReleaseFixture(opts?: { dirty?: boolean }) {
 }
 
 function runContext(cwd: string, versionArg: string) {
-  return spawnSync("bash", [join(cwd, "skills", "release", "scripts", "release-context.sh"), versionArg], {
+  return spawnSync("bash", [join(cwd, ".agents", "skills", "release", "scripts", "release-context.sh"), versionArg], {
     cwd,
     encoding: "utf8",
   });
 }
 
-describe("skills/release/scripts/release-context.sh (#796)", () => {
+describe(".agents/skills/release/scripts/release-context.sh (#796)", () => {
   test("SKILL.md step 1 points at a script that exists in the repo", () => {
     const skill = readFileSync(skillSrc, "utf8");
-    expect(skill).toMatch(/skills\/release\/scripts\/release-context\.sh/);
+    expect(skill).toMatch(/\.agents\/skills\/release\/scripts\/release-context\.sh/);
     expect(existsSync(scriptSrc)).toBe(true);
   });
 
   test("SKILL.md process steps are uniquely numbered", () => {
     const skill = readFileSync(skillSrc, "utf8");
-    const process = skill.split("## Dependency Policy")[0];
-    const nums = [...process.matchAll(/^(\d+)\. \*\*/gm)].map(m => m[1]);
+    const processSteps = skill.split("## Dependency Policy")[0] ?? "";
+    const nums = [...processSteps.matchAll(/^(\d+)\. \*\*/gm)].map(m => m[1]);
     expect(nums).toEqual(["1", "2", "3", "4", "5", "6", "7", "8"]);
   });
 
   test("fails without a version argument", () => {
     const root = makeReleaseFixture();
-    const result = spawnSync("bash", [join(root, "skills", "release", "scripts", "release-context.sh")], {
+    const result = spawnSync("bash", [join(root, ".agents", "skills", "release", "scripts", "release-context.sh")], {
       cwd: root,
       encoding: "utf8",
     });
