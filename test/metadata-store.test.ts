@@ -22,6 +22,7 @@ import {
   syncDocumentMetadata,
   replaceDocumentMetadata,
   countDocumentsPendingMetadata,
+  getDocumentsPendingMetadata,
   getMetadataByFilepath,
 } from "../src/metadata-store.js";
 import { METADATA_EXTRACTION_VERSION, type DocumentMetadata } from "../src/metadata.js";
@@ -235,9 +236,34 @@ describe("reindexCollection metadata synchronization", () => {
     const result = await reindex();
     expect(result.indexed).toBe(2);
     expect(result.metadataErrors).toBe(1);
+    expect(result.metadataErrorFiles).toEqual([
+      { file: "bad.md", error: 'metadata key "mixed": mixed-type arrays are not supported' },
+    ]);
     expect(getMetadataForPath("good.md")).toEqual({ status: "ok" });
     expect(getMetadataForPath("bad.md")).toEqual({});
     expect(countDocumentsPendingMetadata(store.db)).toBe(1);
+
+    // Verify getDocumentsPendingMetadata returns bad.md with error details
+    const pending = getDocumentsPendingMetadata(store.db);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.collection).toBe("notes");
+    expect(pending[0]?.path).toBe("bad.md");
+    expect(pending[0]?.error).toContain("mixed-type arrays");
+
+    // Second reindex on unchanged files still retries and reports the error
+    const secondResult = await reindex();
+    expect(secondResult.unchanged).toBe(2);
+    expect(secondResult.metadataErrors).toBe(1);
+    expect(secondResult.metadataErrorFiles).toHaveLength(1);
+    expect(countDocumentsPendingMetadata(store.db)).toBe(1);
+
+    // Once fixed, reindex succeeds and clears the error
+    await writeFile(join(collectionDir, "bad.md"), buildDoc("qmd:\n  metadata:\n    mixed: [1, 2]\n", "# Bad\n"));
+    const thirdResult = await reindex();
+    expect(thirdResult.updated).toBe(1);
+    expect(thirdResult.metadataErrors).toBe(0);
+    expect(countDocumentsPendingMetadata(store.db)).toBe(0);
+    expect(getDocumentsPendingMetadata(store.db)).toHaveLength(0);
   });
 
   test("deactivation excludes metadata from batch loads; reactivation restores it", async () => {

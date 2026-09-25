@@ -151,14 +151,45 @@ export function replaceDocumentMetadata(db: Database, documentId: number, extrac
 }
 
 function isDocumentMetadataCurrent(db: Database, documentId: number): boolean {
-  const row = db.prepare(`SELECT extraction_version FROM document_metadata WHERE document_id = ?`)
-    .get(documentId) as { extraction_version: number } | undefined;
-  return row?.extraction_version === METADATA_EXTRACTION_VERSION;
+  const row = db.prepare(`SELECT extraction_version, extraction_error FROM document_metadata WHERE document_id = ?`)
+    .get(documentId) as { extraction_version: number; extraction_error: string | null } | undefined;
+  return row?.extraction_version === METADATA_EXTRACTION_VERSION && row?.extraction_error === null;
 }
 
 // =============================================================================
 // Queries
 // =============================================================================
+
+export interface DocumentPendingMetadata {
+  collection: string;
+  path: string;
+  error: string | null;
+}
+
+/**
+ * Get active documents without a current, error-free metadata extraction.
+ */
+export function getDocumentsPendingMetadata(db: Database, limit = 5): DocumentPendingMetadata[] {
+  const stmt = db.prepare(`
+    SELECT d.collection, d.path, dm.extraction_error as error
+    FROM documents d
+    LEFT JOIN document_metadata dm ON dm.document_id = d.id
+    WHERE d.active = 1
+      AND (
+        dm.document_id IS NULL
+        OR dm.extraction_version != ?
+        OR dm.extraction_error IS NOT NULL
+      )
+    ORDER BY d.collection, d.path
+    LIMIT ?
+  `);
+  const rows = stmt.all(METADATA_EXTRACTION_VERSION, limit);
+  return rows.map((row) => ({
+    collection: String(row.collection ?? ""),
+    path: String(row.path ?? ""),
+    error: row.error != null ? String(row.error) : null,
+  }));
+}
 
 /**
  * Count active documents without a current, error-free metadata extraction.

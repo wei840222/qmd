@@ -87,7 +87,7 @@ import {
   type ReindexResult,
   type ChunkStrategy,
 } from "../store.js";
-import { syncDocumentMetadata, countDocumentsPendingMetadata } from "../metadata-store.js";
+import { syncDocumentMetadata, countDocumentsPendingMetadata, getDocumentsPendingMetadata } from "../metadata-store.js";
 import type { DocumentMetadata } from "../metadata.js";
 import { parseMetadataFilter, type MetadataFilter } from "../metadata-filter.js";
 import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
@@ -763,6 +763,14 @@ async function showStatus(): Promise<void> {
   const pendingMetadata = countDocumentsPendingMetadata(db);
   if (pendingMetadata > 0) {
     console.log(`  ${c.yellow}Metadata: ${pendingMetadata} need extraction${c.reset} (run 'qmd update'; excluded from --filter searches)`);
+    const pendingDocs = getDocumentsPendingMetadata(db, 3);
+    for (const doc of pendingDocs) {
+      const errHint = doc.error ? `: ${doc.error.split("\n")[0]}` : "";
+      console.log(`    ${c.dim}• qmd://${doc.collection}/${doc.path}${errHint}${c.reset}`);
+    }
+    if (pendingMetadata > pendingDocs.length) {
+      console.log(`    ${c.dim}... and ${pendingMetadata - pendingDocs.length} more${c.reset}`);
+    }
   }
   if (mostRecent.latest) {
     const lastUpdate = new Date(mostRecent.latest);
@@ -1206,7 +1214,7 @@ async function updateCollections(): Promise<void> {
     progress.clear();
     console.log(`\nIndexed: ${result.indexed} new, ${result.updated} updated, ${result.unchanged} unchanged, ${result.removed} removed`);
     reportSkippedReads(result.skippedFiles);
-    reportMetadataErrors(result.metadataErrors);
+    reportMetadataErrors(result.metadataErrors, result.metadataErrorFiles);
     if (result.orphanedCleaned > 0) {
       console.log(`Cleaned up ${result.orphanedCleaned} orphaned content hash(es)`);
     }
@@ -2182,6 +2190,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
 
   let indexed = 0, updated = 0, unchanged = 0, processed = 0, metadataErrors = 0;
   const skippedFiles: { file: string; code: string }[] = [];
+  const metadataErrorFiles: { file: string; error: string }[] = [];
   const seenPaths = new Set<string>();
   // Literal paths of every file in this scan. Passed to the legacy-path
   // migration so it never adopts a row that still belongs to a live file.
@@ -2263,7 +2272,10 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
     // Unchanged content still backfills missing or stale extraction state.
     const extraction = syncDocumentMetadata(db, documentId, content, path,
       contentChanged ? undefined : { onlyIfStale: true });
-    if (extraction?.error) metadataErrors++;
+    if (extraction?.error) {
+      metadataErrors++;
+      metadataErrorFiles.push({ file: relativeFile, error: extraction.error });
+    }
 
     processed++;
     progress.set((processed / total) * 100);
@@ -2293,7 +2305,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   progress.clear();
   console.log(`\nIndexed: ${indexed} new, ${updated} updated, ${unchanged} unchanged, ${removed} removed`);
   reportSkippedReads(skippedFiles);
-  reportMetadataErrors(metadataErrors);
+  reportMetadataErrors(metadataErrors, metadataErrorFiles);
   if (orphanedContent > 0) {
     console.log(`Cleaned up ${orphanedContent} orphaned content hash(es)`);
   }
@@ -2314,9 +2326,18 @@ function fsErrorCode(err: unknown): string {
   return "ERROR";
 }
 
-function reportMetadataErrors(metadataErrors: number): void {
+function reportMetadataErrors(metadataErrors: number, errorFiles?: { file: string; error: string }[]): void {
   if (metadataErrors === 0) return;
   console.warn(`⚠ ${metadataErrors} file(s) have invalid qmd.metadata frontmatter and are excluded from filtered search`);
+  if (errorFiles && errorFiles.length > 0) {
+    const displayFiles = errorFiles.slice(0, 5);
+    for (const errFile of displayFiles) {
+      console.warn(`  • ${errFile.file}: ${errFile.error}`);
+    }
+    if (errorFiles.length > displayFiles.length) {
+      console.warn(`  ...and ${errorFiles.length - displayFiles.length} more`);
+    }
+  }
 }
 
 function reportSkippedReads(skippedFiles: { file: string; code: string }[]): void {
@@ -4723,6 +4744,25 @@ async function showDoctor(): Promise<void> {
     }
   } catch (error) {
     doctorCheck("embedding freshness", false, error instanceof Error ? error.message : String(error));
+  }
+
+  try {
+    const pendingMetadata = countDocumentsPendingMetadata(db);
+    if (pendingMetadata === 0) {
+      doctorCheck("metadata extraction", true, "all active documents have current metadata");
+    } else {
+      const pendingDocs = getDocumentsPendingMetadata(db, 3);
+      const fileHints = pendingDocs.map(d => `${d.collection}/${d.path}`).join(", ");
+      const extraHint = pendingMetadata > pendingDocs.length ? ` and ${pendingMetadata - pendingDocs.length} more` : "";
+      doctorCheck(
+        "metadata extraction",
+        false,
+        `${formatCount(pendingMetadata)} active ${pendingMetadata === 1 ? "document lacks" : "documents lack"} valid metadata (${fileHints}${extraHint}). Next: \`qmd update\``,
+      );
+      nextSteps.push(`Inspect and fix frontmatter in ${formatCount(pendingMetadata)} documents, then run \`qmd update\`.`);
+    }
+  } catch (error) {
+    doctorCheck("metadata extraction", false, error instanceof Error ? error.message : String(error));
   }
 
   try {

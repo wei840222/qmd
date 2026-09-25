@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Metadata extraction error retry: `isDocumentMetadataCurrent` now requires an error-free extraction, allowing `qmd update` to automatically re-attempt extraction on documents that previously failed without requiring manual edits.
+- Non-QMD frontmatter tolerance: Markdown documents whose leading frontmatter has formatting quirks (such as unquoted colons in titles) but does not declare `qmd:` are no longer treated as extraction failures or excluded from filtered search.
+
+### Added
+
+- Detailed metadata extraction error reporting: `qmd status` and `qmd doctor` now list pending/errored document paths with error hints, and `qmd update` outputs specific files and causes when frontmatter extraction errors occur.
+
 ## [2026.9.25] - 2026-09-26
 
 ### Changed

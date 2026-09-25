@@ -109,6 +109,12 @@ export function extractDocumentMetadata(content: string, path: string): Metadata
   try {
     frontmatter = YAML.parse(frontmatterYaml, { maxAliasCount: METADATA_LIMITS.maxYamlAliasCount });
   } catch (err) {
+    // If frontmatter YAML is malformed, but doesn't even attempt to declare a `qmd`
+    // mapping, this document never opted into qmd.metadata. Return empty metadata
+    // rather than failing extraction and excluding the document from filtered searches.
+    if (!/(?:^|\n)\s*["']?qmd["']?\s*:/m.test(frontmatterYaml)) {
+      return success({});
+    }
     return failure(`invalid frontmatter YAML: ${err instanceof Error ? err.message : String(err)}`);
   }
 

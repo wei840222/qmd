@@ -2202,6 +2202,7 @@ export type ReindexResult = {
   skippedFiles: ReindexSkippedFile[];
   /** Documents whose qmd.metadata frontmatter failed extraction this pass. */
   metadataErrors: number;
+  metadataErrorFiles?: { file: string; error: string }[];
 };
 
 /**
@@ -2242,6 +2243,7 @@ export async function reindexCollection(
   const total = files.length;
   let indexed = 0, updated = 0, unchanged = 0, processed = 0, metadataErrors = 0;
   const skippedFiles: ReindexSkippedFile[] = [];
+  const metadataErrorFiles: { file: string; error: string }[] = [];
   const seenPaths = new Set<string>();
   // Literal paths of every file in this scan. Passed to the legacy-path
   // migration so it never adopts a row that still belongs to a live file.
@@ -2324,7 +2326,10 @@ export async function reindexCollection(
     // Unchanged content still backfills missing or stale extraction state.
     const extraction = syncDocumentMetadata(db, documentId, content, path,
       contentChanged ? undefined : { onlyIfStale: true });
-    if (extraction?.error) metadataErrors++;
+    if (extraction?.error) {
+      metadataErrors++;
+      metadataErrorFiles.push({ file: relativeFile, error: extraction.error });
+    }
 
     processed++;
     options?.onProgress?.({ file: relativeFile, current: processed, total });
@@ -2342,7 +2347,7 @@ export async function reindexCollection(
 
   const orphanedCleaned = cleanupOrphanedContent(db);
 
-  return { indexed, updated, unchanged, removed, orphanedCleaned, skipped: skippedFiles.length, skippedFiles, metadataErrors };
+  return { indexed, updated, unchanged, removed, orphanedCleaned, skipped: skippedFiles.length, skippedFiles, metadataErrors, metadataErrorFiles };
 }
 
 export type EmbedFailure = {

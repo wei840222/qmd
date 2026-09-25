@@ -116,6 +116,12 @@ describe("extractDocumentMetadata", () => {
     expect(extraction.error).toMatch(/invalid frontmatter YAML/);
   });
 
+  test("malformed non-qmd frontmatter YAML yields empty metadata without error", () => {
+    const extraction = extractDocumentMetadata(buildDoc("title: Unquoted: Colon in title\ntags: [a, b]\n"), "doc.md");
+    expect(extraction.metadata).toEqual({});
+    expect(extraction.error).toBeUndefined();
+  });
+
   test("non-mapping qmd or qmd.metadata records an extraction error", () => {
     const qmdScalar = extractDocumentMetadata(buildDoc("qmd: hello\n"), "doc.md");
     expect(qmdScalar.error).toMatch(/'qmd' must be a mapping/);
