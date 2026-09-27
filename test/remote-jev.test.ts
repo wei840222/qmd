@@ -259,10 +259,13 @@ describe("RemoteJev & Hybrid Integration", () => {
 
       // Verify that options passed to LLM include Jev guidance:
       // includeHyde set to true (since needs_hyde.noul > 0.6)
-      // and context includes Intent strategy
+      // and searchIntent contains strategy playbook details without polluting context
       expect(passedOptionsToLocal.includeHyde).toBe(true);
-      expect(passedOptionsToLocal.context).toContain("auth module");
-      expect(passedOptionsToLocal.context).toContain("Intent strategy: code_search");
+      expect(passedOptionsToLocal.context).toBe("auth module");
+      expect(passedOptionsToLocal.searchIntent).toBeDefined();
+      expect(passedOptionsToLocal.searchIntent.label).toBe("Code Search");
+      expect(passedOptionsToLocal.searchIntent.lexGuidance).toContain("Prioritize exact function");
+      expect(passedOptionsToLocal.searchIntent.vecGuidance).toContain("concrete implementation");
     });
 
     test("expandQuery skips Jev guidance when confidence is below 0.5", async () => {

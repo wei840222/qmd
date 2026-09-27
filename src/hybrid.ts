@@ -9,6 +9,7 @@ import type {
   RerankDocument,
   RerankOptions,
   RerankResult,
+  SearchIntentGuidance,
 } from "./llm.js";
 import type { RemoteLLM } from "./remote-llm.js";
 import type { RemoteJev } from "./remote-jev.js";
@@ -61,7 +62,12 @@ export class Hybrid implements LLM {
 
   async expandQuery(
     query: string,
-    options?: { context?: string; includeLexical?: boolean; includeHyde?: boolean },
+    options?: {
+      context?: string;
+      includeLexical?: boolean;
+      includeHyde?: boolean;
+      searchIntent?: SearchIntentGuidance;
+    },
   ): Promise<Queryable[]> {
     let targetOptions = options;
 
@@ -72,9 +78,7 @@ export class Hybrid implements LLM {
           targetOptions = {
             ...options,
             includeHyde: intent.needsHyde,
-            context: options?.context
-              ? `${options.context}\nIntent strategy: ${intent.strategy}`
-              : `Intent strategy: ${intent.strategy}`,
+            searchIntent: intent.strategyDetails,
           };
         }
       } catch (err) {

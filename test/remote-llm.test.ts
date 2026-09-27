@@ -235,6 +235,36 @@ describe("RemoteLLM & Hybrid Integration", () => {
       ]);
     });
 
+    test("expandQuery renders <search_intent> block when searchIntent option is provided", async () => {
+      mockResponseBody = {
+        choices: [{ message: { content: "vec: concept query" } }],
+      };
+
+      const llm = new RemoteLLM({
+        generateApiUrl: `http://127.0.0.1:${serverPort}/v1/chat/completions`,
+        generateApiModel: "gpt-4o-mini",
+      });
+
+      await llm.expandQuery("vector indexing", {
+        searchIntent: {
+          label: "Concept Search",
+          objective: "Looking for explanations, architecture, principles, or documentation.",
+          lexGuidance: "Prioritize domain terminology and conceptual keywords.",
+          vecGuidance: "Formulate conceptual or explanatory questions.",
+        },
+      });
+
+      const systemPrompt = lastRequestBody.messages[0].content as string;
+      const userPrompt = lastRequestBody.messages[1].content as string;
+      expect(systemPrompt).toContain("search intent strategy and guidance");
+      expect(userPrompt).toContain("<search_intent>");
+      expect(userPrompt).toContain("Strategy: Concept Search");
+      expect(userPrompt).toContain("Objective: Looking for explanations, architecture, principles, or documentation.");
+      expect(userPrompt).toContain("- lex: Prioritize domain terminology and conceptual keywords.");
+      expect(userPrompt).toContain("- vec: Formulate conceptual or explanatory questions.");
+      expect(userPrompt).toContain("</search_intent>");
+    });
+
     test("rerank calls rerank endpoint and applies sigmoid normalization to log-odds scores", async () => {
       mockResponseBody = {
         results: [

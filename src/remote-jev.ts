@@ -3,6 +3,7 @@ import type {
   RerankDocument,
   RerankOptions,
   RerankResult,
+  SearchIntentGuidance,
 } from "./llm.js";
 import { getFormattedLocalTime } from "./remote-llm.js";
 
@@ -21,11 +22,41 @@ export interface RemoteJevOptions {
   client?: TypeSafeClient | JevSystemOneClient;
 }
 
+export type JevStrategyDefinition = SearchIntentGuidance;
+
+export const JEV_STRATEGY_PLAYBOOK: Record<string, JevStrategyDefinition> = {
+  code_search: {
+    label: "Code Search",
+    objective: "Looking for specific code, functions, APIs, syntax, or implementations.",
+    lexGuidance: "Prioritize exact function, method, class, API names, language syntax keywords, and library identifiers.",
+    vecGuidance: "Formulate concrete implementation or usage questions (e.g., 'how to implement/call <API> with <options>').",
+  },
+  concept_search: {
+    label: "Concept Search",
+    objective: "Looking for explanations, architecture, principles, or documentation.",
+    lexGuidance: "Prioritize domain terminology, conceptual keywords, architectural patterns, and core component names.",
+    vecGuidance: "Formulate conceptual or explanatory questions (e.g., 'how does <concept> work and why is it used').",
+  },
+  factual_lookup: {
+    label: "Factual Lookup",
+    objective: "Looking for specific facts, configuration settings, defaults, or parameters.",
+    lexGuidance: "Prioritize exact configuration keys, CLI flags, parameter names, environment variables, or error codes.",
+    vecGuidance: "Formulate direct lookup questions (e.g., 'what is the default configuration or value for <param>').",
+  },
+  broad_exploration: {
+    label: "Broad Exploration",
+    objective: "Exploring a topic broadly without a specific target.",
+    lexGuidance: "Include major topical keywords and closely related sub-domain topics.",
+    vecGuidance: "Formulate broad introductory or overview inquiries covering the topic landscape.",
+  },
+};
+
 export interface JevIntentClassification {
   strategy: string;
   confidence: number;
   needsHyde: boolean;
   needsHydeConfidence?: number;
+  strategyDetails?: JevStrategyDefinition;
 }
 
 export class RemoteJev {
@@ -96,11 +127,13 @@ export class RemoteJev {
       },
     });
 
+    const strategyChoice = response.answers.strategy.choice;
     return {
-      strategy: response.answers.strategy.choice,
+      strategy: strategyChoice,
       confidence: response.answers.strategy.confidence,
       needsHyde: response.answers.needs_hyde.noul > 0.6,
       needsHydeConfidence: response.answers.needs_hyde.noul,
+      strategyDetails: JEV_STRATEGY_PLAYBOOK[strategyChoice],
     };
   }
 

@@ -10,7 +10,10 @@ import type {
   RerankOptions,
   RerankResult,
   RerankDocumentResult,
+  SearchIntentGuidance,
 } from "./llm.js";
+
+export type { SearchIntentGuidance };
 
 export interface RemoteLLMOptions {
   generateUrl?: string;
@@ -170,7 +173,16 @@ export class RemoteLLM implements LLM {
     return { name: _model, path: _model, exists: true };
   }
 
-  async expandQuery(query: string, options?: { context?: string; includeLexical?: boolean; includeHyde?: boolean; timeZone?: string }): Promise<Queryable[]> {
+  async expandQuery(
+    query: string,
+    options?: {
+      context?: string;
+      includeLexical?: boolean;
+      includeHyde?: boolean;
+      timeZone?: string;
+      searchIntent?: SearchIntentGuidance;
+    },
+  ): Promise<Queryable[]> {
     if (!this.supportsExpand) {
       throw new Error("Remote expansion is not configured or circuit is broken.");
     }
@@ -204,6 +216,7 @@ You expand search queries to enhance retrieval recall with analytical precision 
 1. Proactively generate one high-quality variation for each requested backend (${requestedBackends}) whenever the query has clear intent.
 2. Preserve query constraints and avoid inventing unmentioned facts.
 3. Return only the requested prefix lines.
+4. Align the generated variations with the provided search intent strategy and guidance when present.
 </instructions>
 
 <constraints>
@@ -243,7 +256,10 @@ ${hydeExample}</example>`;
       ? `Additional context:\n${escapePromptXml(options.context)}`
       : "No additional context provided.";
     const escapedQuery = escapePromptXml(query);
-    const userPrompt = `<context>
+    const searchIntentBlock = options?.searchIntent
+      ? `<search_intent>\nStrategy: ${escapePromptXml(options.searchIntent.label)}\nObjective: ${escapePromptXml(options.searchIntent.objective)}\nGuidance:\n- lex: ${escapePromptXml(options.searchIntent.lexGuidance)}\n- vec: ${escapePromptXml(options.searchIntent.vecGuidance)}\n</search_intent>\n\n`
+      : "";
+    const userPrompt = `${searchIntentBlock}<context>
 Current time: ${currentTime}
 ${additionalContext}
 </context>
