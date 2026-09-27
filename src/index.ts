@@ -108,7 +108,8 @@ import {
 } from "./embedding/config.js";
 import { rebuildCjkLexicalIndex } from "./search/cjk-index.js";
 import { RemoteLLM } from "./remote-llm.js";
-import { HybridLLM } from "./hybrid-llm.js";
+import { Hybrid, HybridLLM } from "./hybrid.js";
+import { RemoteJev } from "./remote-jev.js";
 import type { ExpansionMode } from "./search/query-expansion.js";
 import {
   createCollectionConfigSource,
@@ -495,7 +496,19 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
       })
     : undefined;
 
-  const llm = remoteLlm ? new HybridLLM(localLlm, remoteLlm) : localLlm;
+  const jevApiKey = config?.models?.jev_api_key?.trim() || process.env.TYPESAFE_API_KEY?.trim();
+  const jevBaseUrl = config?.models?.jev_base_url?.trim() || process.env.TYPESAFE_BASE_URL?.trim();
+  const jevModel = config?.models?.jev_model?.trim() || process.env.TYPESAFE_DEFAULT_MODEL?.trim() || "jev-1.13";
+  const remoteJev = jevApiKey
+    ? new RemoteJev({
+        apiKey: jevApiKey,
+        baseUrl: jevBaseUrl,
+        model: jevModel,
+        timeoutMs: options.remoteRequestTimeoutMs,
+      })
+    : undefined;
+
+  const llm = (remoteLlm || remoteJev) ? new Hybrid(localLlm, remoteLlm, remoteJev) : localLlm;
   internal.llm = llm;
   let closeEmbeddingResources: () => Promise<void>;
   let remoteKeyConfigured = false;

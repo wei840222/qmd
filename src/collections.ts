@@ -68,6 +68,9 @@ export interface ModelsConfig {
   rerank_api_url?: string;
   rerank_api_model?: string;
   rerank_api_key?: string;
+  jev_api_key?: string;
+  jev_model?: string;
+  jev_base_url?: string;
 }
 
 /**

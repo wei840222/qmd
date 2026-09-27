@@ -93,7 +93,8 @@ import { parseMetadataFilter, type MetadataFilter } from "../metadata-filter.js"
 import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
 import { rebuildCjkLexicalIndex } from "../search/cjk-index.js";
 import { RemoteLLM } from "../remote-llm.js";
-import { HybridLLM } from "../hybrid-llm.js";
+import { Hybrid, HybridLLM } from "../hybrid.js";
+import { RemoteJev } from "../remote-jev.js";
 import type { ExpansionMode } from "../search/query-expansion.js";
 import {
   EmbeddingConfigError,
@@ -283,8 +284,19 @@ function getStore(): ReturnType<typeof createStore> {
         })
       : undefined;
 
+    const jevApiKey = config?.models?.jev_api_key?.trim() || process.env.TYPESAFE_API_KEY?.trim();
+    const jevBaseUrl = config?.models?.jev_base_url?.trim() || process.env.TYPESAFE_BASE_URL?.trim();
+    const jevModel = config?.models?.jev_model?.trim() || process.env.TYPESAFE_DEFAULT_MODEL?.trim() || "jev-1.13";
+    const remoteJev = jevApiKey
+      ? new RemoteJev({
+          apiKey: jevApiKey,
+          baseUrl: jevBaseUrl,
+          model: jevModel,
+        })
+      : undefined;
+
     if (cliLlama) {
-      store.llm = remoteLlm ? new HybridLLM(cliLlama, remoteLlm) : cliLlama;
+      store.llm = (remoteLlm || remoteJev) ? new Hybrid(cliLlama, remoteLlm, remoteJev) : cliLlama;
     }
   }
   return store;
@@ -4694,6 +4706,13 @@ async function showDoctor(): Promise<void> {
       ?? (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1");
     const rerankModel = configModels.rerank_api_model ?? activeModels.rerank;
     doctorCheck("reranking model", true, `${rerankModel} (endpoint: ${rerankEndpoint})`);
+  }
+
+  const isJevConfigured = Boolean(configModels.jev_api_key || process.env.TYPESAFE_API_KEY);
+  if (isJevConfigured) {
+    const jevModel = configModels.jev_model ?? process.env.TYPESAFE_DEFAULT_MODEL ?? "jev-1.13";
+    const jevEndpoint = configModels.jev_base_url ?? process.env.TYPESAFE_BASE_URL ?? "https://api.typesafe.ai";
+    doctorCheck("typesafe jev", true, `${jevModel} (endpoint: ${jevEndpoint})`);
   }
 
   await runDoctorDeviceChecks(nextSteps);
