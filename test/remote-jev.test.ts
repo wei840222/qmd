@@ -20,7 +20,7 @@ describe("RemoteJev & Hybrid Integration", () => {
     test("classifyIntent passes query and optional context to Jev state", async () => {
       let capturedRequest: any = null;
       const mockClient: JevSystemOneClient = {
-        systemOne: vi.fn(async (req) => {
+        systemOne: vi.fn(async (req: any) => {
           capturedRequest = req;
           return {
             answers: {
@@ -60,7 +60,7 @@ describe("RemoteJev & Hybrid Integration", () => {
     test("rerank computes scores via noul and sorts descending", async () => {
       const calls: any[] = [];
       const mockClient: JevSystemOneClient = {
-        systemOne: vi.fn(async (req) => {
+        systemOne: vi.fn(async (req: any) => {
           calls.push(req);
           const candidate = req.state.candidate;
           // Return higher score for doc2 than doc1
@@ -107,27 +107,65 @@ describe("RemoteJev & Hybrid Integration", () => {
       expect(mockClient.systemOne).not.toHaveBeenCalled();
     });
 
-    test("trips circuit breaker on failure and can be reset", async () => {
+    test("does not permanently disable provider on transient failure", async () => {
+      let callCount = 0;
       const mockClient: JevSystemOneClient = {
         systemOne: vi.fn(async () => {
-          throw new Error("Network error");
+          callCount++;
+          if (callCount === 1) throw new Error("Transient network glitch");
+          return {
+            answers: {
+              is_relevant: { type: "noul", noul: 0.9 },
+            },
+          };
         }),
       };
 
       const jev = new RemoteJev({ client: mockClient });
       expect(jev.supportsRerank).toBe(true);
 
-      await expect(jev.rerank("query", [{ file: "a.md", text: "content" }])).rejects.toThrow("Network error");
-      expect(jev.supportsRerank).toBe(false);
-      expect(jev.supportsExpand).toBe(false);
-
-      // Subsequent call fails immediately due to broken circuit
-      await expect(jev.classifyIntent("query")).rejects.toThrow("RemoteJev circuit is broken");
-
-      // Reset
-      jev.resetCircuitBreaker();
+      // Call 1 fails
+      await expect(jev.rerank("query", [{ file: "a.md", text: "content" }])).rejects.toThrow("Transient network glitch");
+      // Call 2 succeeds immediately without permanent circuit lock
+      const res = await jev.rerank("query", [{ file: "a.md", text: "content" }]);
+      expect(res.results[0]?.score).toBe(0.9);
       expect(jev.supportsRerank).toBe(true);
-      expect(jev.supportsExpand).toBe(true);
+    });
+
+    test("pMap aborts remaining queue when a worker throws", async () => {
+      let processed = 0;
+      const mockClient: JevSystemOneClient = {
+        systemOne: vi.fn(async () => {
+          processed++;
+          throw new Error("Batch error");
+        }),
+      };
+
+      const jev = new RemoteJev({ client: mockClient, concurrency: 2 });
+      const docs = Array.from({ length: 10 }, (_, i) => ({ file: `doc${i}.md`, text: `text ${i}` }));
+
+      await expect(jev.rerank("query", docs)).rejects.toThrow("Batch error");
+      // Only the initial concurrency batch should have run, not all 10
+      expect(processed).toBeLessThan(10);
+    });
+
+    test("safely truncates candidate text without breaking surrogate pairs", async () => {
+      let capturedText = "";
+      const mockClient: JevSystemOneClient = {
+        systemOne: vi.fn(async (req: any) => {
+          capturedText = req.state.candidate;
+          return { answers: { is_relevant: { type: "noul", noul: 0.5 } } };
+        }),
+      };
+
+      const jev = new RemoteJev({ client: mockClient });
+      // Create a string of 1499 ASCII characters + one emoji (surrogate pair, length 2)
+      // Total length 1501. Truncating at 1500 without safe surrogate handling would leave a lone high surrogate.
+      const text = "a".repeat(1499) + "🚀";
+      await jev.rerank("query", [{ file: "test.md", text }]);
+      // The high surrogate at 1500 should be safely dropped, leaving 1499 chars
+      expect(capturedText).toBe("a".repeat(1499));
+      expect(/[\uD800-\uDFFF]/.test(capturedText)).toBe(false);
     });
   });
 
@@ -295,6 +333,29 @@ describe("RemoteJev & Hybrid Integration", () => {
       const res = await hybrid.expandQuery("query", initialOpts);
       expect(res).toEqual([{ type: "vec", text: "expanded:query" }]);
       expect(passedOptionsToLocal).toEqual(initialOpts);
+    });
+
+    test("modelExists checks provider presence before returning true for jev models", async () => {
+      const mockLocalLLM: LLM = {
+        embed: async () => null,
+        generate: async () => null,
+        modelExists: async () => ({ name: "local", exists: false }),
+        expandQuery: async () => [],
+        rerank: async () => ({ results: [], model: "local" }),
+        dispose: async () => {},
+      };
+
+      // When remoteJev is NOT configured
+      const hybridWithoutJev = new Hybrid(mockLocalLLM);
+      const resWithoutJev = await hybridWithoutJev.modelExists("jev:jev-1.13");
+      expect(resWithoutJev.exists).toBe(false);
+
+      // When remoteJev IS configured
+      const mockJevClient: JevSystemOneClient = { systemOne: vi.fn() };
+      const jev = new RemoteJev({ client: mockJevClient });
+      const hybridWithJev = new Hybrid(mockLocalLLM, undefined, jev);
+      const resWithJev = await hybridWithJev.modelExists("jev:jev-1.13");
+      expect(resWithJev.exists).toBe(true);
     });
   });
 });

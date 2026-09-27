@@ -771,6 +771,20 @@ describe("CLI Status Command", () => {
     expect(stdout).toContain("qmd collection add .");
   }, 20000);
 
+  test("qmd doctor runs with empty config file without crashing and reports jev when configured", async () => {
+    const env = await createIsolatedTestEnv("doctor-empty-config-jev");
+    await writeFile(join(env.configDir, "index.yml"), "");
+
+    const { stdout, exitCode } = await runQmd(["doctor"], {
+      dbPath: env.dbPath,
+      configDir: env.configDir,
+      env: { TYPESAFE_API_KEY: "test-key-123" },
+    });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("typesafe jev");
+    expect(stdout).toContain("jev-1.13");
+  }, 20000);
+
   test("qmd doctor reports invalid index.yml without crashing", async () => {
     const env = await createIsolatedTestEnv("doctor-invalid-config");
     await writeFile(join(env.configDir, "index.yml"), "collections:\n  bad: [unterminated\n");

@@ -5,6 +5,8 @@ import type {
   RerankResult,
 } from "./llm.js";
 
+export const DEFAULT_JEV_TIMEOUT_MS = 30000;
+
 export interface JevSystemOneClient {
   systemOne(request: any, options?: any): Promise<any>;
 }
@@ -29,7 +31,6 @@ export class RemoteJev {
   readonly model: string;
   readonly concurrency: number;
   readonly client: TypeSafeClient | JevSystemOneClient;
-  private circuitBroken = false;
 
   constructor(options: RemoteJevOptions = {}) {
     this.model = options.model?.trim() || "jev-1.13";
@@ -44,70 +45,61 @@ export class RemoteJev {
         apiKey,
         baseURL: baseURL || undefined,
         defaultModel: this.model,
-        timeout: options.timeoutMs,
+        timeout: options.timeoutMs ?? DEFAULT_JEV_TIMEOUT_MS,
       });
     }
   }
 
   get supportsRerank(): boolean {
-    return !this.circuitBroken;
+    return true;
   }
 
   get supportsExpand(): boolean {
-    return !this.circuitBroken;
+    return true;
   }
 
   resetCircuitBreaker(): void {
-    this.circuitBroken = false;
+    // Kept for interface compatibility; error handling is handled per-request in caller/fallback
   }
 
   async classifyIntent(
     query: string,
     options?: { context?: string },
   ): Promise<JevIntentClassification> {
-    if (this.circuitBroken) {
-      throw new Error("RemoteJev circuit is broken.");
-    }
-
     const state: Record<string, string> = { query };
     if (options?.context) {
       state.context = options.context;
     }
 
-    try {
-      const response = await this.client.systemOne({
-        state,
-        model: this.model,
-        questions: {
-          strategy: choice(
-            "What type of search is the user performing given the query and optional context?",
-            {
-              code_search: "Looking for specific code, functions, APIs, or implementations",
-              concept_search: "Looking for explanations, concepts, or documentation",
-              factual_lookup: "Looking for specific facts, configurations, or settings",
-              broad_exploration: "Exploring a topic broadly without a specific target",
-            },
-          ),
-          needs_hyde: noul(
-            "Is this query specific enough that a hypothetical answer document could be written?",
-            {
-              true: "The query asks about a concrete topic with a definable answer.",
-              false: "The query is too vague, broad, or exploratory for a useful hypothetical answer.",
-            },
-          ),
-        },
-      });
+    const response = await this.client.systemOne({
+      state,
+      model: this.model,
+      questions: {
+        strategy: choice(
+          "What type of search is the user performing given the query and optional context?",
+          {
+            code_search: "Looking for specific code, functions, APIs, or implementations",
+            concept_search: "Looking for explanations, concepts, or documentation",
+            factual_lookup: "Looking for specific facts, configurations, or settings",
+            broad_exploration: "Exploring a topic broadly without a specific target",
+          },
+        ),
+        needs_hyde: noul(
+          "Is this query specific enough that a hypothetical answer document could be written?",
+          {
+            true: "The query asks about a concrete topic with a definable answer.",
+            false: "The query is too vague, broad, or exploratory for a useful hypothetical answer.",
+          },
+        ),
+      },
+    });
 
-      return {
-        strategy: response.answers.strategy.choice,
-        confidence: response.answers.strategy.confidence,
-        needsHyde: response.answers.needs_hyde.noul > 0.6,
-        needsHydeConfidence: response.answers.needs_hyde.noul,
-      };
-    } catch (err) {
-      this.circuitBroken = true;
-      throw err;
-    }
+    return {
+      strategy: response.answers.strategy.choice,
+      confidence: response.answers.strategy.confidence,
+      needsHyde: response.answers.needs_hyde.noul > 0.6,
+      needsHydeConfidence: response.answers.needs_hyde.noul,
+    };
   }
 
   async rerank(
@@ -115,10 +107,6 @@ export class RemoteJev {
     documents: RerankDocument[],
     _options?: RerankOptions,
   ): Promise<RerankResult> {
-    if (this.circuitBroken) {
-      throw new Error("RemoteJev circuit is broken.");
-    }
-
     if (documents.length === 0) {
       return { results: [], model: `jev:${this.model}` };
     }
@@ -131,50 +119,55 @@ export class RemoteJev {
       },
     );
 
-    try {
-      const results = await pMap(
-        documents,
-        async (doc, index) => {
-          const text = typeof doc === "string" ? doc : doc.text;
-          const file = typeof doc === "string" ? doc : doc.file;
-          const candidate = text.slice(0, 1500);
+    const results = await pMap(
+      documents,
+      async (doc, index) => {
+        const text = typeof doc === "string" ? doc : doc.text;
+        const file = typeof doc === "string" ? doc : doc.file;
+        const candidate = truncateCandidateText(text, 1500);
 
-          const state: Record<string, string> = { query, candidate };
-          if (typeof doc !== "string" && doc.title) {
-            state.title = doc.title;
-          }
+        const state: Record<string, string> = { query, candidate };
+        if (typeof doc !== "string" && doc.title) {
+          state.title = doc.title;
+        }
 
-          const response = await this.client.systemOne({
-            state,
-            model: this.model,
-            questions: { is_relevant: rerankQuestion },
-          });
+        const response = await this.client.systemOne({
+          state,
+          model: this.model,
+          questions: { is_relevant: rerankQuestion },
+        });
 
-          return {
-            file,
-            score: response.answers.is_relevant.noul,
-            index,
-          };
-        },
-        this.concurrency,
-      );
+        return {
+          file,
+          score: response.answers.is_relevant.noul,
+          index,
+        };
+      },
+      this.concurrency,
+    );
 
-      // Sort by score descending
-      results.sort((a, b) => b.score - a.score);
+    // Sort by score descending
+    results.sort((a, b) => b.score - a.score);
 
-      return {
-        results,
-        model: `jev:${this.model}`,
-      };
-    } catch (err) {
-      this.circuitBroken = true;
-      throw err;
-    }
+    return {
+      results,
+      model: `jev:${this.model}`,
+    };
   }
 
   async dispose(): Promise<void> {
     // No persistent connections or handles to close
   }
+}
+
+function truncateCandidateText(text: string, maxChars = 1500): string {
+  if (text.length <= maxChars) return text;
+  let sliced = text.slice(0, maxChars);
+  // Avoid malformed surrogate pairs when slicing by UTF-16 code units
+  if (/[\uD800-\uDBFF]$/.test(sliced)) {
+    sliced = sliced.slice(0, -1);
+  }
+  return sliced;
 }
 
 async function pMap<T, R>(
@@ -184,13 +177,19 @@ async function pMap<T, R>(
 ): Promise<R[]> {
   const results = new Array<R>(items.length);
   let nextIndex = 0;
+  let hasFailed = false;
 
   async function worker() {
-    while (nextIndex < items.length) {
+    while (nextIndex < items.length && !hasFailed) {
       const currentIndex = nextIndex++;
       const item = items[currentIndex];
       if (item !== undefined) {
-        results[currentIndex] = await mapper(item, currentIndex);
+        try {
+          results[currentIndex] = await mapper(item, currentIndex);
+        } catch (err) {
+          hasFailed = true;
+          throw err;
+        }
       }
     }
   }

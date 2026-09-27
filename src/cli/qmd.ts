@@ -292,6 +292,7 @@ function getStore(): ReturnType<typeof createStore> {
           apiKey: jevApiKey,
           baseUrl: jevBaseUrl,
           model: jevModel,
+          timeoutMs: 30000,
         })
       : undefined;
 
@@ -4708,10 +4709,10 @@ async function showDoctor(): Promise<void> {
     doctorCheck("reranking model", true, `${rerankModel} (endpoint: ${rerankEndpoint})`);
   }
 
-  const isJevConfigured = Boolean(configModels.jev_api_key || process.env.TYPESAFE_API_KEY);
+  const isJevConfigured = Boolean(configModels?.jev_api_key || process.env.TYPESAFE_API_KEY);
   if (isJevConfigured) {
-    const jevModel = configModels.jev_api_model ?? process.env.TYPESAFE_DEFAULT_MODEL ?? "jev-1.13";
-    const jevEndpoint = configModels.jev_base_url ?? process.env.TYPESAFE_BASE_URL ?? "https://api.typesafe.ai";
+    const jevModel = configModels?.jev_api_model ?? process.env.TYPESAFE_DEFAULT_MODEL ?? "jev-1.13";
+    const jevEndpoint = configModels?.jev_base_url ?? process.env.TYPESAFE_BASE_URL ?? "https://api.typesafe.ai";
     doctorCheck("typesafe jev", true, `${jevModel} (endpoint: ${jevEndpoint})`);
   }
 

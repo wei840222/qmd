@@ -49,7 +49,7 @@ export class Hybrid implements LLM {
   }
 
   async modelExists(model: string): Promise<ModelInfo> {
-    if (model.startsWith("jev:") || model === "jev") {
+    if (this.remoteJev && (model.startsWith("jev:") || model === "jev")) {
       return { name: model, path: model, exists: true };
     }
     if (this.remoteLLM) {
