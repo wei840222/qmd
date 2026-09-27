@@ -14,6 +14,9 @@
 - Added `models.jev_api_key`, `models.jev_api_model`, and `models.jev_base_url` configuration options with `TYPESAFE_API_KEY`, `TYPESAFE_DEFAULT_MODEL`, and `TYPESAFE_BASE_URL` environment variable fallbacks.
 - Added TypeSafe Jev provider diagnostic check to `qmd doctor`.
 - Detailed metadata extraction error reporting: `qmd status` and `qmd doctor` now list pending/errored document paths with error hints, and `qmd update` outputs specific files and causes when frontmatter extraction errors occur.
+- Document file path and title metadata in candidate reranking: candidate documents for chat-based and remote rerankers now retain document file paths and titles, enabling rerankers to evaluate provenance and temporal references.
+- Relative temporal resolution in query expansion: `expandQuery` prompts now instruct models to calculate exact ISO dates from relative time expressions (e.g. "yesterday", "昨天", "today", "last week") against current local time for lexical and vector search.
+- Added file, title, and current local time to TypeSafe Jev candidate reranking and intent classification states, with temporal constraint guidance.
 
 ## [2026.9.25] - 2026-09-26
 

@@ -4,6 +4,7 @@ import type {
   RerankOptions,
   RerankResult,
 } from "./llm.js";
+import { getFormattedLocalTime } from "./remote-llm.js";
 
 export const DEFAULT_JEV_TIMEOUT_MS = 30000;
 
@@ -64,12 +65,13 @@ export class RemoteJev {
 
   async classifyIntent(
     query: string,
-    options?: { context?: string },
+    options?: { context?: string; timeZone?: string },
   ): Promise<JevIntentClassification> {
     const state: Record<string, string> = { query };
     if (options?.context) {
       state.context = options.context;
     }
+    state.current_time = getFormattedLocalTime(new Date(), options?.timeZone);
 
     const response = await this.client.systemOne({
       state,
@@ -105,7 +107,7 @@ export class RemoteJev {
   async rerank(
     query: string,
     documents: RerankDocument[],
-    _options?: RerankOptions,
+    options?: RerankOptions,
   ): Promise<RerankResult> {
     if (documents.length === 0) {
       return { results: [], model: `jev:${this.model}` };
@@ -114,8 +116,8 @@ export class RemoteJev {
     const rerankQuestion = noul(
       "Does this candidate document answer or address the search query?",
       {
-        true: "The candidate directly addresses the query's specific question, requirement, or topic.",
-        false: "The candidate is only on a similar topic or is unrelated to the query's specific need.",
+        true: "The candidate directly addresses the query's specific question, requirement, or topic, satisfying any time or entity constraints.",
+        false: "The candidate is only on a similar topic, outside the requested time window, or unrelated to the query's specific need.",
       },
     );
 
@@ -130,6 +132,11 @@ export class RemoteJev {
         if (typeof doc !== "string" && doc.title) {
           state.title = doc.title;
         }
+        if (typeof doc !== "string" && doc.file) {
+          state.file = doc.file;
+        }
+        const timeZone = typeof options === "object" && options !== null ? (options as any).timeZone : undefined;
+        state.current_time = getFormattedLocalTime(new Date(), timeZone);
 
         const response = await this.client.systemOne({
           state,

@@ -2132,7 +2132,7 @@ export type Store = {
   expandQuery: (query: string, model?: string, expansionContext?: string, options?: QueryExpansionOptions) => Promise<ExpandedQuery[]>;
   /** Drop the cached expansion for a query so the next call regenerates. */
   invalidateExpansionCache: (query: string, expansionContext?: string, options?: QueryExpansionOptions) => void;
-  rerank: (query: string, documents: { file: string; text: string }[], model?: string, rerankContext?: string) => Promise<{ file: string; score: number }[]>;
+  rerank: (query: string, documents: { file: string; text: string; title?: string }[], model?: string, rerankContext?: string) => Promise<{ file: string; score: number }[]>;
 
   // Document retrieval
   findDocument: (filename: string, options?: { includeBody?: boolean }) => DocumentResult | DocumentLookupError;
@@ -3560,7 +3560,7 @@ export function createStore(dbPath?: string, options: CreateStoreOptions = {}): 
       expansionContext,
       options,
     ),
-    rerank: (query: string, documents: { file: string; text: string }[], model?: string, rerankContext?: string) => {
+    rerank: (query: string, documents: { file: string; text: string; title?: string }[], model?: string, rerankContext?: string) => {
       const llm = getLlm(store);
       return rerank(query, documents, model ?? store.localLlm?.rerankModelName ?? llm?.rerankModelName ?? DEFAULT_RERANK_MODEL, db, rerankContext, store.llm ?? llm);
     },
@@ -6416,7 +6416,7 @@ export function deleteExpansionCacheEntry(
 // Reranking
 // =============================================================================
 
-export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, rerankContext?: string, llmOverride?: LLM): Promise<{ file: string; score: number }[]> {
+export async function rerank(query: string, documents: { file: string; text: string; title?: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, rerankContext?: string, llmOverride?: LLM): Promise<{ file: string; score: number }[]> {
   // Prepend rerank context so the reranker scores with domain context.
   const rerankQuery = rerankContext ? `${rerankContext}\n\n${query}` : query;
   const llm = llmOverride ?? getDefaultLlamaCpp();
@@ -6439,7 +6439,7 @@ export async function rerank(query: string, documents: { file: string; text: str
     if (cached !== null) {
       cachedResults.set(doc.text, parseFloat(cached));
     } else {
-      uncachedDocsByChunk.set(doc.text, { file: doc.file, text: doc.text });
+      uncachedDocsByChunk.set(doc.text, { file: doc.file, text: doc.text, title: doc.title });
     }
   }
 
@@ -7624,11 +7624,11 @@ export async function hybridQuery(
   }
 
   // Step 6: Rerank chunks (NOT full bodies)
-  const chunksToRerank: { file: string; text: string }[] = [];
+  const chunksToRerank: { file: string; text: string; title?: string }[] = [];
   for (const cand of candidates) {
     const chunkInfo = docChunkMap.get(cand.file);
     if (chunkInfo) {
-      chunksToRerank.push({ file: cand.file, text: chunkInfo.chunks[chunkInfo.bestIdx]!.text });
+      chunksToRerank.push({ file: cand.file, text: chunkInfo.chunks[chunkInfo.bestIdx]!.text, title: cand.title });
     }
   }
 
@@ -8032,11 +8032,11 @@ export async function structuredSearch(
   }
 
   // Step 5: Rerank chunks
-  const chunksToRerank: { file: string; text: string }[] = [];
+  const chunksToRerank: { file: string; text: string; title?: string }[] = [];
   for (const cand of candidates) {
     const chunkInfo = docChunkMap.get(cand.file);
     if (chunkInfo) {
-      chunksToRerank.push({ file: cand.file, text: chunkInfo.chunks[chunkInfo.bestIdx]!.text });
+      chunksToRerank.push({ file: cand.file, text: chunkInfo.chunks[chunkInfo.bestIdx]!.text, title: cand.title });
     }
   }
 

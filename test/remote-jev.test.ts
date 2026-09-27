@@ -43,17 +43,17 @@ describe("RemoteJev & Hybrid Integration", () => {
 
       // Call without context
       const res1 = await jev.classifyIntent("sqlite-vec indexing");
-      expect(capturedRequest.state).toEqual({ query: "sqlite-vec indexing" });
+      expect(capturedRequest.state.query).toBe("sqlite-vec indexing");
+      expect(capturedRequest.state.current_time).toBeDefined();
       expect(res1.strategy).toBe("code_search");
       expect(res1.confidence).toBe(0.92);
       expect(res1.needsHyde).toBe(true);
 
       // Call with context (user comment 2: context passed to jev state)
       const res2 = await jev.classifyIntent("fix connection error", { context: "in postgres pool handler" });
-      expect(capturedRequest.state).toEqual({
-        query: "fix connection error",
-        context: "in postgres pool handler",
-      });
+      expect(capturedRequest.state.query).toBe("fix connection error");
+      expect(capturedRequest.state.context).toBe("in postgres pool handler");
+      expect(capturedRequest.state.current_time).toBeDefined();
       expect(res2.strategy).toBe("code_search");
     });
 
@@ -91,9 +91,11 @@ describe("RemoteJev & Hybrid Integration", () => {
       expect(result.results[1]?.file).toBe("doc1.md");
       expect(result.results[1]?.score).toBe(0.42);
 
-      // Verify title was included in state when present
+      // Verify title, file, and current_time were included in state when present
       const doc1Call = calls.find(c => c.state.file === "doc1.md" || c.state.title === "Doc 1");
       expect(doc1Call.state.title).toBe("Doc 1");
+      expect(doc1Call.state.file).toBe("doc1.md");
+      expect(doc1Call.state.current_time).toBeDefined();
     });
 
     test("rerank handles empty documents", async () => {
