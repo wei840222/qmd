@@ -93,7 +93,7 @@ import { parseMetadataFilter, type MetadataFilter } from "../metadata-filter.js"
 import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
 import { rebuildCjkLexicalIndex } from "../search/cjk-index.js";
 import { RemoteLLM } from "../remote-llm.js";
-import { Hybrid, HybridLLM } from "../hybrid.js";
+import { Hybrid } from "../hybrid.js";
 import { RemoteJev } from "../remote-jev.js";
 import type { ExpansionMode } from "../search/query-expansion.js";
 import {

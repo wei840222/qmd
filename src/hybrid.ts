@@ -127,6 +127,3 @@ export class Hybrid implements LLM {
     ]);
   }
 }
-
-// Backwards compatibility alias
-export { Hybrid as HybridLLM };

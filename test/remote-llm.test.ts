@@ -1,11 +1,11 @@
 import { createServer, type Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { RemoteLLM, resolveEndpointUrl, sigmoid, getFormattedLocalTime } from "../src/remote-llm.js";
-import { HybridLLM } from "../src/hybrid-llm.js";
+import { Hybrid } from "../src/hybrid.js";
 import type { LLM, Queryable, RerankDocument, RerankResult } from "../src/llm.js";
 import { resolveExpansionPolicy } from "../src/search/query-expansion.js";
 
-describe("RemoteLLM & HybridLLM Integration", () => {
+describe("RemoteLLM & Hybrid Integration", () => {
   let mockServer: Server;
   let serverPort: number;
   let lastRequestBody: any = null;
@@ -458,7 +458,7 @@ describe("RemoteLLM & HybridLLM Integration", () => {
     });
   });
 
-  describe("HybridLLM", () => {
+  describe("Hybrid", () => {
     test("routes expand & rerank to remote, with local fallback on error", async () => {
       const mockLocalLLM: LLM = {
         embed: async () => null,
@@ -481,7 +481,7 @@ describe("RemoteLLM & HybridLLM Integration", () => {
         rerankApiModel: "bge-reranker",
       });
 
-      const hybrid = new HybridLLM(mockLocalLLM, remoteLLM);
+      const hybrid = new Hybrid(mockLocalLLM, remoteLLM);
 
       // Should fall back to local model gracefully without throwing
       const expanded = await hybrid.expandQuery("test query");
