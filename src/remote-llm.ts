@@ -160,6 +160,14 @@ export class RemoteLLM implements LLM {
     return Boolean(this.rerankApiUrl && this.rerankApiModel && !this.rerankCircuitBroken);
   }
 
+  get rerankModelName(): string | undefined {
+    return this.rerankApiModel;
+  }
+
+  get generateModelName(): string | undefined {
+    return this.generateApiModel;
+  }
+
   async embed(_text: string, _options?: EmbedOptions): Promise<EmbeddingResult | null> {
     // Embedding is handled separately by EmbeddingProvider
     return null;

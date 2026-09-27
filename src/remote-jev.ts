@@ -90,6 +90,10 @@ export class RemoteJev {
     return true;
   }
 
+  get rerankModelName(): string {
+    return `jev:${this.model}`;
+  }
+
   resetCircuitBreaker(): void {
     // Kept for interface compatibility; error handling is handled per-request in caller/fallback
   }

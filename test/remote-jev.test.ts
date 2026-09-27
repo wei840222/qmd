@@ -362,5 +362,30 @@ describe("RemoteJev & Hybrid Integration", () => {
       const resWithJev = await hybridWithJev.modelExists("jev:jev-1.13");
       expect(resWithJev.exists).toBe(true);
     });
+
+    test("rerankModelName provides isolated cache namespace for Jev, RemoteLLM, and LocalLLM", () => {
+      const mockLocalLLM: any = {
+        rerankModelName: "local-qwen",
+      };
+      const mockJevClient: JevSystemOneClient = { systemOne: vi.fn() };
+      const jev = new RemoteJev({ client: mockJevClient, model: "jev-1.13" });
+      expect(jev.rerankModelName).toBe("jev:jev-1.13");
+
+      // Hybrid with Jev prioritizes Jev's model name
+      const hybridWithJev = new Hybrid(mockLocalLLM, undefined, jev);
+      expect(hybridWithJev.rerankModelName).toBe("jev:jev-1.13");
+
+      // Hybrid with RemoteLLM (no Jev)
+      const mockRemoteLLM: any = {
+        supportsRerank: true,
+        rerankModelName: "remote-bge-reranker",
+      };
+      const hybridWithRemote = new Hybrid(mockLocalLLM, mockRemoteLLM);
+      expect(hybridWithRemote.rerankModelName).toBe("remote-bge-reranker");
+
+      // Hybrid with LocalLLM only
+      const hybridLocalOnly = new Hybrid(mockLocalLLM);
+      expect(hybridLocalOnly.rerankModelName).toBe("local-qwen");
+    });
   });
 });

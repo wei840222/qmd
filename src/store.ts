@@ -3553,17 +3553,25 @@ export function createStore(dbPath?: string, options: CreateStoreOptions = {}): 
     ),
 
     // Query expansion & reranking
-    expandQuery: (query: string, model?: string, expansionContext?: string, options?: QueryExpansionOptions) => expandQuery(query, model ?? store.localLlm?.generateModelName ?? (store.llm as any)?.generateModelName ?? DEFAULT_QUERY_MODEL, db, expansionContext, store.llm, options),
-    invalidateExpansionCache: (query: string, expansionContext?: string, options?: QueryExpansionOptions) => deleteExpansionCacheEntry(
-      db,
-      query,
-      store.localLlm?.generateModelName ?? (store.llm as any)?.generateModelName ?? DEFAULT_QUERY_MODEL,
-      expansionContext,
-      options,
-    ),
+    expandQuery: (query: string, model?: string, expansionContext?: string, options?: QueryExpansionOptions) => {
+      const activeGenerateModel = (store.llm as any)?.generateModelName ?? store.localLlm?.generateModelName ?? DEFAULT_QUERY_MODEL;
+      return expandQuery(query, model ?? activeGenerateModel, db, expansionContext, store.llm, options);
+    },
+    invalidateExpansionCache: (query: string, expansionContext?: string, options?: QueryExpansionOptions) => {
+      const activeGenerateModel = (store.llm as any)?.generateModelName ?? store.localLlm?.generateModelName ?? DEFAULT_QUERY_MODEL;
+      return deleteExpansionCacheEntry(
+        db,
+        query,
+        activeGenerateModel,
+        expansionContext,
+        options,
+      );
+    },
     rerank: (query: string, documents: { file: string; text: string; title?: string }[], model?: string, rerankContext?: string) => {
       const llm = getLlm(store);
-      return rerank(query, documents, model ?? store.localLlm?.rerankModelName ?? llm?.rerankModelName ?? DEFAULT_RERANK_MODEL, db, rerankContext, store.llm ?? llm);
+      const activeLlm = store.llm ?? llm;
+      const activeRerankModel = (activeLlm as any)?.rerankModelName ?? store.localLlm?.rerankModelName ?? llm?.rerankModelName ?? DEFAULT_RERANK_MODEL;
+      return rerank(query, documents, model ?? activeRerankModel, db, rerankContext, activeLlm);
     },
 
     // Document retrieval

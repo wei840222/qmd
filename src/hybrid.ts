@@ -41,6 +41,23 @@ export class Hybrid implements LLM {
     return Boolean(this.remoteJev?.supportsRerank || this.remoteLLM?.supportsRerank);
   }
 
+  get rerankModelName(): string | undefined {
+    if (this.remoteJev?.supportsRerank) {
+      return this.remoteJev.rerankModelName;
+    }
+    if (this.remoteLLM?.supportsRerank && this.remoteLLM.rerankModelName) {
+      return this.remoteLLM.rerankModelName;
+    }
+    return (this.localLLM as any).rerankModelName;
+  }
+
+  get generateModelName(): string | undefined {
+    if (this.remoteLLM?.supportsExpand && this.remoteLLM.generateModelName) {
+      return this.remoteLLM.generateModelName;
+    }
+    return (this.localLLM as any).generateModelName;
+  }
+
   async embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null> {
     return this.localLLM.embed(text, options);
   }

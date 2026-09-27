@@ -1413,6 +1413,69 @@ describe("Caching", () => {
       await cleanupTestDb(store);
     }
   });
+
+  test("rerank cache key isolates Hybrid with RemoteJev from local model", async () => {
+    const store = await createTestStore();
+    const query = "jev cache isolation query";
+    const docs = [{ file: "doc.md", text: "isolated chunk content" }];
+
+    const localSpy = vi.fn(async (_query: string, scoredDocs: { file: string; text: string }[]) => ({
+      results: scoredDocs.map((doc, index) => ({ file: doc.file, score: 0.35, index })),
+      model: "local-qwen",
+    }));
+    const mockLocal: any = {
+      rerank: localSpy,
+      rerankModelName: "local-qwen",
+      embed: async () => null,
+      generate: async () => null,
+      modelExists: async () => ({ name: "local-qwen", exists: true }),
+      dispose: async () => {},
+    };
+
+    const mockJevClient: any = {
+      systemOne: vi.fn(async () => ({
+        answers: {
+          is_relevant: {
+            type: "noul",
+            noul: 0.96,
+          },
+        },
+      })),
+    };
+    const { RemoteJev } = await import("../src/remote-jev.js");
+    const { Hybrid } = await import("../src/hybrid.js");
+    const jev = new RemoteJev({ client: mockJevClient, model: "jev-1.13" });
+    const hybrid = new Hybrid(mockLocal, undefined, jev);
+
+    store.llm = hybrid as any;
+
+    try {
+      // 1. Rerank using Hybrid (Jev) -> should return Jev score (0.96)
+      const first = await store.rerank(query, docs);
+      expect(first[0]!.score).toBe(0.96);
+      expect(mockJevClient.systemOne).toHaveBeenCalledTimes(1);
+      expect(localSpy).not.toHaveBeenCalled();
+
+      // 2. Rerank again with Hybrid (Jev) -> should hit Jev cache (systemOne not called again)
+      const cachedJev = await store.rerank(query, docs);
+      expect(cachedJev[0]!.score).toBe(0.96);
+      expect(mockJevClient.systemOne).toHaveBeenCalledTimes(1);
+
+      // 3. Switch store.llm to local model -> should NOT hit Jev's cache, should call local model
+      store.llm = mockLocal;
+      const localResult = await store.rerank(query, docs);
+      expect(localResult[0]!.score).toBe(0.35);
+      expect(localSpy).toHaveBeenCalledTimes(1);
+
+      // 4. Switch back to Hybrid (Jev) -> should still hit Jev's cached score (0.96) without calling Jev again
+      store.llm = hybrid as any;
+      const backToJev = await store.rerank(query, docs);
+      expect(backToJev[0]!.score).toBe(0.96);
+      expect(mockJevClient.systemOne).toHaveBeenCalledTimes(1);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
 });
 
 describe("Query expansion cache (#818)", () => {
