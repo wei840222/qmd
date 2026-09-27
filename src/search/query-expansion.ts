@@ -43,6 +43,10 @@ export function parseExpansionDirective(input: string): ExpansionDirective {
   };
 }
 
+export function containsRelativeTemporalTerms(query: string): boolean {
+  return /(?:昨天|今天|明天|前天|後天|大前天|大後天|上週|上周|下週|下周|這週|這周|上個月|下個月|這個月|yesterday|today|tomorrow|last\s+(?:week|month|year|night)|this\s+(?:morning|afternoon|evening|week|month)|past\s+\d+\s+(?:days?|weeks?|months?))/iu.test(query);
+}
+
 export function resolveExpansionPolicy(options: {
   query: string;
   mode: ExpansionMode;
@@ -68,7 +72,7 @@ export function resolveExpansionPolicy(options: {
   if (containsCjk(parsed.query) && !options.allowCjkExpand) {
     return { action: "skip", reason: "cjk-default", query: parsed.query };
   }
-  if (options.strongSignal) {
+  if (options.strongSignal && !containsRelativeTemporalTerms(parsed.query)) {
     return { action: "skip", reason: "strong-signal", query: parsed.query };
   }
   return { action: "expand", reason: "auto-expand", query: parsed.query };

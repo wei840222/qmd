@@ -50,6 +50,7 @@ import {
   ExpansionPolicyError,
   parseExpansionDirective,
   resolveExpansionPolicy,
+  containsRelativeTemporalTerms,
   type ExpansionDecision,
   type ExpansionMode,
 } from "./search/query-expansion.js";
@@ -7406,7 +7407,7 @@ export async function hybridQuery(
     expansionDecision = resolveExpansionPolicy({
       query,
       mode: expansionMode,
-      strongSignal: !expansionContext && !rerankContext && strongSignal.strong,
+      strongSignal: !expansionContext && !rerankContext && !containsRelativeTemporalTerms(query) && strongSignal.strong,
       allowCjkExpand: Boolean((store.llm as any)?.supportsExpand),
     });
   } catch (error) {

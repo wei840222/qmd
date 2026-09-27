@@ -60,6 +60,28 @@ describe("shared query expansion policy", () => {
     });
   });
 
+  test("relative temporal queries do not skip expansion even on strong signal", () => {
+    expect(resolveExpansionPolicy({
+      query: "我昨天做了甚麼",
+      mode: "auto",
+      strongSignal: true,
+      allowCjkExpand: true,
+    })).toEqual({
+      action: "expand",
+      reason: "auto-expand",
+      query: "我昨天做了甚麼",
+    });
+    expect(resolveExpansionPolicy({
+      query: "what did I do yesterday",
+      mode: "auto",
+      strongSignal: true,
+    })).toEqual({
+      action: "expand",
+      reason: "auto-expand",
+      query: "what did I do yesterday",
+    });
+  });
+
   test("strips lex and expand prefixes before policy and CJK detection", () => {
     expect(parseExpansionDirective("  lex: 資料庫同步  ")).toEqual({
       directive: "skip",

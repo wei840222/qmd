@@ -28,19 +28,19 @@ export const JEV_STRATEGY_PLAYBOOK: Record<string, JevStrategyDefinition> = {
   code_search: {
     label: "Code Search",
     objective: "Looking for specific code, functions, APIs, syntax, or implementations.",
-    lexGuidance: "Prioritize exact function, method, class, API names, language syntax keywords, and library identifiers.",
+    lexGuidance: "Prioritize exact function, method, class, API names, language syntax keywords, and library identifiers without extra filler words.",
     vecGuidance: "Formulate concrete implementation or usage questions (e.g., 'how to implement/call <API> with <options>').",
   },
   concept_search: {
     label: "Concept Search",
     objective: "Looking for explanations, architecture, principles, or documentation.",
-    lexGuidance: "Prioritize domain terminology, conceptual keywords, architectural patterns, and core component names.",
+    lexGuidance: "Prioritize domain terminology, conceptual keywords, architectural patterns, and core component names without extra filler words.",
     vecGuidance: "Formulate conceptual or explanatory questions (e.g., 'how does <concept> work and why is it used').",
   },
   factual_lookup: {
     label: "Factual Lookup",
     objective: "Looking for specific facts, configuration settings, defaults, or parameters.",
-    lexGuidance: "Prioritize exact configuration keys, CLI flags, parameter names, environment variables, or error codes.",
+    lexGuidance: "Prioritize exact configuration keys, CLI flags, parameter names, environment variables, dates, or error codes without extra filler words.",
     vecGuidance: "Formulate direct lookup questions (e.g., 'what is the default configuration or value for <param>').",
   },
   broad_exploration: {

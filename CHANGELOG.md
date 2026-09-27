@@ -6,6 +6,7 @@
 
 - Metadata extraction error retry: `isDocumentMetadataCurrent` now requires an error-free extraction, allowing `qmd update` to automatically re-attempt extraction on documents that previously failed without requiring manual edits.
 - Non-QMD frontmatter tolerance: Markdown documents whose leading frontmatter has formatting quirks (such as unquoted colons in titles) but does not declare `qmd:` are no longer treated as extraction failures or excluded from filtered search.
+- Relative temporal query expansion bypass and conjunctive lexical dilution: Relative temporal queries (e.g. "昨天", "前天", "yesterday") now bypass the BM25 strong-signal expansion skip, ensuring that archival documents containing relative words cannot preempt target date resolution. In addition, lexical expansion prompts now instruct models to keep search terms minimal without appending generic synonyms (such as "日誌", "行程", "活動") that inadvertently eliminate valid documents under QMD's conjunctive (AND) FTS5 matching.
 
 ### Added
 
