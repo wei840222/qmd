@@ -1435,7 +1435,7 @@ describe("Caching", () => {
     const mockJevClient: any = {
       systemOne: vi.fn(async () => ({
         answers: {
-          is_relevant: {
+          cand_0: {
             type: "noul",
             noul: 0.96,
           },

@@ -1,6 +1,7 @@
 import { TypeSafeClient, choice, noul } from "@typesafe-ai/sdk";
 import type {
   RerankDocument,
+  RerankDocumentResult,
   RerankOptions,
   RerankResult,
   SearchIntentGuidance,
@@ -8,6 +9,7 @@ import type {
 import { getFormattedLocalTime } from "./remote-llm.js";
 
 export const DEFAULT_JEV_TIMEOUT_MS = 30000;
+export const DEFAULT_JEV_RERANK_BATCH_SIZE = 40;
 
 export interface JevSystemOneClient {
   systemOne(request: any, options?: any): Promise<any>;
@@ -18,6 +20,7 @@ export interface RemoteJevOptions {
   baseUrl?: string;
   model?: string;
   concurrency?: number;
+  batchSize?: number;
   timeoutMs?: number;
   client?: TypeSafeClient | JevSystemOneClient;
 }
@@ -62,11 +65,13 @@ export interface JevIntentClassification {
 export class RemoteJev {
   readonly model: string;
   readonly concurrency: number;
+  readonly batchSize: number;
   readonly client: TypeSafeClient | JevSystemOneClient;
 
   constructor(options: RemoteJevOptions = {}) {
     this.model = options.model?.trim() || "jev-1.13";
     this.concurrency = options.concurrency ?? 10;
+    this.batchSize = options.batchSize ?? DEFAULT_JEV_RERANK_BATCH_SIZE;
 
     if (options.client) {
       this.client = options.client;
@@ -150,51 +155,77 @@ export class RemoteJev {
       return { results: [], model: `jev:${this.model}` };
     }
 
-    const rerankQuestion = noul(
-      "Does this candidate document answer or address the search query?",
-      {
-        true: "The candidate directly addresses the query's specific question, requirement, or topic, satisfying any time or entity constraints.",
-        false: "The candidate is only on a similar topic, outside the requested time window, or unrelated to the query's specific need.",
-      },
-    );
+    const state: Record<string, string> = { query };
+    const timeZone = typeof options === "object" && options !== null ? (options as any).timeZone : undefined;
+    state.current_time = getFormattedLocalTime(new Date(), timeZone);
+    if (typeof options === "object" && options !== null && (options as any).context) {
+      state.context = (options as any).context;
+    }
 
-    const results = await pMap(
-      documents,
-      async (doc, index) => {
-        const text = typeof doc === "string" ? doc : doc.text;
-        const file = typeof doc === "string" ? doc : doc.file;
-        const candidate = truncateCandidateText(text, 1500);
+    const criteria = {
+      true: "The candidate directly addresses the query's specific question, requirement, or topic, satisfying any time or entity constraints.",
+      false: "The candidate is only on a similar topic, outside the requested time window, or unrelated to the query's specific need.",
+    };
 
-        const state: Record<string, string> = { query, candidate };
-        if (typeof doc !== "string" && doc.title) {
-          state.title = doc.title;
+    const batches: { docs: RerankDocument[]; offset: number }[] = [];
+    for (let offset = 0; offset < documents.length; offset += this.batchSize) {
+      batches.push({ docs: documents.slice(offset, offset + this.batchSize), offset });
+    }
+
+    const batchResults = await pMap(
+      batches,
+      async ({ docs: batchDocs, offset }) => {
+        const questions: Record<string, any> = {};
+
+        for (let i = 0; i < batchDocs.length; i++) {
+          const doc = batchDocs[i]!;
+          const text = typeof doc === "string" ? doc : doc.text;
+          const candidate = truncateCandidateText(text, 1500);
+
+          const instructions: Record<string, any> = {
+            candidate,
+            question: "Does `candidate` directly answer or address the search query in `query`?",
+          };
+          if (typeof doc !== "string" && doc.title) {
+            instructions.title = doc.title;
+          }
+          if (typeof doc !== "string" && doc.file) {
+            instructions.file = doc.file;
+          }
+
+          questions[`cand_${i}`] = noul(instructions, criteria);
         }
-        if (typeof doc !== "string" && doc.file) {
-          state.file = doc.file;
-        }
-        const timeZone = typeof options === "object" && options !== null ? (options as any).timeZone : undefined;
-        state.current_time = getFormattedLocalTime(new Date(), timeZone);
 
         const response = await this.client.systemOne({
           state,
           model: this.model,
-          questions: { is_relevant: rerankQuestion },
+          questions,
         });
 
-        return {
-          file,
-          score: response.answers.is_relevant.noul,
-          index,
-        };
+        const results: RerankDocumentResult[] = [];
+        for (let i = 0; i < batchDocs.length; i++) {
+          const doc = batchDocs[i]!;
+          const file = typeof doc === "string" ? doc : doc.file;
+          const key = `cand_${i}`;
+          const answer = response?.answers?.[key];
+          const score = typeof answer?.noul === "number" ? answer.noul : 0;
+          results.push({
+            file,
+            score,
+            index: offset + i,
+          });
+        }
+        return results;
       },
       this.concurrency,
     );
 
+    const flattened = batchResults.flat();
     // Sort by score descending
-    results.sort((a, b) => b.score - a.score);
+    flattened.sort((a, b) => b.score - a.score);
 
     return {
-      results,
+      results: flattened,
       model: `jev:${this.model}`,
     };
   }

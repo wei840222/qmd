@@ -57,19 +57,20 @@ describe("RemoteJev & Hybrid Integration", () => {
       expect(res2.strategy).toBe("code_search");
     });
 
-    test("rerank computes scores via noul and sorts descending", async () => {
+    test("rerank computes scores via noul and sorts descending in a single batch request", async () => {
       const calls: any[] = [];
       const mockClient: JevSystemOneClient = {
         systemOne: vi.fn(async (req: any) => {
           calls.push(req);
-          const candidate = req.state.candidate;
-          // Return higher score for doc2 than doc1
-          const noulScore = candidate.includes("perfect match") ? 0.95 : 0.42;
           return {
             answers: {
-              is_relevant: {
+              cand_0: {
                 type: "noul",
-                noul: noulScore,
+                noul: 0.42,
+              },
+              cand_1: {
+                type: "noul",
+                noul: 0.95,
               },
             },
           };
@@ -82,7 +83,7 @@ describe("RemoteJev & Hybrid Integration", () => {
         { file: "doc2.md", text: "this is a perfect match for the query" },
       ];
 
-      const result = await jev.rerank("search query", docs);
+      const result = await jev.rerank("search query", docs, { context: "technical documentation" });
       expect(result.model).toBe("jev:jev-1.13");
       expect(result.results.length).toBe(2);
       // doc2 should be ranked first because score is 0.95
@@ -91,11 +92,51 @@ describe("RemoteJev & Hybrid Integration", () => {
       expect(result.results[1]?.file).toBe("doc1.md");
       expect(result.results[1]?.score).toBe(0.42);
 
-      // Verify title, file, and current_time were included in state when present
-      const doc1Call = calls.find(c => c.state.file === "doc1.md" || c.state.title === "Doc 1");
-      expect(doc1Call.state.title).toBe("Doc 1");
-      expect(doc1Call.state.file).toBe("doc1.md");
-      expect(doc1Call.state.current_time).toBeDefined();
+      // Verify single request was made
+      expect(calls.length).toBe(1);
+      const req = calls[0];
+
+      // Verify state has query, current_time, and context
+      expect(req.state.query).toBe("search query");
+      expect(req.state.current_time).toBeDefined();
+      expect(req.state.context).toBe("technical documentation");
+
+      // Verify cand_0 instructions contain structured metadata and question
+      expect(req.questions.cand_0).toBeDefined();
+      expect(req.questions.cand_0.instructions.candidate).toBe("this is somewhat relevant");
+      expect(req.questions.cand_0.instructions.title).toBe("Doc 1");
+      expect(req.questions.cand_0.instructions.file).toBe("doc1.md");
+      expect(req.questions.cand_0.instructions.question).toContain("`candidate`");
+      expect(req.questions.cand_0.instructions.question).toContain("`query`");
+
+      // Verify cand_1 instructions
+      expect(req.questions.cand_1).toBeDefined();
+      expect(req.questions.cand_1.instructions.candidate).toBe("this is a perfect match for the query");
+    });
+
+    test("rerank splits documents into micro-batches when count exceeds batchSize", async () => {
+      const calls: any[] = [];
+      const mockClient: JevSystemOneClient = {
+        systemOne: vi.fn(async (req: any) => {
+          calls.push(req);
+          const answers: Record<string, any> = {};
+          for (const key of Object.keys(req.questions)) {
+            answers[key] = { type: "noul", noul: 0.5 };
+          }
+          return { answers };
+        }),
+      };
+
+      // batchSize 2, 5 documents -> 3 batches
+      const jev = new RemoteJev({ client: mockClient, batchSize: 2 });
+      const docs = Array.from({ length: 5 }, (_, i) => ({ file: `doc${i}.md`, text: `chunk ${i}` }));
+
+      const res = await jev.rerank("query", docs);
+      expect(res.results.length).toBe(5);
+      expect(calls.length).toBe(3);
+      expect(Object.keys(calls[0].questions).length).toBe(2); // cand_0, cand_1
+      expect(Object.keys(calls[1].questions).length).toBe(2); // cand_0, cand_1
+      expect(Object.keys(calls[2].questions).length).toBe(1); // cand_0
     });
 
     test("rerank handles empty documents", async () => {
@@ -117,7 +158,7 @@ describe("RemoteJev & Hybrid Integration", () => {
           if (callCount === 1) throw new Error("Transient network glitch");
           return {
             answers: {
-              is_relevant: { type: "noul", noul: 0.9 },
+              cand_0: { type: "noul", noul: 0.9 },
             },
           };
         }),
@@ -143,20 +184,21 @@ describe("RemoteJev & Hybrid Integration", () => {
         }),
       };
 
-      const jev = new RemoteJev({ client: mockClient, concurrency: 2 });
+      // batchSize 2, concurrency 1, 10 docs -> 5 batches
+      const jev = new RemoteJev({ client: mockClient, batchSize: 2, concurrency: 1 });
       const docs = Array.from({ length: 10 }, (_, i) => ({ file: `doc${i}.md`, text: `text ${i}` }));
 
       await expect(jev.rerank("query", docs)).rejects.toThrow("Batch error");
-      // Only the initial concurrency batch should have run, not all 10
-      expect(processed).toBeLessThan(10);
+      // Only the first batch should have run before aborting
+      expect(processed).toBe(1);
     });
 
     test("safely truncates candidate text without breaking surrogate pairs", async () => {
       let capturedText = "";
       const mockClient: JevSystemOneClient = {
         systemOne: vi.fn(async (req: any) => {
-          capturedText = req.state.candidate;
-          return { answers: { is_relevant: { type: "noul", noul: 0.5 } } };
+          capturedText = req.questions.cand_0.instructions.candidate;
+          return { answers: { cand_0: { type: "noul", noul: 0.5 } } };
         }),
       };
 
@@ -195,7 +237,7 @@ describe("RemoteJev & Hybrid Integration", () => {
           if (jevShouldFail) throw new Error("Jev service unavailable");
           return {
             answers: {
-              is_relevant: { type: "noul", noul: 0.88 },
+              cand_0: { type: "noul", noul: 0.88 },
             },
           };
         }),

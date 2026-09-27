@@ -222,6 +222,8 @@ export type GenerateOptions = {
  */
 export type RerankOptions = {
   model?: string;
+  timeZone?: string;
+  context?: string;
 };
 
 /**
