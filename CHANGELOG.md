@@ -11,7 +11,7 @@
 
 - TypeSafe Jev provider (`src/remote-jev.ts`) supporting System One-based candidate reranking via Noul judgments and query expansion intent classification via Choice and Noul gating. Passes query expansion context to Jev state for contextual intent classification.
 - Refactored `HybridLLM` into `Hybrid` (`src/hybrid.ts`) supporting 3-way provider fallback: `RemoteJev` → `RemoteLLM` → `LlamaCpp`.
-- Added `models.jev_api_key`, `models.jev_model`, and `models.jev_base_url` configuration options with `TYPESAFE_API_KEY`, `TYPESAFE_DEFAULT_MODEL`, and `TYPESAFE_BASE_URL` environment variable fallbacks.
+- Added `models.jev_api_key`, `models.jev_api_model` (with `models.jev_model` alias), and `models.jev_base_url` configuration options with `TYPESAFE_API_KEY`, `TYPESAFE_DEFAULT_MODEL`, and `TYPESAFE_BASE_URL` environment variable fallbacks.
 - Added TypeSafe Jev provider diagnostic check to `qmd doctor`.
 - Detailed metadata extraction error reporting: `qmd status` and `qmd doctor` now list pending/errored document paths with error hints, and `qmd update` outputs specific files and causes when frontmatter extraction errors occur.
 

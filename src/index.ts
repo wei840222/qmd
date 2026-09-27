@@ -498,7 +498,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
 
   const jevApiKey = config?.models?.jev_api_key?.trim() || process.env.TYPESAFE_API_KEY?.trim();
   const jevBaseUrl = config?.models?.jev_base_url?.trim() || process.env.TYPESAFE_BASE_URL?.trim();
-  const jevModel = config?.models?.jev_model?.trim() || process.env.TYPESAFE_DEFAULT_MODEL?.trim() || "jev-1.13";
+  const jevModel = config?.models?.jev_api_model?.trim() || config?.models?.jev_model?.trim() || process.env.TYPESAFE_DEFAULT_MODEL?.trim() || "jev-1.13";
   const remoteJev = jevApiKey
     ? new RemoteJev({
         apiKey: jevApiKey,
