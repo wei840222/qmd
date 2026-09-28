@@ -5,7 +5,11 @@ import {
   embedQueriesForStore,
   resetInflightState,
   memoryLlmCache,
-  LruCache,
+  memoryEmbeddingCache,
+  LRUCache,
+  DEFAULT_MEMORY_CACHE_TTL_MS,
+  DEFAULT_MEMORY_LLM_CACHE_MAX_BYTES,
+  DEFAULT_MEMORY_EMBED_CACHE_MAX_BYTES,
 } from "../src/store.js";
 import type { LLM, Queryable } from "../src/llm.js";
 import type { EmbeddingProvider, EmbeddingVector } from "../src/embedding/provider.js";
@@ -29,9 +33,9 @@ describe("In-flight Singleflight Deduplication & In-Memory LRU Cache", () => {
     resetInflightState();
   });
 
-  describe("LruCache basic operations", () => {
-    test("evicts least recently used items when maxSize is exceeded", () => {
-      const lru = new LruCache<string, number>(3);
+  describe("LRUCache operations, TTL, and size limits", () => {
+    test("evicts least recently used items when max is exceeded", () => {
+      const lru = new LRUCache<string, number>({ max: 3 });
       lru.set("a", 1);
       lru.set("b", 2);
       lru.set("c", 3);
@@ -47,6 +51,53 @@ describe("In-flight Singleflight Deduplication & In-Memory LRU Cache", () => {
       expect(lru.has("a")).toBe(true);
       expect(lru.has("c")).toBe(true);
       expect(lru.has("d")).toBe(true);
+    });
+
+    test("evicts entries exceeding maxSize based on sizeCalculation", () => {
+      const lru = new LRUCache<string, string>({
+        maxSize: 10,
+        sizeCalculation: (val) => val.length,
+      });
+
+      lru.set("k1", "12345"); // size 5
+      lru.set("k2", "12345"); // size 5, total 10
+      expect(lru.size).toBe(2);
+      expect(lru.calculatedSize).toBe(10);
+
+      // Adding k3 (size 5) causes k1 to be evicted
+      lru.set("k3", "12345");
+      expect(lru.has("k1")).toBe(false);
+      expect(lru.has("k2")).toBe(true);
+      expect(lru.has("k3")).toBe(true);
+      expect(lru.calculatedSize).toBe(10);
+    });
+
+    test("expires entries after TTL", async () => {
+      const lru = new LRUCache<string, string>({
+        max: 10,
+        ttl: 40,
+      });
+
+      lru.set("temp", "value");
+      expect(lru.get("temp")).toBe("value");
+
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(lru.get("temp")).toBeUndefined();
+      expect(lru.has("temp")).toBe(false);
+    });
+
+    test("memoryLlmCache and memoryEmbeddingCache have configured size limits and TTL", () => {
+      expect(DEFAULT_MEMORY_CACHE_TTL_MS).toBe(2 * 60 * 60 * 1000);
+      expect(DEFAULT_MEMORY_LLM_CACHE_MAX_BYTES).toBe(50 * 1024 * 1024);
+      expect(DEFAULT_MEMORY_EMBED_CACHE_MAX_BYTES).toBe(64 * 1024 * 1024);
+
+      memoryLlmCache.set("test-key", "test-val");
+      expect(memoryLlmCache.get("test-key")).toBe("test-val");
+      expect(memoryLlmCache.calculatedSize).toBeGreaterThan(0);
+
+      memoryEmbeddingCache.set("test-emb", [0.1, 0.2, 0.3]);
+      expect(memoryEmbeddingCache.get("test-emb")).toEqual([0.1, 0.2, 0.3]);
+      expect(memoryEmbeddingCache.calculatedSize).toBe(24); // 3 * 8 bytes
     });
   });
 

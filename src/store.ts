@@ -34,6 +34,7 @@ import {
 import picomatch from "picomatch";
 import { createHash, randomUUID } from "crypto";
 import { readFileSync, realpathSync, statSync, mkdirSync } from "node:fs";
+import { Buffer } from "node:buffer";
 // Note: node:path resolve is not imported — we export our own cross-platform resolve()
 import fastGlob from "fast-glob";
 import { qmdHomedir } from "./paths.js";
@@ -75,53 +76,34 @@ import type {
 } from "./collections.js";
 import type { IndexDiagnostics } from "./diagnostics.js";
 
-export class LruCache<K, V> {
-  private readonly map = new Map<K, V>();
-  constructor(public readonly maxSize: number = 1000) {}
+import { LRUCache } from "lru-cache";
+export { LRUCache, LRUCache as LruCache } from "lru-cache";
 
-  get(key: K): V | undefined {
-    const val = this.map.get(key);
-    if (val !== undefined) {
-      this.map.delete(key);
-      this.map.set(key, val);
-    }
-    return val;
-  }
-
-  set(key: K, value: V): void {
-    if (this.map.has(key)) {
-      this.map.delete(key);
-    } else if (this.map.size >= this.maxSize) {
-      const oldestKey = this.map.keys().next().value;
-      if (oldestKey !== undefined) {
-        this.map.delete(oldestKey);
-      }
-    }
-    this.map.set(key, value);
-  }
-
-  has(key: K): boolean {
-    return this.map.has(key);
-  }
-
-  delete(key: K): boolean {
-    return this.map.delete(key);
-  }
-
-  clear(): void {
-    this.map.clear();
-  }
-
-  get size(): number {
-    return this.map.size;
-  }
-}
+export const DEFAULT_MEMORY_CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+export const DEFAULT_MEMORY_LLM_CACHE_MAX_ITEMS = 1000;
+export const DEFAULT_MEMORY_LLM_CACHE_MAX_BYTES = 50 * 1024 * 1024; // 50 MB
+export const DEFAULT_MEMORY_EMBED_CACHE_MAX_ITEMS = 2000;
+export const DEFAULT_MEMORY_EMBED_CACHE_MAX_BYTES = 64 * 1024 * 1024; // 64 MB
 
 const readOnlyDatabases = new WeakSet<Database>();
 const inflightEmbeddings = new Map<string, Promise<{ model: string; embeddings: number[][] }>>();
 const inflightExpansions = new Map<string, Promise<ExpandedQuery[]>>();
-export const memoryLlmCache = new LruCache<string, string>(1000);
-export const memoryEmbeddingCache = new LruCache<string, number[]>(1000);
+
+export const memoryLlmCache = new LRUCache<string, string>({
+  max: DEFAULT_MEMORY_LLM_CACHE_MAX_ITEMS,
+  maxSize: DEFAULT_MEMORY_LLM_CACHE_MAX_BYTES,
+  sizeCalculation: (value) => Math.max(1, Buffer.byteLength(value, "utf8")),
+  ttl: DEFAULT_MEMORY_CACHE_TTL_MS,
+  updateAgeOnGet: true,
+});
+
+export const memoryEmbeddingCache = new LRUCache<string, number[]>({
+  max: DEFAULT_MEMORY_EMBED_CACHE_MAX_ITEMS,
+  maxSize: DEFAULT_MEMORY_EMBED_CACHE_MAX_BYTES,
+  sizeCalculation: (vector) => Math.max(1, vector.length * 8),
+  ttl: DEFAULT_MEMORY_CACHE_TTL_MS,
+  updateAgeOnGet: true,
+});
 
 export function resetInflightState(): void {
   inflightEmbeddings.clear();

@@ -68,6 +68,7 @@
     "@node-rs/jieba": "2.0.3",
     "@typesafe-ai/sdk": "^0.6.0",
     "fast-glob": "3.3.3",
+    "lru-cache": "^11.5.3",
     "node-llama-cpp": "3.20.0",
     "picomatch": "4.0.5",
     "sqlite-vec": "0.1.9",
