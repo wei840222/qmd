@@ -75,7 +75,60 @@ import type {
 } from "./collections.js";
 import type { IndexDiagnostics } from "./diagnostics.js";
 
+export class LruCache<K, V> {
+  private readonly map = new Map<K, V>();
+  constructor(public readonly maxSize: number = 1000) {}
+
+  get(key: K): V | undefined {
+    const val = this.map.get(key);
+    if (val !== undefined) {
+      this.map.delete(key);
+      this.map.set(key, val);
+    }
+    return val;
+  }
+
+  set(key: K, value: V): void {
+    if (this.map.has(key)) {
+      this.map.delete(key);
+    } else if (this.map.size >= this.maxSize) {
+      const oldestKey = this.map.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.map.delete(oldestKey);
+      }
+    }
+    this.map.set(key, value);
+  }
+
+  has(key: K): boolean {
+    return this.map.has(key);
+  }
+
+  delete(key: K): boolean {
+    return this.map.delete(key);
+  }
+
+  clear(): void {
+    this.map.clear();
+  }
+
+  get size(): number {
+    return this.map.size;
+  }
+}
+
 const readOnlyDatabases = new WeakSet<Database>();
+const inflightEmbeddings = new Map<string, Promise<{ model: string; embeddings: number[][] }>>();
+const inflightExpansions = new Map<string, Promise<ExpandedQuery[]>>();
+export const memoryLlmCache = new LruCache<string, string>(1000);
+export const memoryEmbeddingCache = new LruCache<string, number[]>(1000);
+
+export function resetInflightState(): void {
+  inflightEmbeddings.clear();
+  inflightExpansions.clear();
+  memoryLlmCache.clear();
+  memoryEmbeddingCache.clear();
+}
 
 import { METADATA_EXTRACTION_VERSION, type DocumentMetadata } from "./metadata.js";
 import { compileMetadataFilter, type MetadataFilter } from "./metadata-filter.js";
@@ -251,10 +304,15 @@ function authorizeEmbeddingProviderRequest(
   authorize(purpose, context);
 }
 
-async function embedQueriesForStore(
+export async function embedQueriesForStore(
   store: Store,
   queries: string[],
 ): Promise<{ model: string; embeddings: number[][] }> {
+  if (queries.length === 0) {
+    const model = store.embeddingProvider?.model ?? getLlm(store).embedModelName;
+    return { model, embeddings: [] };
+  }
+
   const provider = store.embeddingProvider;
   if (provider) {
     const identity = resolveReadyProviderEmbeddingIdentity(store.db, provider);
@@ -270,56 +328,163 @@ async function embedQueriesForStore(
       "query-embedding",
       { identity },
     );
-    const formatted = queries.map(query => provider.formatQuery(query));
-    try {
-      const vectors = await provider.embedBatch(formatted, {
-        purpose: "query-embedding",
-        kind: "query",
-        identityFingerprint: identity.fingerprint,
-      });
-      return {
-        model: provider.model,
-        embeddings: vectors.map(vector => vector.vector),
-      };
-    } catch (batchError) {
-      if (formatted.length <= 1) throw batchError;
-      const embeddings: number[][] = [];
-      for (const query of formatted) {
-        const vector = await provider.embed(query, {
-          purpose: "query-embedding",
-          kind: "query",
-          identityFingerprint: identity.fingerprint,
-        });
-        embeddings.push(vector.vector);
+
+    const modelId = `provider:${identity.fingerprint}`;
+    const cachedVectors: (number[] | undefined)[] = queries.map(q =>
+      memoryEmbeddingCache.get(`${modelId}:${q}`)
+    );
+
+    const missingQueries: string[] = [];
+    for (let i = 0; i < queries.length; i++) {
+      const q = queries[i]!;
+      if (cachedVectors[i] === undefined && !missingQueries.includes(q)) {
+        missingQueries.push(q);
       }
+    }
+
+    if (missingQueries.length === 0) {
       return {
         model: provider.model,
-        embeddings,
+        embeddings: cachedVectors.map(vec => [...vec!]),
       };
     }
+
+    const inflightKey = `${modelId}:${JSON.stringify(missingQueries)}`;
+    let inflight = inflightEmbeddings.get(inflightKey);
+    if (!inflight) {
+      inflight = (async () => {
+        try {
+          const formatted = missingQueries.map(query => provider.formatQuery(query));
+          try {
+            const vectors = await provider.embedBatch(formatted, {
+              purpose: "query-embedding",
+              kind: "query",
+              identityFingerprint: identity.fingerprint,
+            });
+            const resultEmbeddings = vectors.map(vector => vector.vector);
+            for (let i = 0; i < missingQueries.length; i++) {
+              memoryEmbeddingCache.set(`${modelId}:${missingQueries[i]!}`, resultEmbeddings[i]!);
+            }
+            return {
+              model: provider.model,
+              embeddings: resultEmbeddings,
+            };
+          } catch (batchError) {
+            if (formatted.length <= 1) throw batchError;
+            const embeddings: number[][] = [];
+            for (let i = 0; i < formatted.length; i++) {
+              const vector = await provider.embed(formatted[i]!, {
+                purpose: "query-embedding",
+                kind: "query",
+                identityFingerprint: identity.fingerprint,
+              });
+              embeddings.push(vector.vector);
+              memoryEmbeddingCache.set(`${modelId}:${missingQueries[i]!}`, vector.vector);
+            }
+            return {
+              model: provider.model,
+              embeddings,
+            };
+          }
+        } finally {
+          inflightEmbeddings.delete(inflightKey);
+        }
+      })();
+      inflightEmbeddings.set(inflightKey, inflight);
+    }
+
+    const { embeddings: fetchedEmbeddings } = await inflight;
+    const fetchedMap = new Map<string, number[]>();
+    for (let i = 0; i < missingQueries.length; i++) {
+      fetchedMap.set(missingQueries[i]!, fetchedEmbeddings[i]!);
+    }
+
+    const finalEmbeddings = queries.map((q, idx) => {
+      const vec = cachedVectors[idx] ?? fetchedMap.get(q) ?? memoryEmbeddingCache.get(`${modelId}:${q}`);
+      return [...vec!];
+    });
+
+    return {
+      model: provider.model,
+      embeddings: finalEmbeddings,
+    };
   }
 
   const llm = getLlm(store);
   const model = llm.embedModelName;
-  const formatted = queries.map(query => formatQueryForEmbedding(query, model));
-  try {
-    const results = await llm.embedBatch(formatted);
-    return {
-      model,
-      embeddings: results.map(result => result?.embedding ?? []),
-    };
-  } catch (batchError) {
-    if (formatted.length <= 1) throw batchError;
-    const embeddings: number[][] = [];
-    for (const query of formatted) {
-      const result = await llm.embed(query);
-      embeddings.push(result?.embedding ?? []);
+  const modelId = `llm:${model}`;
+
+  const cachedVectors: (number[] | undefined)[] = queries.map(q =>
+    memoryEmbeddingCache.get(`${modelId}:${q}`)
+  );
+
+  const missingQueries: string[] = [];
+  for (let i = 0; i < queries.length; i++) {
+    const q = queries[i]!;
+    if (cachedVectors[i] === undefined && !missingQueries.includes(q)) {
+      missingQueries.push(q);
     }
+  }
+
+  if (missingQueries.length === 0) {
     return {
       model,
-      embeddings,
+      embeddings: cachedVectors.map(vec => [...vec!]),
     };
   }
+
+  const inflightKey = `${modelId}:${JSON.stringify(missingQueries)}`;
+  let inflight = inflightEmbeddings.get(inflightKey);
+  if (!inflight) {
+    inflight = (async () => {
+      try {
+        const formatted = missingQueries.map(query => formatQueryForEmbedding(query, model));
+        try {
+          const results = await llm.embedBatch(formatted);
+          const resultEmbeddings = results.map(result => result?.embedding ?? []);
+          for (let i = 0; i < missingQueries.length; i++) {
+            memoryEmbeddingCache.set(`${modelId}:${missingQueries[i]!}`, resultEmbeddings[i]!);
+          }
+          return {
+            model,
+            embeddings: resultEmbeddings,
+          };
+        } catch (batchError) {
+          if (formatted.length <= 1) throw batchError;
+          const embeddings: number[][] = [];
+          for (let i = 0; i < formatted.length; i++) {
+            const result = await llm.embed(missingQueries[i]!);
+            const vec = result?.embedding ?? [];
+            embeddings.push(vec);
+            memoryEmbeddingCache.set(`${modelId}:${missingQueries[i]!}`, vec);
+          }
+          return {
+            model,
+            embeddings,
+          };
+        }
+      } finally {
+        inflightEmbeddings.delete(inflightKey);
+      }
+    })();
+    inflightEmbeddings.set(inflightKey, inflight);
+  }
+
+  const { embeddings: fetchedEmbeddings } = await inflight;
+  const fetchedMap = new Map<string, number[]>();
+  for (let i = 0; i < missingQueries.length; i++) {
+    fetchedMap.set(missingQueries[i]!, fetchedEmbeddings[i]!);
+  }
+
+  const finalEmbeddings = queries.map((q, idx) => {
+    const vec = cachedVectors[idx] ?? fetchedMap.get(q) ?? memoryEmbeddingCache.get(`${modelId}:${q}`);
+    return [...vec!];
+  });
+
+  return {
+    model,
+    embeddings: finalEmbeddings,
+  };
 }
 
 function createBorrowedEmbeddingSession(
@@ -4067,11 +4232,23 @@ export function getCacheKey(url: string, body: CacheKeyBody): string {
 }
 
 export function getCachedResult(db: Database, cacheKey: string): string | null {
-  const row = db.prepare(`SELECT result FROM llm_cache WHERE hash = ?`).get(cacheKey) as { result: string } | null;
-  return row?.result ?? null;
+  const inMemory = memoryLlmCache.get(cacheKey);
+  if (inMemory !== undefined) return inMemory;
+
+  try {
+    const row = db.prepare(`SELECT result FROM llm_cache WHERE hash = ?`).get(cacheKey) as { result: string } | null;
+    if (row?.result) {
+      memoryLlmCache.set(cacheKey, row.result);
+      return row.result;
+    }
+  } catch {
+    // llm_cache table may not exist yet in uninitialized/read-only in-memory databases
+  }
+  return null;
 }
 
 export function setCachedResult(db: Database, cacheKey: string, result: string): void {
+  memoryLlmCache.set(cacheKey, result);
   if (readOnlyDatabases.has(db)) return;
   const now = new Date().toISOString();
   db.prepare(`INSERT OR REPLACE INTO llm_cache (hash, result, created_at) VALUES (?, ?, ?)`).run(cacheKey, result, now);
@@ -4081,7 +4258,13 @@ export function setCachedResult(db: Database, cacheKey: string, result: string):
 }
 
 export function clearCache(db: Database): void {
-  db.exec(`DELETE FROM llm_cache`);
+  if (!readOnlyDatabases.has(db)) {
+    db.exec(`DELETE FROM llm_cache`);
+  }
+  inflightExpansions.clear();
+  inflightEmbeddings.clear();
+  memoryLlmCache.clear();
+  memoryEmbeddingCache.clear();
 }
 
 // =============================================================================
@@ -4093,6 +4276,8 @@ export function clearCache(db: Database): void {
  * Returns the number of cached responses deleted.
  */
 export function deleteLLMCache(db: Database): number {
+  memoryLlmCache.clear();
+  if (readOnlyDatabases.has(db)) return 0;
   const result = db.prepare(`DELETE FROM llm_cache`).run();
   return Number(result.changes);
 }
@@ -6374,19 +6559,37 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
     }
   }
 
-  const llm = llmOverride ?? getDefaultLlamaCpp();
-  // Note: LlamaCpp uses hardcoded model, model parameter is ignored
-  const results = await llm.expandQuery(query, {
-    context: expansionContext,
-    includeLexical,
-    includeHyde,
-  });
+  let inflight = inflightExpansions.get(cacheKey);
+  if (!inflight) {
+    inflight = (async () => {
+      try {
+        const llm = llmOverride ?? getDefaultLlamaCpp();
+        // Note: LlamaCpp uses hardcoded model, model parameter is ignored
+        const results = await llm.expandQuery(query, {
+          context: expansionContext,
+          includeLexical,
+          includeHyde,
+        });
 
-  // Map Queryable[] → ExpandedQuery[] (same shape, decoupled from llm.ts internals).
-  // Filter out entries that duplicate the original query text.
-  const expanded: ExpandedQuery[] = results
-    .filter(r => r.text !== query)
-    .map(r => ({ type: r.type, query: r.text }));
+        // Map Queryable[] → ExpandedQuery[] (same shape, decoupled from llm.ts internals).
+        // Filter out entries that duplicate the original query text.
+        const expanded: ExpandedQuery[] = results
+          .filter(r => r.text !== query)
+          .map(r => ({ type: r.type, query: r.text }));
+
+        if (expanded.length > 0) {
+          setCachedResult(db, cacheKey, JSON.stringify(expanded));
+        }
+
+        return expanded;
+      } finally {
+        inflightExpansions.delete(cacheKey);
+      }
+    })();
+    inflightExpansions.set(cacheKey, inflight);
+  }
+
+  const expanded = await inflight;
 
   if (options?.requireResult && expanded.length === 0) {
     throw new QueryExpansionNoResultError();
@@ -6396,7 +6599,7 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
     setCachedResult(db, cacheKey, JSON.stringify(expanded));
   }
 
-  return expanded;
+  return expanded.map(e => ({ ...e }));
 }
 
 /**
@@ -6418,7 +6621,11 @@ export function deleteExpansionCacheEntry(
     ...(options?.includeHyde === false && { noHyde: true }),
     ...(options?.includeLexical === false && { noLex: true }),
   });
-  db.prepare(`DELETE FROM llm_cache WHERE hash = ?`).run(cacheKey);
+  inflightExpansions.delete(cacheKey);
+  memoryLlmCache.delete(cacheKey);
+  if (!readOnlyDatabases.has(db)) {
+    db.prepare(`DELETE FROM llm_cache WHERE hash = ?`).run(cacheKey);
+  }
 }
 
 // =============================================================================
