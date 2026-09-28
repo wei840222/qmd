@@ -383,7 +383,10 @@ export async function embedQueriesForStore(
 
     const finalEmbeddings = queries.map((q, idx) => {
       const vec = cachedVectors[idx] ?? fetchedMap.get(q) ?? memoryEmbeddingCache.get(`${modelId}:${q}`);
-      return [...vec!];
+      if (!vec) {
+        throw new Error(`Embedding missing for query "${q}"`);
+      }
+      return [...vec];
     });
 
     return {
@@ -435,7 +438,7 @@ export async function embedQueriesForStore(
           if (formatted.length <= 1) throw batchError;
           const embeddings: number[][] = [];
           for (let i = 0; i < formatted.length; i++) {
-            const result = await llm.embed(missingQueries[i]!);
+            const result = await llm.embed(formatted[i]!);
             const vec = result?.embedding ?? [];
             embeddings.push(vec);
             memoryEmbeddingCache.set(`${modelId}:${missingQueries[i]!}`, vec);
@@ -460,7 +463,10 @@ export async function embedQueriesForStore(
 
   const finalEmbeddings = queries.map((q, idx) => {
     const vec = cachedVectors[idx] ?? fetchedMap.get(q) ?? memoryEmbeddingCache.get(`${modelId}:${q}`);
-    return [...vec!];
+    if (!vec) {
+      throw new Error(`Embedding missing for query "${q}"`);
+    }
+    return [...vec];
   });
 
   return {
@@ -6575,10 +6581,6 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
 
   if (options?.requireResult && expanded.length === 0) {
     throw new QueryExpansionNoResultError();
-  }
-
-  if (expanded.length > 0) {
-    setCachedResult(db, cacheKey, JSON.stringify(expanded));
   }
 
   return expanded.map(e => ({ ...e }));

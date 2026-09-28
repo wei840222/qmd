@@ -194,6 +194,35 @@ describe("In-flight Singleflight Deduplication & In-Memory LRU Cache", () => {
       expect(retryResult).toEqual([{ type: "vec", query: "recovered" }]);
       expect(attempt).toBe(2);
     });
+
+    test("writes to SQLite llm_cache without duplicate writes or lock contention under concurrency", async () => {
+      const store = createStore(":memory:");
+      let llmCallCount = 0;
+
+      const mockLlm = createMockLlm({
+        expandQuery: vi.fn(async (q: string): Promise<Queryable[]> => {
+          llmCallCount++;
+          await new Promise(resolve => setTimeout(resolve, 30));
+          return [{ type: "lex", text: `${q} test` }];
+        }),
+      });
+
+      // Launch 5 concurrent calls on writable store
+      const results = await Promise.all([
+        expandQuery("concurrency query", "test-model", store.db, undefined, mockLlm),
+        expandQuery("concurrency query", "test-model", store.db, undefined, mockLlm),
+        expandQuery("concurrency query", "test-model", store.db, undefined, mockLlm),
+        expandQuery("concurrency query", "test-model", store.db, undefined, mockLlm),
+        expandQuery("concurrency query", "test-model", store.db, undefined, mockLlm),
+      ]);
+
+      expect(results).toHaveLength(5);
+      expect(llmCallCount).toBe(1);
+
+      // Verify the result is cached in SQLite table and written only once
+      const cached = store.db.prepare("SELECT count(*) as count FROM llm_cache").get() as { count: number };
+      expect(cached.count).toBe(1);
+    });
   });
 
   describe("embedQueriesForStore singleflight & in-memory caching", () => {
@@ -304,6 +333,38 @@ describe("In-flight Singleflight Deduplication & In-Memory LRU Cache", () => {
       const res4 = await embedQueriesForStore(store, queries);
       expect(res4.embeddings).toEqual(res1.embeddings);
       expect(llmBatchCallCount).toBe(1);
+    });
+
+    test("falls back to sequential embed() with formatted query when embedBatch fails", async () => {
+      const store = createStore(":memory:");
+      const embeddedCalls: string[] = [];
+
+      const mockLlama = {
+        embedModelName: "local-embedding-model",
+        embedBatch: vi.fn(async () => {
+          throw new Error("Batch embed failed, please fall back");
+        }),
+        embed: vi.fn(async (text: string) => {
+          embeddedCalls.push(text);
+          return { embedding: [0.9, 0.8] };
+        }),
+      };
+
+      (store as { localLlm?: typeof mockLlama }).localLlm = mockLlama;
+
+      const queries = ["query A", "query B"];
+      const res = await embedQueriesForStore(store, queries);
+
+      expect(mockLlama.embedBatch).toHaveBeenCalledTimes(1);
+      expect(mockLlama.embed).toHaveBeenCalledTimes(2);
+      // Ensure formatted query was passed
+      expect(embeddedCalls).toEqual([
+        "task: search result | query: query A",
+        "task: search result | query: query B",
+      ]);
+      expect(res.embeddings).toHaveLength(2);
+      expect(res.embeddings[0]).toEqual([0.9, 0.8]);
+      expect(res.embeddings[1]).toEqual([0.9, 0.8]);
     });
   });
 });
