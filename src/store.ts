@@ -86,7 +86,7 @@ export const DEFAULT_MEMORY_EMBED_CACHE_MAX_ITEMS = 2000;
 export const DEFAULT_MEMORY_EMBED_CACHE_MAX_BYTES = 64 * 1024 * 1024; // 64 MB
 
 const readOnlyDatabases = new WeakSet<Database>();
-const inflightEmbeddings = new Map<string, Promise<{ model: string; embeddings: number[][] }>>();
+const inflightEmbeddings = new Map<string, Promise<number[]>>();
 const inflightExpansions = new Map<string, Promise<ExpandedQuery[]>>();
 
 export const memoryLlmCache = new LRUCache<string, string>({
@@ -286,6 +286,70 @@ function authorizeEmbeddingProviderRequest(
   authorize(purpose, context);
 }
 
+async function embedQueriesWithSingleflight(
+  modelId: string,
+  queries: string[],
+  fetchBatch: (missingQueries: string[]) => Promise<number[][]>
+): Promise<number[][]> {
+  const missingQueries = Array.from(
+    new Set(
+      queries.filter(
+        q =>
+          memoryEmbeddingCache.get(`${modelId}:${q}`) === undefined &&
+          !inflightEmbeddings.has(`${modelId}:${q}`)
+      )
+    )
+  );
+
+  if (missingQueries.length > 0) {
+    const resolvers = new Map<string, { resolve: (vec: number[]) => void; reject: (err: unknown) => void }>();
+    for (const q of missingQueries) {
+      const inflightKey = `${modelId}:${q}`;
+      const promise = new Promise<number[]>((resolve, reject) => {
+        resolvers.set(inflightKey, { resolve, reject });
+      });
+      inflightEmbeddings.set(inflightKey, promise);
+    }
+
+    (async () => {
+      try {
+        const resultEmbeddings = await fetchBatch(missingQueries);
+        for (let i = 0; i < missingQueries.length; i++) {
+          const q = missingQueries[i]!;
+          const key = `${modelId}:${q}`;
+          const vec = resultEmbeddings[i];
+          if (!vec) {
+            throw new Error(`Embedding missing for query "${q}"`);
+          }
+          memoryEmbeddingCache.set(key, vec);
+          resolvers.get(key)?.resolve(vec);
+        }
+      } catch (err) {
+        for (const q of missingQueries) {
+          resolvers.get(`${modelId}:${q}`)?.reject(err);
+        }
+      } finally {
+        for (const q of missingQueries) {
+          inflightEmbeddings.delete(`${modelId}:${q}`);
+        }
+      }
+    })();
+  }
+
+  return Promise.all(
+    queries.map(async q => {
+      const cached = memoryEmbeddingCache.get(`${modelId}:${q}`);
+      if (cached) return [...cached];
+      const inflight = inflightEmbeddings.get(`${modelId}:${q}`);
+      if (inflight) {
+        const vec = await inflight;
+        return [...vec];
+      }
+      throw new Error(`Embedding missing for query "${q}"`);
+    })
+  );
+}
+
 export async function embedQueriesForStore(
   store: Store,
   queries: string[],
@@ -312,86 +376,33 @@ export async function embedQueriesForStore(
     );
 
     const modelId = `provider:${identity.fingerprint}`;
-    const cachedVectors: (number[] | undefined)[] = queries.map(q =>
-      memoryEmbeddingCache.get(`${modelId}:${q}`)
-    );
-
-    const missingQueries: string[] = [];
-    for (let i = 0; i < queries.length; i++) {
-      const q = queries[i]!;
-      if (cachedVectors[i] === undefined && !missingQueries.includes(q)) {
-        missingQueries.push(q);
-      }
-    }
-
-    if (missingQueries.length === 0) {
-      return {
-        model: provider.model,
-        embeddings: cachedVectors.map(vec => [...vec!]),
-      };
-    }
-
-    const inflightKey = `${modelId}:${JSON.stringify(missingQueries)}`;
-    let inflight = inflightEmbeddings.get(inflightKey);
-    if (!inflight) {
-      inflight = (async () => {
-        try {
-          const formatted = missingQueries.map(query => provider.formatQuery(query));
-          try {
-            const vectors = await provider.embedBatch(formatted, {
-              purpose: "query-embedding",
-              kind: "query",
-              identityFingerprint: identity.fingerprint,
-            });
-            const resultEmbeddings = vectors.map(vector => vector.vector);
-            for (let i = 0; i < missingQueries.length; i++) {
-              memoryEmbeddingCache.set(`${modelId}:${missingQueries[i]!}`, resultEmbeddings[i]!);
-            }
-            return {
-              model: provider.model,
-              embeddings: resultEmbeddings,
-            };
-          } catch (batchError) {
-            if (formatted.length <= 1) throw batchError;
-            const embeddings: number[][] = [];
-            for (let i = 0; i < formatted.length; i++) {
-              const vector = await provider.embed(formatted[i]!, {
-                purpose: "query-embedding",
-                kind: "query",
-                identityFingerprint: identity.fingerprint,
-              });
-              embeddings.push(vector.vector);
-              memoryEmbeddingCache.set(`${modelId}:${missingQueries[i]!}`, vector.vector);
-            }
-            return {
-              model: provider.model,
-              embeddings,
-            };
-          }
-        } finally {
-          inflightEmbeddings.delete(inflightKey);
+    const embeddings = await embedQueriesWithSingleflight(modelId, queries, async (missing) => {
+      const formatted = missing.map(query => provider.formatQuery(query));
+      try {
+        const vectors = await provider.embedBatch(formatted, {
+          purpose: "query-embedding",
+          kind: "query",
+          identityFingerprint: identity.fingerprint,
+        });
+        return vectors.map(vector => vector.vector);
+      } catch (batchError) {
+        if (formatted.length <= 1) throw batchError;
+        const fallbackVectors: number[][] = [];
+        for (let i = 0; i < formatted.length; i++) {
+          const vector = await provider.embed(formatted[i]!, {
+            purpose: "query-embedding",
+            kind: "query",
+            identityFingerprint: identity.fingerprint,
+          });
+          fallbackVectors.push(vector.vector);
         }
-      })();
-      inflightEmbeddings.set(inflightKey, inflight);
-    }
-
-    const { embeddings: fetchedEmbeddings } = await inflight;
-    const fetchedMap = new Map<string, number[]>();
-    for (let i = 0; i < missingQueries.length; i++) {
-      fetchedMap.set(missingQueries[i]!, fetchedEmbeddings[i]!);
-    }
-
-    const finalEmbeddings = queries.map((q, idx) => {
-      const vec = cachedVectors[idx] ?? fetchedMap.get(q) ?? memoryEmbeddingCache.get(`${modelId}:${q}`);
-      if (!vec) {
-        throw new Error(`Embedding missing for query "${q}"`);
+        return fallbackVectors;
       }
-      return [...vec];
     });
 
     return {
       model: provider.model,
-      embeddings: finalEmbeddings,
+      embeddings,
     };
   }
 
@@ -399,79 +410,25 @@ export async function embedQueriesForStore(
   const model = llm.embedModelName;
   const modelId = `llm:${model}`;
 
-  const cachedVectors: (number[] | undefined)[] = queries.map(q =>
-    memoryEmbeddingCache.get(`${modelId}:${q}`)
-  );
-
-  const missingQueries: string[] = [];
-  for (let i = 0; i < queries.length; i++) {
-    const q = queries[i]!;
-    if (cachedVectors[i] === undefined && !missingQueries.includes(q)) {
-      missingQueries.push(q);
-    }
-  }
-
-  if (missingQueries.length === 0) {
-    return {
-      model,
-      embeddings: cachedVectors.map(vec => [...vec!]),
-    };
-  }
-
-  const inflightKey = `${modelId}:${JSON.stringify(missingQueries)}`;
-  let inflight = inflightEmbeddings.get(inflightKey);
-  if (!inflight) {
-    inflight = (async () => {
-      try {
-        const formatted = missingQueries.map(query => formatQueryForEmbedding(query, model));
-        try {
-          const results = await llm.embedBatch(formatted);
-          const resultEmbeddings = results.map(result => result?.embedding ?? []);
-          for (let i = 0; i < missingQueries.length; i++) {
-            memoryEmbeddingCache.set(`${modelId}:${missingQueries[i]!}`, resultEmbeddings[i]!);
-          }
-          return {
-            model,
-            embeddings: resultEmbeddings,
-          };
-        } catch (batchError) {
-          if (formatted.length <= 1) throw batchError;
-          const embeddings: number[][] = [];
-          for (let i = 0; i < formatted.length; i++) {
-            const result = await llm.embed(formatted[i]!);
-            const vec = result?.embedding ?? [];
-            embeddings.push(vec);
-            memoryEmbeddingCache.set(`${modelId}:${missingQueries[i]!}`, vec);
-          }
-          return {
-            model,
-            embeddings,
-          };
-        }
-      } finally {
-        inflightEmbeddings.delete(inflightKey);
+  const embeddings = await embedQueriesWithSingleflight(modelId, queries, async (missing) => {
+    const formatted = missing.map(query => formatQueryForEmbedding(query, model));
+    try {
+      const results = await llm.embedBatch(formatted);
+      return results.map(result => result?.embedding ?? []);
+    } catch (batchError) {
+      if (formatted.length <= 1) throw batchError;
+      const fallbackVectors: number[][] = [];
+      for (let i = 0; i < formatted.length; i++) {
+        const result = await llm.embed(formatted[i]!);
+        fallbackVectors.push(result?.embedding ?? []);
       }
-    })();
-    inflightEmbeddings.set(inflightKey, inflight);
-  }
-
-  const { embeddings: fetchedEmbeddings } = await inflight;
-  const fetchedMap = new Map<string, number[]>();
-  for (let i = 0; i < missingQueries.length; i++) {
-    fetchedMap.set(missingQueries[i]!, fetchedEmbeddings[i]!);
-  }
-
-  const finalEmbeddings = queries.map((q, idx) => {
-    const vec = cachedVectors[idx] ?? fetchedMap.get(q) ?? memoryEmbeddingCache.get(`${modelId}:${q}`);
-    if (!vec) {
-      throw new Error(`Embedding missing for query "${q}"`);
+      return fallbackVectors;
     }
-    return [...vec];
   });
 
   return {
     model,
-    embeddings: finalEmbeddings,
+    embeddings,
   };
 }
 
@@ -4245,6 +4202,15 @@ export function setCachedResult(db: Database, cacheKey: string, result: string):
   }
 }
 
+/**
+ * Clear cached LLM API responses and query embeddings.
+ *
+ * Note: memoryLlmCache, memoryEmbeddingCache, and in-flight deduplication maps
+ * are process-level singletons shared across collections/stores to maximize
+ * deduplication when different collections are queried concurrently with the
+ * same input. Calling clearCache() here flushes this process-wide in-memory
+ * cache as well.
+ */
 export function clearCache(db: Database): void {
   if (!readOnlyDatabases.has(db)) {
     db.exec(`DELETE FROM llm_cache`);
@@ -4262,6 +4228,8 @@ export function clearCache(db: Database): void {
 /**
  * Delete cached LLM API responses.
  * Returns the number of cached responses deleted.
+ *
+ * Note: Also flushes the process-wide memoryLlmCache.
  */
 export function deleteLLMCache(db: Database): number {
   memoryLlmCache.clear();
@@ -6565,13 +6533,15 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
           .filter(r => r.text !== query)
           .map(r => ({ type: r.type, query: r.text }));
 
-        if (expanded.length > 0) {
+        if (expanded.length > 0 && inflightExpansions.get(cacheKey) === inflight) {
           setCachedResult(db, cacheKey, JSON.stringify(expanded));
         }
 
         return expanded;
       } finally {
-        inflightExpansions.delete(cacheKey);
+        if (inflightExpansions.get(cacheKey) === inflight) {
+          inflightExpansions.delete(cacheKey);
+        }
       }
     })();
     inflightExpansions.set(cacheKey, inflight);

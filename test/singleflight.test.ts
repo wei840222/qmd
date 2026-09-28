@@ -10,6 +10,8 @@ import {
   DEFAULT_MEMORY_CACHE_TTL_MS,
   DEFAULT_MEMORY_LLM_CACHE_MAX_BYTES,
   DEFAULT_MEMORY_EMBED_CACHE_MAX_BYTES,
+  deleteExpansionCacheEntry,
+  getCacheKey,
 } from "../src/store.js";
 import type { LLM, Queryable } from "../src/llm.js";
 import type { EmbeddingProvider, EmbeddingVector } from "../src/embedding/provider.js";
@@ -223,6 +225,36 @@ describe("In-flight Singleflight Deduplication & In-Memory LRU Cache", () => {
       const cached = store.db.prepare("SELECT count(*) as count FROM llm_cache").get() as { count: number };
       expect(cached.count).toBe(1);
     });
+
+    test("does not resurrect cache if deleteExpansionCacheEntry is called while expansion is in-flight", async () => {
+      const store = createStore(":memory:");
+      let resolveLlm: ((val: Queryable[]) => void) | undefined;
+
+      const mockLlm = createMockLlm({
+        expandQuery: vi.fn(async (): Promise<Queryable[]> => {
+          return new Promise(resolve => {
+            resolveLlm = resolve;
+          });
+        }),
+      });
+
+      // Start expansion
+      const promise = expandQuery("race query", "test-model", store.db, undefined, mockLlm);
+
+      // While in-flight, delete the expansion cache entry
+      deleteExpansionCacheEntry(store.db, "race query", "test-model");
+
+      // Now resolve the LLM
+      resolveLlm!([{ type: "lex", text: "race query expanded" }]);
+      const res = await promise;
+      expect(res).toEqual([{ type: "lex", query: "race query expanded" }]);
+
+      // Verify it was NOT written into memoryLlmCache or SQLite llm_cache
+      const cacheKey = getCacheKey("expandQuery", { query: "race query", model: "test-model" });
+      expect(memoryLlmCache.get(cacheKey)).toBeUndefined();
+      const row = store.db.prepare("SELECT result FROM llm_cache WHERE hash = ?").get(cacheKey);
+      expect(row).toBeUndefined();
+    });
   });
 
   describe("embedQueriesForStore singleflight & in-memory caching", () => {
@@ -365,6 +397,42 @@ describe("In-flight Singleflight Deduplication & In-Memory LRU Cache", () => {
       expect(res.embeddings).toHaveLength(2);
       expect(res.embeddings[0]).toEqual([0.9, 0.8]);
       expect(res.embeddings[1]).toEqual([0.9, 0.8]);
+    });
+
+    test("deduplicates partial overlap across concurrent requests at query level", async () => {
+      const store = createStore(":memory:");
+      const embeddedBatches: string[][] = [];
+
+      const mockLlama = {
+        embedModelName: "local-embedding-model",
+        embedBatch: vi.fn(async (texts: string[]) => {
+          embeddedBatches.push([...texts]);
+          await new Promise(resolve => setTimeout(resolve, 50));
+          return texts.map((t, idx) => ({
+            embedding: [0.1 * (idx + 1), 0.2 * (idx + 1)],
+          }));
+        }),
+      };
+
+      (store as { localLlm?: typeof mockLlama }).localLlm = mockLlama;
+
+      // Request 1 asks for ["alpha", "beta"]
+      // Request 2 asks for ["beta", "gamma"] concurrently
+      const [res1, res2] = await Promise.all([
+        embedQueriesForStore(store, ["alpha", "beta"]),
+        embedQueriesForStore(store, ["beta", "gamma"]),
+      ]);
+
+      expect(res1.embeddings).toHaveLength(2);
+      expect(res2.embeddings).toHaveLength(2);
+
+      // Verify that "beta" was only embedded once across all batches!
+      const allEmbeddedTexts = embeddedBatches.flat();
+      const betaCalls = allEmbeddedTexts.filter(t => t.includes("beta"));
+      expect(betaCalls).toHaveLength(1);
+
+      // Verify res1 and res2 got the same vector for "beta"
+      expect(res1.embeddings[1]).toEqual(res2.embeddings[0]);
     });
   });
 });
