@@ -7,7 +7,7 @@ const pkg = JSON.parse(readFileSync(new URL("package.json", root), "utf8"));
 
 describe("package test task", () => {
   test("runs typecheck, unit tests, and package smoke checks", () => {
-    expect(pkg.packageManager).toBe("pnpm@11.15.1");
+    expect(pkg.packageManager).toBe("pnpm@12.6.0");
     expect(pkg.scripts.test).toContain("scripts/test-all.mjs");
 
     expect(pkg.scripts["test:types"]).toContain("tsconfig.build.json --noEmit");

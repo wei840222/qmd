@@ -1,8 +1,30 @@
 {
   "name": "@wei840222/qmd",
-  "version": "2026.9.29",
-  "packageManager": "pnpm@11.15.1",
+  "version": "2026.9.30",
   "description": "Query Markup Documents - On-device hybrid search for markdown files with BM25, vector search, and LLM reranking",
+  "author": "Wan, Jiun Wei <wei840222@gmail.com>",
+  "license": "MIT",
+  "keywords": [
+    "markdown",
+    "search",
+    "fts",
+    "full-text-search",
+    "vector",
+    "semantic-search",
+    "sqlite",
+    "bm25",
+    "embeddings",
+    "rag",
+    "mcp",
+    "reranking",
+    "knowledge-base",
+    "local-ai",
+    "llm"
+  ],
+  "engines": {
+    "node": ">=24.21.0"
+  },
+  "packageManager": "pnpm@12.6.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -64,21 +86,21 @@
     "url": "https://github.com/wei840222/qmd/issues"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "2.0.0",
+    "@modelcontextprotocol/server": "2.1.0",
     "@node-rs/jieba": "2.0.3",
     "@typesafe-ai/sdk": "^0.6.0",
     "fast-glob": "3.3.3",
     "lru-cache": "^11.5.3",
-    "node-llama-cpp": "3.20.0",
-    "picomatch": "4.0.5",
+    "node-llama-cpp": "3.22.1",
+    "picomatch": "4.0.7",
     "sqlite-vec": "0.1.9",
     "tree-sitter-go": "0.25.0",
     "tree-sitter-python": "0.25.0",
     "tree-sitter-rust": "0.24.0",
     "tree-sitter-typescript": "0.23.2",
     "web-tree-sitter": "0.26.12",
-    "yaml": "2.9.0",
-    "zod": "4.2.1"
+    "yaml": "2.9.1",
+    "zod": "4.6.5"
   },
   "optionalDependencies": {
     "sqlite-vec-darwin-arm64": "0.1.9",
@@ -88,50 +110,28 @@
     "sqlite-vec-windows-x64": "0.1.9"
   },
   "devDependencies": {
-    "@oxlint/plugins": "1.78.0",
-    "oxlint": "1.78.0",
-    "tsx": "4.23.12",
-    "vitest": "3.2.7"
+    "@oxlint/plugins": "1.85.0",
+    "oxlint": "1.85.0",
+    "tsx": "4.23.15",
+    "vitest": "4.1.11"
   },
   "overrides": {
-    "@hono/node-server": "2.0.10",
-    "ajv": "8.18.0",
-    "esbuild": "0.28.1",
+    "@hono/node-server": "2.1.2",
+    "ajv": "8.20.0",
+    "esbuild": "0.28.2",
     "fast-uri": "3.1.5",
-    "hono": "4.12.34",
-    "ip-address": "10.3.1",
+    "hono": "4.13.10",
+    "ip-address": "10.7.2",
     "nanoid": "3.3.18",
-    "path-to-regexp": "8.4.0",
-    "postcss": "8.5.23",
-    "qs": "6.15.3",
-    "rollup": "4.59.0",
+    "path-to-regexp": "8.4.2",
+    "postcss": "8.5.28",
+    "qs": "6.16.0",
+    "rollup": "4.63.5",
     "simple-git": "3.36.0",
-    "tar": "7.5.21",
+    "tar": "7.5.22",
     "vite": "7.3.5"
   },
   "peerDependencies": {
     "typescript": "^5.9.3 || ^6.0.0-0"
-  },
-  "engines": {
-    "node": ">=22.16.0"
-  },
-  "keywords": [
-    "markdown",
-    "search",
-    "fts",
-    "full-text-search",
-    "vector",
-    "semantic-search",
-    "sqlite",
-    "bm25",
-    "embeddings",
-    "rag",
-    "mcp",
-    "reranking",
-    "knowledge-base",
-    "local-ai",
-    "llm"
-  ],
-  "author": "Wan, Jiun Wei <wei840222@gmail.com>",
-  "license": "MIT"
+  }
 }
