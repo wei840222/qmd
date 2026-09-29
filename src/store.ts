@@ -34,6 +34,7 @@ import {
 import picomatch from "picomatch";
 import { createHash, randomUUID } from "crypto";
 import { readFileSync, realpathSync, statSync, mkdirSync } from "node:fs";
+import { Buffer } from "node:buffer";
 // Note: node:path resolve is not imported — we export our own cross-platform resolve()
 import fastGlob from "fast-glob";
 import { qmdHomedir } from "./paths.js";
@@ -75,7 +76,43 @@ import type {
 } from "./collections.js";
 import type { IndexDiagnostics } from "./diagnostics.js";
 
+import { LRUCache } from "lru-cache";
+export { LRUCache, LRUCache as LruCache } from "lru-cache";
+
+export const DEFAULT_MEMORY_CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+export const DEFAULT_MEMORY_LLM_CACHE_MAX_ITEMS = 1000;
+export const DEFAULT_MEMORY_LLM_CACHE_MAX_BYTES = 50 * 1024 * 1024; // 50 MB
+export const DEFAULT_MEMORY_EMBED_CACHE_MAX_ITEMS = 2000;
+export const DEFAULT_MEMORY_EMBED_CACHE_MAX_BYTES = 64 * 1024 * 1024; // 64 MB
+
+let cacheGeneration = 0;
 const readOnlyDatabases = new WeakSet<Database>();
+const inflightEmbeddings = new Map<string, Promise<number[]>>();
+const inflightExpansions = new Map<string, Promise<ExpandedQuery[]>>();
+
+export const memoryLlmCache = new LRUCache<string, string>({
+  max: DEFAULT_MEMORY_LLM_CACHE_MAX_ITEMS,
+  maxSize: DEFAULT_MEMORY_LLM_CACHE_MAX_BYTES,
+  sizeCalculation: (value) => Math.max(1, Buffer.byteLength(value, "utf8")),
+  ttl: DEFAULT_MEMORY_CACHE_TTL_MS,
+  updateAgeOnGet: true,
+});
+
+export const memoryEmbeddingCache = new LRUCache<string, number[]>({
+  max: DEFAULT_MEMORY_EMBED_CACHE_MAX_ITEMS,
+  maxSize: DEFAULT_MEMORY_EMBED_CACHE_MAX_BYTES,
+  sizeCalculation: (vector) => Math.max(1, vector.length * 8),
+  ttl: DEFAULT_MEMORY_CACHE_TTL_MS,
+  updateAgeOnGet: true,
+});
+
+export function resetInflightState(): void {
+  cacheGeneration++;
+  inflightEmbeddings.clear();
+  inflightExpansions.clear();
+  memoryLlmCache.clear();
+  memoryEmbeddingCache.clear();
+}
 
 import { METADATA_EXTRACTION_VERSION, type DocumentMetadata } from "./metadata.js";
 import { compileMetadataFilter, type MetadataFilter } from "./metadata-filter.js";
@@ -251,10 +288,88 @@ function authorizeEmbeddingProviderRequest(
   authorize(purpose, context);
 }
 
-async function embedQueriesForStore(
+async function embedQueriesWithSingleflight(
+  modelId: string,
+  queries: string[],
+  fetchBatch: (missingQueries: string[]) => Promise<number[][]>
+): Promise<number[][]> {
+  const currentGeneration = cacheGeneration;
+  const missingQueries = Array.from(
+    new Set(
+      queries.filter(
+        q =>
+          memoryEmbeddingCache.get(`${modelId}:${q}`) === undefined &&
+          !inflightEmbeddings.has(`${modelId}:${q}`)
+      )
+    )
+  );
+
+  if (missingQueries.length > 0) {
+    const resolvers = new Map<string, { resolve: (vec: number[]) => void; reject: (err: unknown) => void }>();
+    const promises = new Map<string, Promise<number[]>>();
+    for (const q of missingQueries) {
+      const inflightKey = `${modelId}:${q}`;
+      const promise = new Promise<number[]>((resolve, reject) => {
+        resolvers.set(inflightKey, { resolve, reject });
+      });
+      promises.set(inflightKey, promise);
+      inflightEmbeddings.set(inflightKey, promise);
+    }
+
+    (async () => {
+      try {
+        const resultEmbeddings = await fetchBatch(missingQueries);
+        const isCurrentGen = currentGeneration === cacheGeneration;
+        for (let i = 0; i < missingQueries.length; i++) {
+          const q = missingQueries[i]!;
+          const key = `${modelId}:${q}`;
+          const vec = resultEmbeddings[i];
+          if (!vec) {
+            throw new Error(`Embedding missing for query "${q}"`);
+          }
+          if (isCurrentGen && inflightEmbeddings.get(key) === promises.get(key)) {
+            memoryEmbeddingCache.set(key, vec);
+          }
+          resolvers.get(key)?.resolve(vec);
+        }
+      } catch (err) {
+        for (const q of missingQueries) {
+          resolvers.get(`${modelId}:${q}`)?.reject(err);
+        }
+      } finally {
+        for (const q of missingQueries) {
+          const key = `${modelId}:${q}`;
+          if (inflightEmbeddings.get(key) === promises.get(key)) {
+            inflightEmbeddings.delete(key);
+          }
+        }
+      }
+    })();
+  }
+
+  return Promise.all(
+    queries.map(async q => {
+      const cached = memoryEmbeddingCache.get(`${modelId}:${q}`);
+      if (cached) return [...cached];
+      const inflight = inflightEmbeddings.get(`${modelId}:${q}`);
+      if (inflight) {
+        const vec = await inflight;
+        return [...vec];
+      }
+      throw new Error(`Embedding missing for query "${q}"`);
+    })
+  );
+}
+
+export async function embedQueriesForStore(
   store: Store,
   queries: string[],
 ): Promise<{ model: string; embeddings: number[][] }> {
+  if (queries.length === 0) {
+    const model = store.embeddingProvider?.model ?? getLlm(store).embedModelName;
+    return { model, embeddings: [] };
+  }
+
   const provider = store.embeddingProvider;
   if (provider) {
     const identity = resolveReadyProviderEmbeddingIdentity(store.db, provider);
@@ -270,56 +385,62 @@ async function embedQueriesForStore(
       "query-embedding",
       { identity },
     );
-    const formatted = queries.map(query => provider.formatQuery(query));
-    try {
-      const vectors = await provider.embedBatch(formatted, {
-        purpose: "query-embedding",
-        kind: "query",
-        identityFingerprint: identity.fingerprint,
-      });
-      return {
-        model: provider.model,
-        embeddings: vectors.map(vector => vector.vector),
-      };
-    } catch (batchError) {
-      if (formatted.length <= 1) throw batchError;
-      const embeddings: number[][] = [];
-      for (const query of formatted) {
-        const vector = await provider.embed(query, {
+
+    const modelId = `provider:${identity.fingerprint}`;
+    const embeddings = await embedQueriesWithSingleflight(modelId, queries, async (missing) => {
+      const formatted = missing.map(query => provider.formatQuery(query));
+      try {
+        const vectors = await provider.embedBatch(formatted, {
           purpose: "query-embedding",
           kind: "query",
           identityFingerprint: identity.fingerprint,
         });
-        embeddings.push(vector.vector);
+        return vectors.map(vector => vector.vector);
+      } catch (batchError) {
+        if (formatted.length <= 1) throw batchError;
+        const fallbackVectors: number[][] = [];
+        for (let i = 0; i < formatted.length; i++) {
+          const vector = await provider.embed(formatted[i]!, {
+            purpose: "query-embedding",
+            kind: "query",
+            identityFingerprint: identity.fingerprint,
+          });
+          fallbackVectors.push(vector.vector);
+        }
+        return fallbackVectors;
       }
-      return {
-        model: provider.model,
-        embeddings,
-      };
-    }
+    });
+
+    return {
+      model: provider.model,
+      embeddings,
+    };
   }
 
   const llm = getLlm(store);
   const model = llm.embedModelName;
-  const formatted = queries.map(query => formatQueryForEmbedding(query, model));
-  try {
-    const results = await llm.embedBatch(formatted);
-    return {
-      model,
-      embeddings: results.map(result => result?.embedding ?? []),
-    };
-  } catch (batchError) {
-    if (formatted.length <= 1) throw batchError;
-    const embeddings: number[][] = [];
-    for (const query of formatted) {
-      const result = await llm.embed(query);
-      embeddings.push(result?.embedding ?? []);
+  const modelId = `llm:${model}`;
+
+  const embeddings = await embedQueriesWithSingleflight(modelId, queries, async (missing) => {
+    const formatted = missing.map(query => formatQueryForEmbedding(query, model));
+    try {
+      const results = await llm.embedBatch(formatted);
+      return results.map(result => result?.embedding ?? []);
+    } catch (batchError) {
+      if (formatted.length <= 1) throw batchError;
+      const fallbackVectors: number[][] = [];
+      for (let i = 0; i < formatted.length; i++) {
+        const result = await llm.embed(formatted[i]!);
+        fallbackVectors.push(result?.embedding ?? []);
+      }
+      return fallbackVectors;
     }
-    return {
-      model,
-      embeddings,
-    };
-  }
+  });
+
+  return {
+    model,
+    embeddings,
+  };
 }
 
 function createBorrowedEmbeddingSession(
@@ -4067,11 +4188,23 @@ export function getCacheKey(url: string, body: CacheKeyBody): string {
 }
 
 export function getCachedResult(db: Database, cacheKey: string): string | null {
-  const row = db.prepare(`SELECT result FROM llm_cache WHERE hash = ?`).get(cacheKey) as { result: string } | null;
-  return row?.result ?? null;
+  const inMemory = memoryLlmCache.get(cacheKey);
+  if (inMemory !== undefined) return inMemory;
+
+  try {
+    const row = db.prepare(`SELECT result FROM llm_cache WHERE hash = ?`).get(cacheKey) as { result: string } | null;
+    if (row?.result) {
+      memoryLlmCache.set(cacheKey, row.result);
+      return row.result;
+    }
+  } catch {
+    // llm_cache table may not exist yet in uninitialized/read-only in-memory databases
+  }
+  return null;
 }
 
 export function setCachedResult(db: Database, cacheKey: string, result: string): void {
+  memoryLlmCache.set(cacheKey, result);
   if (readOnlyDatabases.has(db)) return;
   const now = new Date().toISOString();
   db.prepare(`INSERT OR REPLACE INTO llm_cache (hash, result, created_at) VALUES (?, ?, ?)`).run(cacheKey, result, now);
@@ -4080,8 +4213,24 @@ export function setCachedResult(db: Database, cacheKey: string, result: string):
   }
 }
 
+/**
+ * Clear cached LLM API responses and query embeddings.
+ *
+ * Note: memoryLlmCache, memoryEmbeddingCache, and in-flight deduplication maps
+ * are process-level singletons shared across collections/stores to maximize
+ * deduplication when different collections are queried concurrently with the
+ * same input. Calling clearCache() here flushes this process-wide in-memory
+ * cache as well.
+ */
 export function clearCache(db: Database): void {
-  db.exec(`DELETE FROM llm_cache`);
+  if (!readOnlyDatabases.has(db)) {
+    db.exec(`DELETE FROM llm_cache`);
+  }
+  cacheGeneration++;
+  inflightExpansions.clear();
+  inflightEmbeddings.clear();
+  memoryLlmCache.clear();
+  memoryEmbeddingCache.clear();
 }
 
 // =============================================================================
@@ -4091,8 +4240,13 @@ export function clearCache(db: Database): void {
 /**
  * Delete cached LLM API responses.
  * Returns the number of cached responses deleted.
+ *
+ * Note: Also flushes the process-wide memoryLlmCache.
  */
 export function deleteLLMCache(db: Database): number {
+  cacheGeneration++;
+  memoryLlmCache.clear();
+  if (readOnlyDatabases.has(db)) return 0;
   const result = db.prepare(`DELETE FROM llm_cache`).run();
   return Number(result.changes);
 }
@@ -6374,29 +6528,50 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
     }
   }
 
-  const llm = llmOverride ?? getDefaultLlamaCpp();
-  // Note: LlamaCpp uses hardcoded model, model parameter is ignored
-  const results = await llm.expandQuery(query, {
-    context: expansionContext,
-    includeLexical,
-    includeHyde,
-  });
+  const currentGeneration = cacheGeneration;
+  let inflight = inflightExpansions.get(cacheKey);
+  if (!inflight) {
+    inflight = (async () => {
+      try {
+        const llm = llmOverride ?? getDefaultLlamaCpp();
+        // Note: LlamaCpp uses hardcoded model, model parameter is ignored
+        const results = await llm.expandQuery(query, {
+          context: expansionContext,
+          includeLexical,
+          includeHyde,
+        });
 
-  // Map Queryable[] → ExpandedQuery[] (same shape, decoupled from llm.ts internals).
-  // Filter out entries that duplicate the original query text.
-  const expanded: ExpandedQuery[] = results
-    .filter(r => r.text !== query)
-    .map(r => ({ type: r.type, query: r.text }));
+        // Map Queryable[] → ExpandedQuery[] (same shape, decoupled from llm.ts internals).
+        // Filter out entries that duplicate the original query text.
+        const expanded: ExpandedQuery[] = results
+          .filter(r => r.text !== query)
+          .map(r => ({ type: r.type, query: r.text }));
+
+        if (
+          expanded.length > 0 &&
+          currentGeneration === cacheGeneration &&
+          inflightExpansions.get(cacheKey) === inflight
+        ) {
+          setCachedResult(db, cacheKey, JSON.stringify(expanded));
+        }
+
+        return expanded;
+      } finally {
+        if (inflightExpansions.get(cacheKey) === inflight) {
+          inflightExpansions.delete(cacheKey);
+        }
+      }
+    })();
+    inflightExpansions.set(cacheKey, inflight);
+  }
+
+  const expanded = await inflight;
 
   if (options?.requireResult && expanded.length === 0) {
     throw new QueryExpansionNoResultError();
   }
 
-  if (expanded.length > 0) {
-    setCachedResult(db, cacheKey, JSON.stringify(expanded));
-  }
-
-  return expanded;
+  return expanded.map(e => ({ ...e }));
 }
 
 /**
@@ -6418,7 +6593,11 @@ export function deleteExpansionCacheEntry(
     ...(options?.includeHyde === false && { noHyde: true }),
     ...(options?.includeLexical === false && { noLex: true }),
   });
-  db.prepare(`DELETE FROM llm_cache WHERE hash = ?`).run(cacheKey);
+  inflightExpansions.delete(cacheKey);
+  memoryLlmCache.delete(cacheKey);
+  if (!readOnlyDatabases.has(db)) {
+    db.prepare(`DELETE FROM llm_cache WHERE hash = ?`).run(cacheKey);
+  }
 }
 
 // =============================================================================

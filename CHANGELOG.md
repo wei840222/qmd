@@ -10,6 +10,7 @@
 
 ### Added
 
+- In-flight Singleflight Deduplication & In-Memory LRU Cache: Added granular in-memory `Map<string, Promise<T>>` query-level singleflight deduplication (`inflightExpansions` and `inflightEmbeddings`) and `LRUCache` fallbacks (`memoryLlmCache` and `memoryEmbeddingCache`, powered by `lru-cache`) in `expandQuery` and `embedQueriesForStore`. Features configurable TTL (`2 hours`), item bounds (1,000 for LLM responses, 2,000 for embeddings), and memory size bounds (50 MB for LLM text, 64 MB for float64 embedding vectors) with automatic byte size calculation. In `readOnly: true` environments (such as MCP stdio/HTTP servers) where SQLite write is disabled, query expansions and embeddings gracefully cache in memory. Concurrent requests seamlessly share in-flight promises across identical or partially overlapping query batches, and subsequent queries hit the memory cache, eliminating redundant remote LLM/Jev/embedding API calls and network latency.
 - TypeSafe Jev provider (`src/remote-jev.ts`) supporting System One-based candidate reranking via Noul judgments and query expansion intent classification via Choice and Noul gating. Passes query expansion context to Jev state for contextual intent classification.
 - Refactored `HybridLLM` into `Hybrid` (`src/hybrid.ts`) supporting 3-way provider fallback: `RemoteJev` → `RemoteLLM` → `LlamaCpp`.
 - Added `models.jev_api_key`, `models.jev_api_model`, and `models.jev_base_url` configuration options with `TYPESAFE_API_KEY`, `TYPESAFE_DEFAULT_MODEL`, and `TYPESAFE_BASE_URL` environment variable fallbacks.
