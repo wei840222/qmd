@@ -55,6 +55,49 @@ describe("RemoteJev & Hybrid Integration", () => {
       expect(capturedRequest.state.context).toBe("in postgres pool handler");
       expect(capturedRequest.state.current_time).toBeDefined();
       expect(res2.strategy).toBe("code_search");
+      expect(res2.strategyDetails?.label).toBe("Code Search");
+
+      // Verify troubleshooting strategy details mapping
+      const troubleshootingClient: JevSystemOneClient = {
+        systemOne: vi.fn(async () => ({
+          answers: {
+            strategy: {
+              type: "choice",
+              choice: "troubleshooting",
+              confidence: 0.95,
+              probabilities: { troubleshooting: 0.95 },
+            },
+            needs_hyde: { type: "noul", noul: 0.8 },
+          },
+        })),
+      };
+      const jevTroubleshoot = new RemoteJev({ client: troubleshootingClient });
+      const resTroubleshoot = await jevTroubleshoot.classifyIntent("TypeError: Cannot read properties of undefined");
+      expect(resTroubleshoot.strategy).toBe("troubleshooting");
+      expect(resTroubleshoot.strategyDetails?.label).toBe("Troubleshooting & Bug Fix");
+      expect(resTroubleshoot.strategyDetails?.lexGuidance).toContain("Prioritize exact error codes");
+      expect(resTroubleshoot.strategyDetails?.vecGuidance).toContain("diagnostic or remediation");
+
+      // Verify how_to_guide strategy details mapping
+      const howToClient: JevSystemOneClient = {
+        systemOne: vi.fn(async () => ({
+          answers: {
+            strategy: {
+              type: "choice",
+              choice: "how_to_guide",
+              confidence: 0.91,
+              probabilities: { how_to_guide: 0.91 },
+            },
+            needs_hyde: { type: "noul", noul: 0.85 },
+          },
+        })),
+      };
+      const jevHowTo = new RemoteJev({ client: howToClient });
+      const resHowTo = await jevHowTo.classifyIntent("how to setup docker compose with sqlite-vec");
+      expect(resHowTo.strategy).toBe("how_to_guide");
+      expect(resHowTo.strategyDetails?.label).toBe("How-To & Procedural Guide");
+      expect(resHowTo.strategyDetails?.lexGuidance).toContain("workflow action verbs");
+      expect(resHowTo.strategyDetails?.vecGuidance).toContain("procedural task questions");
     });
 
     test("rerank computes scores via noul and sorts descending in a single batch request", async () => {

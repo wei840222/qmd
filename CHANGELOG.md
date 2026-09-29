@@ -19,7 +19,7 @@
 - Document file path and title metadata in candidate reranking: candidate documents for chat-based and remote rerankers now retain document file paths and titles, enabling rerankers to evaluate provenance and temporal references.
 - Relative temporal resolution in query expansion: `expandQuery` prompts now instruct models to calculate exact ISO dates from relative time expressions (e.g. "yesterday", "昨天", "today", "last week") against current local time for lexical and vector search.
 - Added file, title, and current local time to TypeSafe Jev candidate reranking and intent classification states, with temporal constraint guidance.
-- Search intent playbook and guidance for query expansion: Added `JEV_STRATEGY_PLAYBOOK` mapping Jev intent classifications (`code_search`, `concept_search`, `factual_lookup`, `broad_exploration`) to concrete lexical and vector search guidance passed to downstream expansion LLMs in dedicated `<search_intent>` XML blocks, keeping untrusted context separate.
+- Search intent playbook and guidance for query expansion: Added `JEV_STRATEGY_PLAYBOOK` mapping Jev intent classifications (`troubleshooting`, `how_to_guide`, `code_search`, `concept_search`, `factual_lookup`, `broad_exploration`) to concrete lexical and vector search guidance passed to downstream expansion LLMs in dedicated `<search_intent>` XML blocks, keeping untrusted context separate.
 
 ## [2026.9.25] - 2026-09-26
 

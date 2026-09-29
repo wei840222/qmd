@@ -28,6 +28,18 @@ export interface RemoteJevOptions {
 export type JevStrategyDefinition = SearchIntentGuidance;
 
 export const JEV_STRATEGY_PLAYBOOK: Record<string, JevStrategyDefinition> = {
+  troubleshooting: {
+    label: "Troubleshooting & Bug Fix",
+    objective: "Diagnosing errors, exceptions, stack traces, failure modes, or broken states.",
+    lexGuidance: "Prioritize exact error codes, exception class names, HTTP statuses, and failed syscall/function identifiers. Exclude generic noise like 'why', 'error', 'issue'.",
+    vecGuidance: "Formulate concrete diagnostic or remediation questions (e.g., 'how to resolve <error> caused by <reason>').",
+  },
+  how_to_guide: {
+    label: "How-To & Procedural Guide",
+    objective: "Looking for step-by-step setup guides, workflows, recipes, installation, or migration steps.",
+    lexGuidance: "Include tool/command names, CLI flags, configuration filenames, and workflow action verbs without extra filler words.",
+    vecGuidance: "Formulate procedural task questions (e.g., 'step-by-step guide to configure or implement <task>').",
+  },
   code_search: {
     label: "Code Search",
     objective: "Looking for specific code, functions, APIs, syntax, or implementations.",
@@ -120,8 +132,10 @@ export class RemoteJev {
         strategy: choice(
           "What type of search is the user performing given the query and optional context?",
           {
+            troubleshooting: "Diagnosing errors, exceptions, stack traces, or broken behavior",
+            how_to_guide: "Step-by-step instructions, installation, configuration, or migration workflows",
             code_search: "Looking for specific code, functions, APIs, or implementations",
-            concept_search: "Looking for explanations, concepts, or documentation",
+            concept_search: "Looking for explanations, concepts, architecture, or documentation",
             factual_lookup: "Looking for specific facts, configurations, or settings",
             broad_exploration: "Exploring a topic broadly without a specific target",
           },
