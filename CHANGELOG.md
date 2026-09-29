@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Dependency upgrades and runtime engine modernization: Updated Node.js engine target to `>=24.21.0` (LTS Krypton) and packageManager to `pnpm@12.6.0`. Upgraded dependencies and toolchain including `node-llama-cpp` to `3.22.1`, `zod` to `4.6.5`, `@modelcontextprotocol/server` to `2.1.0`, `picomatch` to `4.0.7`, `yaml` to `2.9.1`, `tsx` to `4.23.15`, `oxlint` to `1.85.0`, `vitest` to `4.1.11` (patching security advisory GHSA-82fw-gwwq-j7x9), and refreshed patch/minor dependency overrides.
+
 ### Fixed
 
 - Metadata extraction error retry: `isDocumentMetadataCurrent` now requires an error-free extraction, allowing `qmd update` to automatically re-attempt extraction on documents that previously failed without requiring manual edits.
