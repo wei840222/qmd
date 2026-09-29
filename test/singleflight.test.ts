@@ -12,6 +12,7 @@ import {
   DEFAULT_MEMORY_EMBED_CACHE_MAX_BYTES,
   deleteExpansionCacheEntry,
   getCacheKey,
+  clearCache,
 } from "../src/store.js";
 import type { LLM, Queryable } from "../src/llm.js";
 import type { EmbeddingProvider, EmbeddingVector } from "../src/embedding/provider.js";
@@ -255,6 +256,36 @@ describe("In-flight Singleflight Deduplication & In-Memory LRU Cache", () => {
       const row = store.db.prepare("SELECT result FROM llm_cache WHERE hash = ?").get(cacheKey);
       expect(row).toBeUndefined();
     });
+
+    test("does not resurrect cache if clearCache is called while expansion is in-flight", async () => {
+      const store = createStore(":memory:");
+      let resolveLlm: ((val: Queryable[]) => void) | undefined;
+
+      const mockLlm = createMockLlm({
+        expandQuery: vi.fn(async (): Promise<Queryable[]> => {
+          return new Promise(resolve => {
+            resolveLlm = resolve;
+          });
+        }),
+      });
+
+      // Start expansion
+      const promise = expandQuery("cleared query", "test-model", store.db, undefined, mockLlm);
+
+      // While in-flight, clear cache
+      clearCache(store.db);
+
+      // Now resolve the LLM
+      resolveLlm!([{ type: "lex", text: "cleared query expanded" }]);
+      const res = await promise;
+      expect(res).toEqual([{ type: "lex", query: "cleared query expanded" }]);
+
+      // Verify it was NOT written into memoryLlmCache or SQLite llm_cache
+      const cacheKey = getCacheKey("expandQuery", { query: "cleared query", model: "test-model" });
+      expect(memoryLlmCache.get(cacheKey)).toBeUndefined();
+      const row = store.db.prepare("SELECT result FROM llm_cache WHERE hash = ?").get(cacheKey);
+      expect(row).toBeUndefined();
+    });
   });
 
   describe("embedQueriesForStore singleflight & in-memory caching", () => {
@@ -433,6 +464,39 @@ describe("In-flight Singleflight Deduplication & In-Memory LRU Cache", () => {
 
       // Verify res1 and res2 got the same vector for "beta"
       expect(res1.embeddings[1]).toEqual(res2.embeddings[0]);
+    });
+
+    test("does not repopulate memoryEmbeddingCache if clearCache is called while embedBatch is in-flight", async () => {
+      const store = createStore(":memory:");
+      let resolveBatch: ((val: Array<{ embedding: number[] }>) => void) | undefined;
+
+      const mockLlama = {
+        embedModelName: "local-embedding-model",
+        embedBatch: vi.fn(async (texts: string[]) => {
+          return new Promise<Array<{ embedding: number[] }>>(resolve => {
+            resolveBatch = resolve;
+          });
+        }),
+      };
+
+      (store as { localLlm?: typeof mockLlama }).localLlm = mockLlama;
+
+      // Start embedding in flight
+      const promise = embedQueriesForStore(store, ["stale query"]);
+
+      // While in flight, clear the cache
+      clearCache(store.db);
+
+      // Resolve the in-flight embedding
+      resolveBatch!([{ embedding: [0.7, 0.9] }]);
+      const res = await promise;
+
+      // Existing waiter gets the computed result
+      expect(res.embeddings).toEqual([[0.7, 0.9]]);
+
+      // BUT memoryEmbeddingCache must NOT be repopulated with the invalidated pre-clear result!
+      const modelId = "llm:local-embedding-model";
+      expect(memoryEmbeddingCache.get(`${modelId}:stale query`)).toBeUndefined();
     });
   });
 });

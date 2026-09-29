@@ -85,6 +85,7 @@ export const DEFAULT_MEMORY_LLM_CACHE_MAX_BYTES = 50 * 1024 * 1024; // 50 MB
 export const DEFAULT_MEMORY_EMBED_CACHE_MAX_ITEMS = 2000;
 export const DEFAULT_MEMORY_EMBED_CACHE_MAX_BYTES = 64 * 1024 * 1024; // 64 MB
 
+let cacheGeneration = 0;
 const readOnlyDatabases = new WeakSet<Database>();
 const inflightEmbeddings = new Map<string, Promise<number[]>>();
 const inflightExpansions = new Map<string, Promise<ExpandedQuery[]>>();
@@ -106,6 +107,7 @@ export const memoryEmbeddingCache = new LRUCache<string, number[]>({
 });
 
 export function resetInflightState(): void {
+  cacheGeneration++;
   inflightEmbeddings.clear();
   inflightExpansions.clear();
   memoryLlmCache.clear();
@@ -291,6 +293,7 @@ async function embedQueriesWithSingleflight(
   queries: string[],
   fetchBatch: (missingQueries: string[]) => Promise<number[][]>
 ): Promise<number[][]> {
+  const currentGeneration = cacheGeneration;
   const missingQueries = Array.from(
     new Set(
       queries.filter(
@@ -303,17 +306,20 @@ async function embedQueriesWithSingleflight(
 
   if (missingQueries.length > 0) {
     const resolvers = new Map<string, { resolve: (vec: number[]) => void; reject: (err: unknown) => void }>();
+    const promises = new Map<string, Promise<number[]>>();
     for (const q of missingQueries) {
       const inflightKey = `${modelId}:${q}`;
       const promise = new Promise<number[]>((resolve, reject) => {
         resolvers.set(inflightKey, { resolve, reject });
       });
+      promises.set(inflightKey, promise);
       inflightEmbeddings.set(inflightKey, promise);
     }
 
     (async () => {
       try {
         const resultEmbeddings = await fetchBatch(missingQueries);
+        const isCurrentGen = currentGeneration === cacheGeneration;
         for (let i = 0; i < missingQueries.length; i++) {
           const q = missingQueries[i]!;
           const key = `${modelId}:${q}`;
@@ -321,7 +327,9 @@ async function embedQueriesWithSingleflight(
           if (!vec) {
             throw new Error(`Embedding missing for query "${q}"`);
           }
-          memoryEmbeddingCache.set(key, vec);
+          if (isCurrentGen && inflightEmbeddings.get(key) === promises.get(key)) {
+            memoryEmbeddingCache.set(key, vec);
+          }
           resolvers.get(key)?.resolve(vec);
         }
       } catch (err) {
@@ -330,7 +338,10 @@ async function embedQueriesWithSingleflight(
         }
       } finally {
         for (const q of missingQueries) {
-          inflightEmbeddings.delete(`${modelId}:${q}`);
+          const key = `${modelId}:${q}`;
+          if (inflightEmbeddings.get(key) === promises.get(key)) {
+            inflightEmbeddings.delete(key);
+          }
         }
       }
     })();
@@ -4215,6 +4226,7 @@ export function clearCache(db: Database): void {
   if (!readOnlyDatabases.has(db)) {
     db.exec(`DELETE FROM llm_cache`);
   }
+  cacheGeneration++;
   inflightExpansions.clear();
   inflightEmbeddings.clear();
   memoryLlmCache.clear();
@@ -4232,6 +4244,7 @@ export function clearCache(db: Database): void {
  * Note: Also flushes the process-wide memoryLlmCache.
  */
 export function deleteLLMCache(db: Database): number {
+  cacheGeneration++;
   memoryLlmCache.clear();
   if (readOnlyDatabases.has(db)) return 0;
   const result = db.prepare(`DELETE FROM llm_cache`).run();
@@ -6515,6 +6528,7 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
     }
   }
 
+  const currentGeneration = cacheGeneration;
   let inflight = inflightExpansions.get(cacheKey);
   if (!inflight) {
     inflight = (async () => {
@@ -6533,7 +6547,11 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
           .filter(r => r.text !== query)
           .map(r => ({ type: r.type, query: r.text }));
 
-        if (expanded.length > 0 && inflightExpansions.get(cacheKey) === inflight) {
+        if (
+          expanded.length > 0 &&
+          currentGeneration === cacheGeneration &&
+          inflightExpansions.get(cacheKey) === inflight
+        ) {
           setCachedResult(db, cacheKey, JSON.stringify(expanded));
         }
 
