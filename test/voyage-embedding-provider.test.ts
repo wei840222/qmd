@@ -9,9 +9,6 @@ import {
   type VoyageEmbeddingProviderOptions,
 } from "../src/embedding/voyage.js";
 import {
-  DEFAULT_VOYAGE_BASE_URL,
-  DEFAULT_VOYAGE_EMBEDDING_DIMENSION,
-  DEFAULT_VOYAGE_EMBEDDING_MODEL,
   resolveEmbeddingConfig,
   resolveEmbeddingModelOverride,
 } from "../src/embedding/config.js";
