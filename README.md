@@ -593,9 +593,12 @@ QMD stays local by default. To use remote embeddings or remote LLM models, confi
 ```yaml
 models:
   embed: hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf
-  embed_api_url: https://api.openai.com/v1          # Both embed_api_url and embed_api_model enable remote embeddings
-  embed_api_model: text-embedding-3-small           # or text-embedding-3-large
-  embed_dimension: 1536                             # Optional: expected vector dimension; validates local output
+  # Remote embeddings: set both embed_api_url (or embed_url / embed_base_url) and embed_api_model.
+  # Provider is auto-detected from the model name / URL (voyage* → voyageai, otherwise openai-compatible).
+  # Optional override: embed_provider: voyageai | openai
+  embed_api_url: https://api.openai.com/v1
+  embed_api_model: text-embedding-3-small           # or text-embedding-3-large / voyage-4 / ...
+  embed_dimension: 1536                             # Optional; required for unknown custom OpenAI models
 
   # Optional: Remote LLM Query Expansion (aliases: generate_url, generate_base_url, generate_api_url)
   generate_api_url: https://generativelanguage.googleapis.com/v1beta/openai/v1    # Base URL (appends /chat/completions) or full endpoint
@@ -609,22 +612,65 @@ models:
 dictionary: ~/.config/qmd/dictionary.txt
 ```
 
+#### OpenAI-compatible embeddings
+
+```yaml
+models:
+  embed_api_url: https://api.openai.com/v1
+  embed_api_model: text-embedding-3-small   # or text-embedding-3-large
+  # embed_dimension: 1536                   # optional for known models; required for unknown custom models
+```
+
+```sh
+export OPENAI_API_KEY="..."   # required for api.openai.com; optional for self-hosted / keyless proxies
+qmd embed
+```
+
+#### Voyage AI embeddings
+
+Voyage is a first-class provider (`voyageai`). Model names starting with `voyage` (or an explicit `embed_provider: voyageai`) select it. Known models resolve default dimensions automatically (`voyage-4` / `voyage-4-large` / `voyage-3` → 1024, `voyage-3-lite` / `voyage-3.5-lite` → 512, etc.). Voyage requests use native `output_dimension` and `input_type` (`query` vs `document`); they do not send OpenAI `encoding_format`.
+
+Official Voyage endpoint:
+
+```yaml
+models:
+  embed_api_url: https://api.voyageai.com/v1   # optional when embed_provider: voyageai (default base URL)
+  embed_api_model: voyage-4                    # or voyage-4-large, voyage-3, voyage-code-3, ...
+  # embed_provider: voyageai                   # optional; inferred from voyage* model names
+  # embed_dimension: 1024                      # optional override / Matryoshka truncation when supported
+```
+
+```sh
+export VOYAGE_API_KEY="..."   # required for https://api.voyageai.com/v1
+qmd embed
+```
+
+OpenAI-compatible proxy hosting Voyage (Bifrost, LiteLLM, etc.):
+
+```yaml
+models:
+  embed_api_url: https://your-proxy.example/v1
+  embed_api_model: voyage-4
+  # embed_provider: voyageai   # set if the model name alone is not enough to infer Voyage
+```
+
+```sh
+# Prefer VOYAGE_API_KEY. OPENAI_API_KEY is accepted only for non-official Voyage base URLs
+# (custom proxies). Official api.voyageai.com never falls back to OPENAI_API_KEY.
+export VOYAGE_API_KEY="..."
+# export OPENAI_API_KEY="..."  # proxy-only fallback when VOYAGE_API_KEY is unset
+qmd embed
+```
+
 > **Smart URL Resolution & Aliases:** All remote endpoint URLs support `_url`, `_base_url`, and `_api_url` aliases (e.g. `generate_url`, `generate_base_url`, `generate_api_url`). When given a Base URL (e.g. `https://api.example.com/v1`), QMD automatically appends `/chat/completions` for LLM generate and `/rerank` for reranking. If a full endpoint URL is provided, it is used directly. For reranking, QMD supports both dedicated Cross-Encoder endpoints (`/v1/rerank`) and general LLM endpoints (`/v1/chat/completions`).
 
 > **CLI, SDK & MCP Integration:** Remote LLM query expansion and LLM Chat Reranking are automatically wired into CLI (`qmd query`), SDK (`createStore`), and MCP. Query expansion automatically enforces query language & script consistency (e.g., Traditional Chinese queries generate Traditional Chinese `lex`, `vec`, and `hyde` variations). LLM Chat Reranking features prompt-tail Recency Enforcement and strict JSON sanitization to ensure safe execution with any remote LLM backend.
 
 `qmd init` writes local defaults only; it does not prompt for or generate a remote embedding configuration. To use a remote endpoint, edit `index.yml` manually and set credentials when required.
 
-> **API Key Note:** Remote embeddings require both an embedding endpoint (`embed_url`, `embed_base_url`, or `embed_api_url`) and `embed_api_model`. When using official OpenAI (`api.openai.com`), set `OPENAI_API_KEY="..."`. For self-hosted proxies or keyless local servers, `OPENAI_API_KEY` is optional. QMD never writes keys to SQLite, diagnostics, logs, or error messages.
+> **API Key Note:** Remote embeddings require both an embedding endpoint (`embed_url`, `embed_base_url`, or `embed_api_url`) and `embed_api_model` (unless `embed_provider: voyageai` supplies the Voyage default model/URL). Official OpenAI needs `OPENAI_API_KEY`; official Voyage needs `VOYAGE_API_KEY`. Custom OpenAI-compatible proxies may omit a key when the upstream is keyless. For Voyage-shaped traffic through a custom proxy only, `OPENAI_API_KEY` may fill in when `VOYAGE_API_KEY` is unset — never for `https://api.voyageai.com/v1`. QMD never writes keys to SQLite, diagnostics, logs, or error messages.
 
-```sh
-export OPENAI_API_KEY="..." # Required for api.openai.com; optional for self-hosted proxies
-
-# Send pending document chunks and build the vector index.
-qmd embed
-```
-
-Configure `embed_url`, `embed_base_url`, or `embed_api_url` together with `embed_api_model` to select the OpenAI-compatible embedding provider; QMD sends `POST /embeddings` requests. Changing the endpoint or model changes the remote embedding identity and requires a vector rebuild.
+Configure `embed_url`, `embed_base_url`, or `embed_api_url` together with `embed_api_model` to enable remote embeddings. OpenAI-compatible providers receive `POST /embeddings`; Voyage AI uses its native embeddings payload (`input_type`, optional `output_dimension`). Changing the endpoint, provider, or model changes the remote embedding identity and requires a vector rebuild.
 
 `vectors_vec` can store only one dimension. A dimension or identity change requires a forced rebuild:
 

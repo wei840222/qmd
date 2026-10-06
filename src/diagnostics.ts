@@ -4,7 +4,8 @@ import type { EmbeddingProvider } from "./embedding/provider.js";
 import { createEmbeddingIdentity, type EmbeddingIdentity } from "./embedding/identity.js";
 import { canonicalLocalEmbeddingIdentityMaterial } from "./embedding/local-identity.js";
 import { canonicalOpenAIEmbeddingIdentityMaterial } from "./embedding/openai.js";
-import type { OpenAIEmbeddingModel } from "./embedding/config.js";
+import { canonicalVoyageEmbeddingIdentityMaterial } from "./embedding/voyage.js";
+import type { OpenAIEmbeddingModel, VoyageEmbeddingModel } from "./embedding/config.js";
 
 import { getCjkAnalyzerFingerprint } from "./search/cjk-index.js";
 import { canonicalEmbeddingBuildMaterial } from "./store.js";
@@ -149,7 +150,9 @@ function resolvedIdentity(
         ? canonicalLocalEmbeddingIdentityMaterial(model, dimension)
         : providerId === "openai"
           ? canonicalOpenAIEmbeddingIdentityMaterial(model as OpenAIEmbeddingModel, dimension)
-          : undefined;
+          : providerId === "voyageai"
+            ? canonicalVoyageEmbeddingIdentityMaterial(model as VoyageEmbeddingModel, dimension)
+            : undefined;
     if (providerMaterial == null) return undefined;
     const identities = (["regex", "auto"] as const).map(chunkStrategy =>
       createEmbeddingIdentity({

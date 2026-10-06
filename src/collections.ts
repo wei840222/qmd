@@ -56,6 +56,7 @@ export interface ModelsConfig {
   embed_api_model?: string;
   embed_api_key?: string;
   embed_dimension?: number;
+  embed_provider?: string;
   rerank?: string;
   generate?: string;
   generate_url?: string;

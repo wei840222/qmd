@@ -6,7 +6,7 @@ import { waitForLLMSessionsToDrain } from "../llm.js";
 type LocalEmbeddingRuntime = ConstructorParameters<typeof LocalEmbeddingProviderOwner>[0];
 
 export interface CliEmbeddingProviderConfig {
-  provider: "local" | "openai";
+  provider: "local" | "openai" | "voyageai";
   model: string;
   dimension: number | null;
 }
@@ -23,7 +23,7 @@ export function createCliEmbeddingProviderOwner(
     });
   }
   if (!remoteProvider?.remote) {
-    throw new Error("OpenAI CLI composition requires a remote embedding provider.");
+    throw new Error(`${config.provider} CLI composition requires a remote embedding provider.`);
   }
   return new CompositeEmbeddingProviderOwner(remoteProvider, {
     dispose: async () => {
