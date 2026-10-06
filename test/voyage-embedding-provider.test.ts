@@ -6,11 +6,15 @@ import {
   UnavailableVoyageEmbeddingProvider,
   canonicalVoyageEmbeddingIdentityMaterial,
   getMaxInputTokenLimit,
+  supportsOutputDimension,
   type VoyageEmbeddingProviderOptions,
 } from "../src/embedding/voyage.js";
 import {
+  DEFAULT_VOYAGE_BASE_URL,
+  isCustomVoyageEndpoint,
   resolveEmbeddingConfig,
   resolveEmbeddingModelOverride,
+  resolveVoyageApiKey,
 } from "../src/embedding/config.js";
 
 const servers: Server[] = [];
@@ -66,12 +70,20 @@ describe("canonicalVoyageEmbeddingIdentityMaterial", () => {
 });
 
 describe("UnavailableVoyageEmbeddingProvider", () => {
-  test("fails closed with provider failure message", async () => {
+  test("fails closed with provider failure message and default reason", async () => {
     const provider = new UnavailableVoyageEmbeddingProvider();
     expect(provider.providerId).toBe("voyageai");
     await expect(provider.embed("hello", DOCUMENT_OPTIONS as any)).rejects.toMatchObject({
       code: "PROVIDER_FAILURE",
-      message: expect.stringContaining("Voyage AI embedding provider is not available"),
+      message: expect.stringContaining("missing VOYAGE_API_KEY or embed_api_key configuration"),
+    });
+  });
+
+  test("reports custom reason when configured", async () => {
+    const provider = new UnavailableVoyageEmbeddingProvider({ reason: "custom test reason" });
+    await expect(provider.embed("hello", DOCUMENT_OPTIONS as any)).rejects.toMatchObject({
+      code: "PROVIDER_FAILURE",
+      message: expect.stringContaining("custom test reason"),
     });
   });
 });
@@ -169,6 +181,66 @@ describe("VoyageEmbeddingProvider", () => {
       .rejects.toMatchObject({ code: "IDENTITY_FINGERPRINT_REQUIRED" });
     expect(fetch).not.toHaveBeenCalled();
     await provider.close();
+  });
+
+  test("omits output_dimension for older models like voyage-2 to prevent HTTP 400", async () => {
+    let capturedBody: any;
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => {
+      capturedBody = JSON.parse(init?.body as string);
+      return new Response(JSON.stringify({
+        object: "list",
+        data: [{
+          object: "embedding",
+          index: 0,
+          embedding: new Array(1024).fill(0.2),
+        }],
+        model: "voyage-2",
+        usage: { total_tokens: 4 },
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const provider = new VoyageEmbeddingProvider({
+      apiKey: "pa-voyage-secret",
+      model: "voyage-2",
+      dimension: 1024,
+      fetch,
+      maxAttempts: 1,
+    });
+
+    await provider.embed("older model test", DOCUMENT_OPTIONS);
+    expect(capturedBody.model).toBe("voyage-2");
+    expect(capturedBody.output_dimension).toBeUndefined();
+    expect(capturedBody.input_type).toBe("document");
+    await provider.close();
+  });
+
+  test("refuses to send OPENAI_API_KEY to official Voyage API endpoint preventing credential leak", async () => {
+    const originalEnv = { ...process.env };
+    try {
+      delete process.env.VOYAGE_API_KEY;
+      process.env.OPENAI_API_KEY = "sk-secret-openai-key-do-not-leak";
+
+      const fetch = vi.fn<typeof globalThis.fetch>();
+      const provider = new VoyageEmbeddingProvider({
+        baseUrl: "https://api.voyageai.com/v1",
+        fetch,
+        maxAttempts: 1,
+      });
+
+      // Calling embed without a Voyage key on official endpoint fails fast before network request
+      await expect(provider.embed("test", DOCUMENT_OPTIONS)).rejects.toMatchObject({
+        code: "PROVIDER_FAILURE",
+        message: expect.stringContaining("requires VOYAGE_API_KEY or embed_api_key for the official Voyage API endpoint"),
+      });
+
+      expect(fetch).not.toHaveBeenCalled();
+      await provider.close();
+    } finally {
+      process.env = originalEnv;
+    }
   });
 });
 
@@ -286,6 +358,52 @@ describe("resolveEmbeddingConfig with voyageai", () => {
     expect(getMaxInputTokenLimit("voyage-3")).toBe(32_000);
     expect(getMaxInputTokenLimit("voyage-4")).toBe(32_000);
     expect(getMaxInputTokenLimit("custom-model")).toBe(32_000);
+  });
+
+  test("supportsOutputDimension accurately identifies version 2 vs version 3+ models", () => {
+    expect(supportsOutputDimension("voyage-2")).toBe(false);
+    expect(supportsOutputDimension("voyage-law-2")).toBe(false);
+    expect(supportsOutputDimension("voyage-code-2")).toBe(false);
+    expect(supportsOutputDimension("voyage-3")).toBe(true);
+    expect(supportsOutputDimension("voyage-3.5")).toBe(true);
+    expect(supportsOutputDimension("voyage-4")).toBe(true);
+  });
+
+  test("credential leak prevention: resolveVoyageApiKey rejects OPENAI_API_KEY for default endpoint", () => {
+    const defaultEnv = { OPENAI_API_KEY: "sk-openai-key" };
+    expect(resolveVoyageApiKey({
+      baseUrl: DEFAULT_VOYAGE_BASE_URL,
+      env: defaultEnv,
+    })).toBeUndefined();
+
+    // But custom proxy endpoints DO allow OPENAI_API_KEY
+    expect(resolveVoyageApiKey({
+      baseUrl: "https://bifrost.home-infra.weii.cloud/openai/v1",
+      env: defaultEnv,
+    })).toBe("sk-openai-key");
+
+    // VOYAGE_API_KEY is always respected
+    expect(resolveVoyageApiKey({
+      baseUrl: DEFAULT_VOYAGE_BASE_URL,
+      env: { ...defaultEnv, VOYAGE_API_KEY: "pa-voyage-key" },
+    })).toBe("pa-voyage-key");
+  });
+
+  test("resolveEmbeddingConfig disables remote requests when only OPENAI_API_KEY exists for official Voyage endpoint", () => {
+    const config = resolveEmbeddingConfig({
+      config: {
+        models: {
+          embed_provider: "voyageai",
+          embed_api_model: "voyage-4",
+        },
+      },
+      defaultLocalModel: "default-local",
+      env: { OPENAI_API_KEY: "sk-openai-only" },
+    });
+
+    expect(config.canonical.provider).toBe("voyageai");
+    expect(config.credentialAvailable).toBe(false);
+    expect(config.remoteRequestsEnabled).toBe(false);
   });
 });
 

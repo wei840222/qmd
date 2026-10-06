@@ -4,6 +4,8 @@ import {
   DEFAULT_VOYAGE_EMBEDDING_DIMENSION,
   DEFAULT_VOYAGE_EMBEDDING_MODEL,
   VOYAGE_EMBEDDING_MODELS,
+  isCustomVoyageEndpoint,
+  resolveVoyageApiKey,
   type VoyageEmbeddingModel,
 } from "./config.js";
 import {
@@ -25,6 +27,10 @@ export function getMaxInputTokenLimit(model: string): number {
   if (model === "voyage-2") return 4_000;
   if (model.includes("-2")) return 16_000;
   return DEFAULT_MAX_INPUT_TOKEN_UPPER_BOUND;
+}
+
+export function supportsOutputDimension(model: string): boolean {
+  return !model.includes("-2");
 }
 
 function normalizeVoyageBaseUrl(baseUrl: string | undefined): string {
@@ -79,17 +85,26 @@ export function canonicalVoyageEmbeddingIdentityMaterial(
   });
 }
 
+export interface UnavailableVoyageEmbeddingProviderOptions {
+  model?: VoyageEmbeddingModel;
+  dimension?: number;
+  baseUrl?: string;
+  reason?: string;
+}
+
 export class UnavailableVoyageEmbeddingProvider implements EmbeddingProvider {
   readonly providerId = "voyageai";
   readonly model: VoyageEmbeddingModel;
   readonly dimension: number;
   readonly remote = true;
   private readonly configuredBaseUrl: string | undefined;
+  private readonly reason: string;
 
-  constructor(options?: { model?: VoyageEmbeddingModel; dimension?: number; baseUrl?: string }) {
+  constructor(options?: UnavailableVoyageEmbeddingProviderOptions) {
     this.model = options?.model ?? DEFAULT_VOYAGE_EMBEDDING_MODEL;
     this.dimension = options?.dimension ?? (VOYAGE_EMBEDDING_MODELS.get(this.model) ?? DEFAULT_VOYAGE_EMBEDDING_DIMENSION);
     this.configuredBaseUrl = options?.baseUrl;
+    this.reason = options?.reason ?? "missing VOYAGE_API_KEY or embed_api_key configuration";
   }
 
   canonicalIdentityMaterial(): string {
@@ -115,7 +130,7 @@ export class UnavailableVoyageEmbeddingProvider implements EmbeddingProvider {
   async embed(_text: string, _options: EmbeddingOperationOptions): Promise<EmbeddingVector> {
     throw new EmbeddingProviderError(
       "PROVIDER_FAILURE",
-      "Voyage AI embedding provider is not available (missing API key or configuration).",
+      `Voyage AI embedding provider is not available (${this.reason}).`,
     );
   }
 
@@ -125,7 +140,7 @@ export class UnavailableVoyageEmbeddingProvider implements EmbeddingProvider {
   ): Promise<EmbeddingVector[]> {
     throw new EmbeddingProviderError(
       "PROVIDER_FAILURE",
-      "Voyage AI embedding provider is not available (missing API key or configuration).",
+      `Voyage AI embedding provider is not available (${this.reason}).`,
     );
   }
 
@@ -316,8 +331,11 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
     }
     this.model = options.model ?? DEFAULT_VOYAGE_EMBEDDING_MODEL;
     this.dimension = options.dimension ?? (VOYAGE_EMBEDDING_MODELS.get(this.model) ?? DEFAULT_VOYAGE_EMBEDDING_DIMENSION);
-    this.apiKey = apiKey || process.env.VOYAGE_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim() || undefined;
     this.baseUrl = normalizeVoyageBaseUrl(options.baseUrl ?? process.env.VOYAGE_BASE_URL ?? process.env.OPENAI_BASE_URL);
+    this.apiKey = resolveVoyageApiKey({
+      apiKey: options.apiKey,
+      baseUrl: this.baseUrl,
+    });
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.maxAttempts = maxAttempts;
     this.sleep = options.sleep ?? defaultSleep;
@@ -507,11 +525,20 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
       }
       this.throwIfInterrupted(options, deadlineController);
 
+      if (!this.apiKey && !isCustomVoyageEndpoint(this.baseUrl)) {
+        throw new EmbeddingProviderError(
+          "PROVIDER_FAILURE",
+          "Voyage AI embedding provider requires VOYAGE_API_KEY or embed_api_key for the official Voyage API endpoint.",
+        );
+      }
+
       const requestPayload: Record<string, unknown> = {
         input: inputs,
         model: this.model,
-        output_dimension: this.dimension,
       };
+      if (supportsOutputDimension(this.model) && this.dimension !== null) {
+        requestPayload.output_dimension = this.dimension;
+      }
       if (options.kind === "query") {
         requestPayload.input_type = "query";
       } else if (options.kind === "document") {

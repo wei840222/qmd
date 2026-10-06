@@ -101,6 +101,7 @@ import {
   OPENAI_EMBEDDING_MODEL,
   readCanonicalEmbeddingConfig,
   resolveEmbeddingConfig,
+  resolveVoyageApiKey,
   writeCanonicalEmbeddingConfig,
 } from "../embedding/config.js";
 import {
@@ -208,10 +209,10 @@ function getStore(): ReturnType<typeof createStore> {
       });
       setDefaultLlamaCpp(cliLlama);
       if (embedding.canonical.provider === "voyageai") {
-        const apiKey =
-          config?.models?.embed_api_key?.trim() ||
-          process.env.VOYAGE_API_KEY?.trim() ||
-          process.env.OPENAI_API_KEY?.trim();
+        const apiKey = resolveVoyageApiKey({
+          configApiKey: config?.models?.embed_api_key,
+          baseUrl: embedding.canonical.baseUrl,
+        });
         const configuredModel = embedding.canonical.model;
         const configuredDimension = embedding.canonical.dimension;
         const configuredBaseUrl = embedding.canonical.baseUrl;
@@ -797,7 +798,10 @@ async function showStatus(): Promise<void> {
           })
         : undefined,
     keyConfigured: statusEmbedding.provider === "voyageai"
-      ? Boolean(statusConfig.models?.embed_api_key?.trim() || process.env.VOYAGE_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim())
+      ? Boolean(resolveVoyageApiKey({
+          configApiKey: statusConfig.models?.embed_api_key,
+          baseUrl: statusEmbedding.baseUrl,
+        }))
       : Boolean(statusConfig.models?.embed_api_key?.trim() || process.env.OPENAI_API_KEY?.trim()),
     configuredProvider: {
       id: statusEmbedding.provider === "voyageai"
@@ -4818,7 +4822,10 @@ async function showDoctor(): Promise<void> {
           })
         : undefined,
     keyConfigured: doctorEmbedding.provider === "voyageai"
-      ? Boolean(configModels?.embed_api_key?.trim() || process.env.VOYAGE_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim())
+      ? Boolean(resolveVoyageApiKey({
+          configApiKey: configModels?.embed_api_key,
+          baseUrl: doctorEmbedding.baseUrl,
+        }))
       : Boolean(configModels?.embed_api_key?.trim() || process.env.OPENAI_API_KEY?.trim()),
     configuredProvider: {
       id: doctorEmbedding.provider === "voyageai"

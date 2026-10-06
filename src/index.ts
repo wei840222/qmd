@@ -108,6 +108,7 @@ import {
   EmbeddingConfigError,
   readCanonicalEmbeddingConfig,
   resolveEmbeddingConfig,
+  resolveVoyageApiKey,
   writeCanonicalEmbeddingConfig,
 } from "./embedding/config.js";
 import { rebuildCjkLexicalIndex } from "./search/cjk-index.js";
@@ -524,10 +525,10 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     internal.embeddingProvider = embeddingOwner.provider;
     closeEmbeddingResources = () => embeddingOwner.close();
   } else if (embedding.canonical.provider === "voyageai") {
-    const apiKey =
-      config?.models?.embed_api_key?.trim() ||
-      process.env.VOYAGE_API_KEY?.trim() ||
-      process.env.OPENAI_API_KEY?.trim();
+    const apiKey = resolveVoyageApiKey({
+      configApiKey: config?.models?.embed_api_key,
+      baseUrl: embedding.canonical.baseUrl,
+    });
     remoteKeyConfigured = apiKey != null && apiKey !== "";
     const configuredModel = embedding.canonical.model;
     const configuredDimension = embedding.canonical.dimension;

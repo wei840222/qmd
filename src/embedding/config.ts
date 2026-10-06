@@ -334,7 +334,10 @@ function resolveSource(
           "models.embed no longer accepts OpenAI shorthand; configure models.embed_api_url (or models.embed_url/models.embed_base_url) and models.embed_api_model instead.",
         );
       }
-      const rawEmbedBaseUrl = models.embed_url ?? models.embed_base_url ?? models.embed_api_url;
+      const rawProvider = models.embed_provider ?? models.provider;
+      const isExplicitVoyage = rawProvider === "voyageai" || rawProvider === "voyage";
+      const rawEmbedBaseUrl = models.embed_url ?? models.embed_base_url ?? models.embed_api_url
+        ?? (isExplicitVoyage ? DEFAULT_VOYAGE_BASE_URL : undefined);
       const hasEmbedBaseUrl = rawEmbedBaseUrl !== undefined && String(rawEmbedBaseUrl).trim() !== "";
       const customDimension = hasOwn(models, "embed_dimension")
         ? parseDimension(models.embed_dimension, "models.embed_dimension")
@@ -352,8 +355,7 @@ function resolveSource(
             ? requireModel(models.embed_model, "models.embed_model")
             : (hasEmbedBaseUrl && hasOwn(models, "embed") && typeof models.embed === "string" && models.embed.trim() !== "" && !models.embed.startsWith("hf:") && !models.embed.startsWith("ollama:") && models.embed !== "default"
                 ? models.embed.trim()
-                : rawEnvModel));
-      const rawProvider = models.embed_provider ?? models.provider;
+                : (isExplicitVoyage ? DEFAULT_VOYAGE_EMBEDDING_MODEL : rawEnvModel)));
 
       if (hasEmbedBaseUrl && embedApiModel !== undefined) {
         let provider: "voyageai" | "openai";
@@ -411,6 +413,28 @@ function resolveSource(
   };
 }
 
+export function isCustomVoyageEndpoint(baseUrl: string | undefined): boolean {
+  if (!baseUrl) return false;
+  return baseUrl.trim().replace(/\/+$/, "") !== DEFAULT_VOYAGE_BASE_URL;
+}
+
+export function resolveVoyageApiKey(options: {
+  apiKey?: string;
+  configApiKey?: string;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): string | undefined {
+  const env = options.env ?? process.env;
+  const directKey = options.apiKey?.trim() || options.configApiKey?.trim() || env.VOYAGE_API_KEY?.trim();
+  if (directKey) return directKey;
+
+  const baseUrl = options.baseUrl?.trim() || env.VOYAGE_BASE_URL || env.OPENAI_BASE_URL || DEFAULT_VOYAGE_BASE_URL;
+  if (isCustomVoyageEndpoint(baseUrl) && env.OPENAI_API_KEY?.trim()) {
+    return env.OPENAI_API_KEY.trim();
+  }
+  return undefined;
+}
+
 export function resolveEmbeddingConfig(
   options: ResolveEmbeddingConfigOptions,
 ): ResolvedEmbeddingConfig {
@@ -418,13 +442,24 @@ export function resolveEmbeddingConfig(
   const env = options.env ?? process.env;
   const isVoyage = resolved.canonical.provider === "voyageai";
   const isOpenAI = resolved.canonical.provider === "openai";
+  const baseUrl = "baseUrl" in resolved.canonical ? resolved.canonical.baseUrl : undefined;
+  const isCustomVoyage = isVoyage && isCustomVoyageEndpoint(baseUrl);
+  const isCustomOpenAI = isOpenAI && baseUrl !== DEFAULT_OPENAI_BASE_URL;
+
+  let configApiKey: string | undefined;
+  if (isRecord(options.config) && isRecord(options.config.models)) {
+    const rawKey = options.config.models.embed_api_key;
+    if (typeof rawKey === "string") {
+      configApiKey = rawKey;
+    }
+  }
+
   const hasApiKey = isVoyage
-    ? (typeof env.VOYAGE_API_KEY === "string" && env.VOYAGE_API_KEY.trim() !== "")
-      || (typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim() !== "")
-    : (typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim() !== "");
+    ? Boolean(resolveVoyageApiKey({ configApiKey, baseUrl, env }))
+    : Boolean(configApiKey?.trim() || env.OPENAI_API_KEY?.trim());
+
   // For non-default endpoints (self-hosted / proxy), API key is optional
-  const isNonDefaultEndpoint = (resolved.canonical.provider === "openai" && resolved.canonical.baseUrl !== DEFAULT_OPENAI_BASE_URL)
-    || (resolved.canonical.provider === "voyageai" && resolved.canonical.baseUrl !== DEFAULT_VOYAGE_BASE_URL);
+  const isNonDefaultEndpoint = isCustomOpenAI || isCustomVoyage;
   const credentialAvailable = resolved.canonical.provider === "local"
     || hasApiKey
     || isNonDefaultEndpoint;
