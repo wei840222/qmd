@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import {
-  OPENAI_EMBEDDING_DIMENSION,
-  OPENAI_EMBEDDING_MODEL,
-  OPENAI_EMBEDDING_MODELS,
-  DEFAULT_OPENAI_BASE_URL,
-  type OpenAIEmbeddingModel,
+  DEFAULT_VOYAGE_BASE_URL,
+  DEFAULT_VOYAGE_EMBEDDING_DIMENSION,
+  DEFAULT_VOYAGE_EMBEDDING_MODEL,
+  VOYAGE_EMBEDDING_MODELS,
+  type VoyageEmbeddingModel,
 } from "./config.js";
 import {
   EmbeddingProviderError,
@@ -16,30 +16,30 @@ import {
 import { canonicalRemoteChunkProfile } from "./remote-chunking.js";
 
 const MAX_INPUTS_PER_REQUEST = 128;
-const MAX_INPUT_TOKEN_UPPER_BOUND = 8_192;
-const MAX_BATCH_TOKEN_UPPER_BOUND = 300_000;
+const MAX_INPUT_TOKEN_UPPER_BOUND = 32_000;
+const MAX_BATCH_TOKEN_UPPER_BOUND = 320_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const utf8Encoder = new TextEncoder();
 
-function normalizeOpenAIBaseUrl(baseUrl: string | undefined): string {
-  return (baseUrl?.trim() || DEFAULT_OPENAI_BASE_URL).replace(/\/+$/, "");
+function normalizeVoyageBaseUrl(baseUrl: string | undefined): string {
+  return (baseUrl?.trim() || DEFAULT_VOYAGE_BASE_URL).replace(/\/+$/, "");
 }
 
 function endpointFingerprint(baseUrl: string): string | undefined {
-  if (baseUrl === DEFAULT_OPENAI_BASE_URL) return undefined;
+  if (baseUrl === DEFAULT_VOYAGE_BASE_URL) return undefined;
   return createHash("sha256").update(baseUrl).digest("hex");
 }
 
-export interface OpenAIEmbeddingUsage {
+export interface VoyageEmbeddingUsage {
   readonly promptTokens: number;
   readonly totalTokens: number;
 }
 
-export interface OpenAIEmbeddingProviderOptions {
+export interface VoyageEmbeddingProviderOptions {
   apiKey?: string;
-  model?: OpenAIEmbeddingModel;
+  model?: VoyageEmbeddingModel;
   dimension?: number;
-  /** Override the base URL. Falls back to OPENAI_BASE_URL env or the official OpenAI endpoint. */
+  /** Override the base URL. Falls back to VOYAGE_BASE_URL, OPENAI_BASE_URL, or official Voyage API. */
   baseUrl?: string;
   maxAttempts?: number;
   fetch?: typeof globalThis.fetch;
@@ -54,47 +54,44 @@ export interface OpenAIEmbeddingProviderOptions {
   authorizeRequest?: RemoteEmbeddingRequestGuard;
 }
 
-export function canonicalOpenAIEmbeddingIdentityMaterial(
-  model: OpenAIEmbeddingModel = OPENAI_EMBEDDING_MODEL,
+export function canonicalVoyageEmbeddingIdentityMaterial(
+  model: VoyageEmbeddingModel = DEFAULT_VOYAGE_EMBEDDING_MODEL,
   dimension?: number,
   baseUrl: string | undefined = undefined,
 ): string {
-  const expectedDimension = OPENAI_EMBEDDING_MODELS.get(model);
-  const effectiveDimension = dimension ?? expectedDimension ?? OPENAI_EMBEDDING_DIMENSION;
-  const isDefaultOpenAI = normalizeOpenAIBaseUrl(baseUrl) === DEFAULT_OPENAI_BASE_URL;
-  if (expectedDimension !== undefined && isDefaultOpenAI && effectiveDimension !== expectedDimension) {
-    throw new EmbeddingProviderError(
-      "DIMENSION_MISMATCH",
-      `OpenAI embedding dimension must be ${expectedDimension} for model ${model}.`,
-    );
-  }
-  const endpoint = endpointFingerprint(normalizeOpenAIBaseUrl(baseUrl));
+  const expectedDimension = VOYAGE_EMBEDDING_MODELS.get(model);
+  const effectiveDimension = dimension ?? expectedDimension ?? DEFAULT_VOYAGE_EMBEDDING_DIMENSION;
+  const endpoint = endpointFingerprint(normalizeVoyageBaseUrl(baseUrl));
   return JSON.stringify({
-    provider: "openai",
+    provider: "voyageai",
     model,
     dimension: effectiveDimension,
     remote: true,
-    format: "qmd-openai-embedding-v1",
+    format: "qmd-voyage-embedding-v1",
     chunking: canonicalRemoteChunkProfile(),
     ...(endpoint === undefined ? {} : { endpointFingerprint: endpoint }),
   });
 }
 
-export class UnavailableOpenAIEmbeddingProvider implements EmbeddingProvider {
-  readonly providerId = "openai";
-  readonly model: OpenAIEmbeddingModel;
+export class UnavailableVoyageEmbeddingProvider implements EmbeddingProvider {
+  readonly providerId = "voyageai";
+  readonly model: VoyageEmbeddingModel;
   readonly dimension: number;
   readonly remote = true;
   private readonly configuredBaseUrl: string | undefined;
 
-  constructor(options?: { model?: OpenAIEmbeddingModel; dimension?: number; baseUrl?: string }) {
-    this.model = options?.model ?? OPENAI_EMBEDDING_MODEL;
-    this.dimension = options?.dimension ?? (OPENAI_EMBEDDING_MODELS.get(this.model) ?? OPENAI_EMBEDDING_DIMENSION);
+  constructor(options?: { model?: VoyageEmbeddingModel; dimension?: number; baseUrl?: string }) {
+    this.model = options?.model ?? DEFAULT_VOYAGE_EMBEDDING_MODEL;
+    this.dimension = options?.dimension ?? (VOYAGE_EMBEDDING_MODELS.get(this.model) ?? DEFAULT_VOYAGE_EMBEDDING_DIMENSION);
     this.configuredBaseUrl = options?.baseUrl;
   }
 
   canonicalIdentityMaterial(): string {
-    return canonicalOpenAIEmbeddingIdentityMaterial(this.model, this.dimension, this.configuredBaseUrl ?? process.env.OPENAI_BASE_URL);
+    return canonicalVoyageEmbeddingIdentityMaterial(
+      this.model,
+      this.dimension,
+      this.configuredBaseUrl ?? process.env.VOYAGE_BASE_URL ?? process.env.OPENAI_BASE_URL,
+    );
   }
 
   formatQuery(query: string): string {
@@ -110,20 +107,26 @@ export class UnavailableOpenAIEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embed(_text: string, _options: EmbeddingOperationOptions): Promise<EmbeddingVector> {
-    throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI embedding provider is not available (missing API key or configuration).");
+    throw new EmbeddingProviderError(
+      "PROVIDER_FAILURE",
+      "Voyage AI embedding provider is not available (missing API key or configuration).",
+    );
   }
 
   async embedBatch(
     _texts: string[],
     _options: EmbeddingOperationOptions,
   ): Promise<EmbeddingVector[]> {
-    throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI embedding provider is not available (missing API key or configuration).");
+    throw new EmbeddingProviderError(
+      "PROVIDER_FAILURE",
+      "Voyage AI embedding provider is not available (missing API key or configuration).",
+    );
   }
 
   async close(): Promise<void> {}
 }
 
-interface OpenAIEmbeddingResponse {
+interface VoyageEmbeddingResponse {
   object: "list";
   model: string;
   data: Array<{
@@ -132,7 +135,7 @@ interface OpenAIEmbeddingResponse {
     embedding: number[];
   }>;
   usage: {
-    prompt_tokens: number;
+    prompt_tokens?: number;
     total_tokens: number;
   };
 }
@@ -198,49 +201,52 @@ function parseResponse(
   value: unknown,
   inputCount: number,
   tokenUpperBound: number,
-  expectedModel: OpenAIEmbeddingModel = OPENAI_EMBEDDING_MODEL,
-  expectedDimension: number = OPENAI_EMBEDDING_DIMENSION,
-): OpenAIEmbeddingResponse {
+  expectedModel: VoyageEmbeddingModel = DEFAULT_VOYAGE_EMBEDDING_MODEL,
+  expectedDimension: number = DEFAULT_VOYAGE_EMBEDDING_DIMENSION,
+): VoyageEmbeddingResponse {
   if (
     !isRecord(value)
     || value.object !== "list"
     || typeof value.model !== "string"
     || (value.model !== expectedModel && !value.model.startsWith(expectedModel))
   ) {
-    throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI embedding response schema is invalid.");
+    throw new EmbeddingProviderError("PROVIDER_FAILURE", "Voyage AI embedding response schema is invalid.");
   }
   if (!isRecord(value.usage)) {
-    throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI embedding usage is invalid.");
+    throw new EmbeddingProviderError("PROVIDER_FAILURE", "Voyage AI embedding usage is invalid.");
   }
-  const promptTokens = value.usage.prompt_tokens;
   const totalTokens = value.usage.total_tokens;
+  if (!Number.isSafeInteger(totalTokens) || (totalTokens as number) < 0) {
+    throw new EmbeddingProviderError("PROVIDER_FAILURE", "Voyage AI embedding usage is invalid.");
+  }
+  const rawPromptTokens = value.usage.prompt_tokens;
+  if (rawPromptTokens !== undefined && (!Number.isSafeInteger(rawPromptTokens) || (rawPromptTokens as number) < 0)) {
+    throw new EmbeddingProviderError("PROVIDER_FAILURE", "Voyage AI embedding usage is invalid.");
+  }
+  const promptTokens = typeof rawPromptTokens === "number" ? rawPromptTokens : (totalTokens as number);
   if (
-    !Number.isSafeInteger(promptTokens)
-    || (promptTokens as number) < 0
-    || !Number.isSafeInteger(totalTokens)
-    || (totalTokens as number) < 0
-    || (totalTokens as number) < (promptTokens as number)
-    || (promptTokens as number) > tokenUpperBound
+    (totalTokens as number) < promptTokens
+    || promptTokens > tokenUpperBound
     || (totalTokens as number) > tokenUpperBound
   ) {
-    throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI embedding usage is invalid.");
+    throw new EmbeddingProviderError("PROVIDER_FAILURE", "Voyage AI embedding usage is invalid.");
   }
   if (!Array.isArray(value.data) || value.data.length !== inputCount) {
-    throw new EmbeddingProviderError("BATCH_CARDINALITY_MISMATCH", "OpenAI embedding response cardinality is invalid.");
+    throw new EmbeddingProviderError("BATCH_CARDINALITY_MISMATCH", "Voyage AI embedding response cardinality is invalid.");
   }
 
-  const byIndex = new Array<OpenAIEmbeddingResponse["data"][number] | undefined>(inputCount);
+  const byIndex = new Array<VoyageEmbeddingResponse["data"][number] | undefined>(inputCount);
   for (const item of value.data) {
     if (!isRecord(item) || item.object !== "embedding") {
-      throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI embedding item schema is invalid.");
+      throw new EmbeddingProviderError("PROVIDER_FAILURE", "Voyage AI embedding item schema is invalid.");
     }
     const index = item.index;
     const embedding = item.embedding;
     if (!Number.isInteger(index) || (index as number) < 0 || (index as number) >= inputCount) {
-      throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI embedding response index is invalid.");
+      throw new EmbeddingProviderError("PROVIDER_FAILURE", "Voyage AI embedding response index is invalid.");
     }
     if (byIndex[index as number]) {
-      throw new EmbeddingProviderError("RESPONSE_SCHEMA_INVALID", "OpenAI embedding response index is duplicated.");
+      throw new EmbeddingProviderError("RESPONSE_SCHEMA_INVALID", "Voyage AI embedding response index is duplicated.");
     }
     if (
       !Array.isArray(embedding)
@@ -249,7 +255,7 @@ function parseResponse(
         || !Number.isFinite(value)
         || !Number.isFinite(Math.fround(value)))
     ) {
-      throw new EmbeddingProviderError("DIMENSION_MISMATCH", "OpenAI embedding vector is invalid.");
+      throw new EmbeddingProviderError("DIMENSION_MISMATCH", "Voyage AI embedding vector is invalid.");
     }
     byIndex[index as number] = {
       object: "embedding",
@@ -261,7 +267,7 @@ function parseResponse(
   return {
     object: "list",
     model: expectedModel,
-    data: byIndex as OpenAIEmbeddingResponse["data"],
+    data: byIndex as VoyageEmbeddingResponse["data"],
     usage: {
       prompt_tokens: promptTokens as number,
       total_tokens: totalTokens as number,
@@ -269,9 +275,9 @@ function parseResponse(
   };
 }
 
-export class OpenAIEmbeddingProvider implements EmbeddingProvider {
-  readonly providerId = "openai";
-  readonly model: OpenAIEmbeddingModel;
+export class VoyageEmbeddingProvider implements EmbeddingProvider {
+  readonly providerId = "voyageai";
+  readonly model: VoyageEmbeddingModel;
   readonly dimension: number;
   readonly remote = true;
 
@@ -292,20 +298,20 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   private closePromise: Promise<void> | null = null;
   private closed = false;
 
-  constructor(options: OpenAIEmbeddingProviderOptions) {
+  constructor(options: VoyageEmbeddingProviderOptions) {
     const apiKey = options.apiKey?.trim() || undefined;
     const maxAttempts = options.maxAttempts ?? 3;
     if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 3) {
-      throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI maxAttempts must be between 1 and 3.");
+      throw new EmbeddingProviderError("PROVIDER_FAILURE", "Voyage AI maxAttempts must be between 1 and 3.");
     }
     const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) {
-      throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI requestTimeoutMs must be positive.");
+      throw new EmbeddingProviderError("PROVIDER_FAILURE", "Voyage AI requestTimeoutMs must be positive.");
     }
-    this.model = options.model ?? OPENAI_EMBEDDING_MODEL;
-    this.dimension = options.dimension ?? (OPENAI_EMBEDDING_MODELS.get(this.model) ?? OPENAI_EMBEDDING_DIMENSION);
-    this.apiKey = apiKey || process.env.OPENAI_API_KEY?.trim() || undefined;
-    this.baseUrl = normalizeOpenAIBaseUrl(options.baseUrl ?? process.env.OPENAI_BASE_URL);
+    this.model = options.model ?? DEFAULT_VOYAGE_EMBEDDING_MODEL;
+    this.dimension = options.dimension ?? (VOYAGE_EMBEDDING_MODELS.get(this.model) ?? DEFAULT_VOYAGE_EMBEDDING_DIMENSION);
+    this.apiKey = apiKey || process.env.VOYAGE_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim() || undefined;
+    this.baseUrl = normalizeVoyageBaseUrl(options.baseUrl ?? process.env.VOYAGE_BASE_URL ?? process.env.OPENAI_BASE_URL);
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.maxAttempts = maxAttempts;
     this.sleep = options.sleep ?? defaultSleep;
@@ -325,7 +331,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   }
 
   canonicalIdentityMaterialForDimension(dimension: number): string {
-    return canonicalOpenAIEmbeddingIdentityMaterial(this.model, dimension, this.baseUrl);
+    return canonicalVoyageEmbeddingIdentityMaterial(this.model, dimension, this.baseUrl);
   }
 
   formatQuery(query: string): string {
@@ -365,23 +371,38 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     if (error) throw error;
   }
 
+  private computeRetryDelay(attempt: number, retryAfterMs: number | null): number {
+    if (retryAfterMs !== null) {
+      return Math.min(this.maxRetryDelayMs, Math.max(0, retryAfterMs));
+    }
+    const exponential = this.baseRetryDelayMs * (2 ** (attempt - 1));
+    const capped = Math.min(this.maxRetryDelayMs, exponential);
+    const jitterFactor = 0.5 + (this.random() * 0.5);
+    return Math.floor(capped * jitterFactor);
+  }
+
   private async acquireRequestSlot(signal: AbortSignal): Promise<() => void> {
-    const previous = this.requestTail;
-    let release!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    this.requestTail = previous.then(() => gate);
+    const turn = this.requestTail;
+    let releaseSlot!: () => void;
+    this.requestTail = new Promise<void>(resolve => {
+      releaseSlot = resolve;
+    });
     try {
-      await waitForTurn(previous, signal);
+      await waitForTurn(turn, signal);
+      return releaseSlot;
     } catch (error) {
-      release();
+      releaseSlot();
       throw error;
     }
-    return release;
   }
 
   async embed(text: string, options: EmbeddingOperationOptions): Promise<EmbeddingVector> {
-    const results = await this.embedBatch([text], options);
-    return results[0]!;
+    const vectors = await this.embedBatch([text], options);
+    const vector = vectors[0];
+    if (!vector) {
+      throw new EmbeddingProviderError("PROVIDER_FAILURE", "Voyage AI embedding returned no vector.");
+    }
+    return vector;
   }
 
   async embedBatch(
@@ -411,7 +432,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     if (!Array.isArray(texts) || texts.some(text => typeof text !== "string")) {
       throw new EmbeddingProviderError(
         "INPUT_BUDGET_EXCEEDED",
-        "OpenAI embedding inputs must be strings.",
+        "Voyage AI embedding inputs must be strings.",
       );
     }
     const inputs = Object.freeze([...texts]);
@@ -427,7 +448,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     if (inputs.length === 0 || inputs.length > MAX_INPUTS_PER_REQUEST) {
       throw new EmbeddingProviderError(
         "INPUT_BUDGET_EXCEEDED",
-        `OpenAI embedding batches must contain between 1 and ${MAX_INPUTS_PER_REQUEST} inputs.`,
+        `Voyage AI embedding batches must contain between 1 and ${MAX_INPUTS_PER_REQUEST} inputs.`,
       );
     }
     let batchUpperBound = 0;
@@ -436,7 +457,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
       if (upperBound === 0 || upperBound > MAX_INPUT_TOKEN_UPPER_BOUND) {
         throw new EmbeddingProviderError(
           "INPUT_BUDGET_EXCEEDED",
-          `OpenAI embedding input exceeds the ${MAX_INPUT_TOKEN_UPPER_BOUND}-token upper bound.`,
+          `Voyage AI embedding input exceeds the ${MAX_INPUT_TOKEN_UPPER_BOUND}-token upper bound.`,
         );
       }
       batchUpperBound += upperBound;
@@ -444,7 +465,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     if (batchUpperBound > MAX_BATCH_TOKEN_UPPER_BOUND) {
       throw new EmbeddingProviderError(
         "INPUT_BUDGET_EXCEEDED",
-        `OpenAI embedding batch exceeds the ${MAX_BATCH_TOKEN_UPPER_BOUND}-token upper bound.`,
+        `Voyage AI embedding batch exceeds the ${MAX_BATCH_TOKEN_UPPER_BOUND}-token upper bound.`,
       );
     }
 
@@ -478,12 +499,19 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
         throw new EmbeddingProviderError("PROVIDER_FAILURE", "Embedding request queue failed.");
       }
       this.throwIfInterrupted(options, deadlineController);
-      const requestBody = JSON.stringify({
+
+      const requestPayload: Record<string, unknown> = {
         input: inputs,
         model: this.model,
-        dimensions: this.dimension,
-        encoding_format: "float",
-      });
+        output_dimension: this.dimension,
+      };
+      if (options.kind === "query") {
+        requestPayload.input_type = "query";
+      } else if (options.kind === "document") {
+        requestPayload.input_type = "document";
+      }
+
+      const requestBody = JSON.stringify(requestPayload);
       for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
         this.throwIfInterrupted(options, deadlineController);
         if (!this.authorizeRequest) {
@@ -540,7 +568,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
               if (!requestController.signal.aborted && error instanceof SyntaxError) {
                 throw new EmbeddingProviderError(
                   "PROVIDER_FAILURE",
-                  "OpenAI embedding response is not valid JSON.",
+                  "Voyage AI embedding response is not valid JSON.",
                 );
               }
               response = null;
@@ -556,7 +584,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
                 this.dimension,
               );
               const usage = Object.freeze({
-                promptTokens: parsed.usage.prompt_tokens,
+                promptTokens: parsed.usage.prompt_tokens ?? parsed.usage.total_tokens,
                 totalTokens: parsed.usage.total_tokens,
               });
               return parsed.data.map(item => ({
@@ -569,60 +597,49 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
           }
         } finally {
           clearTimeout(requestTimer);
-          if (response?.body && !responseBodyConsumed) {
-            void response.body.cancel().catch(() => {});
+          if (response && !responseBodyConsumed) {
+            try {
+              await response.body?.cancel();
+            } catch {
+              // Best-effort body cancellation
+            }
           }
         }
 
-        const status = response?.status;
-        const transient = status === undefined || status === 408 || status === 429 || status >= 500;
-        if (!transient) {
-          throw new EmbeddingProviderError(
-            "HTTP_TERMINAL",
-            `OpenAI embedding request failed with HTTP ${status}.`,
-          );
-        }
+        this.throwIfInterrupted(options, deadlineController);
         if (attempt === this.maxAttempts) {
           throw new EmbeddingProviderError(
-            "RETRY_EXHAUSTED",
-            "OpenAI embedding request exhausted its retry budget.",
+            "PROVIDER_FAILURE",
+            `Voyage AI embedding request failed after ${this.maxAttempts} attempts.`,
           );
         }
 
-        const retryAfter = response
-          ? parseRetryAfter(response.headers.get("retry-after"), this.now())
-          : null;
-        const exponential = this.baseRetryDelayMs * (2 ** (attempt - 1));
-        const jittered = exponential * (0.5 + (this.random() * 0.5));
-        const delayMs = Math.min(retryAfter ?? jittered, this.maxRetryDelayMs);
+        const retryAfterMs = response ? parseRetryAfter(response.headers.get("retry-after"), this.now()) : null;
+        const delayMs = this.computeRetryDelay(attempt, retryAfterMs);
         if (options.deadline !== undefined && this.now() + delayMs >= options.deadline) {
           throw new EmbeddingProviderError("DEADLINE_EXCEEDED", "Embedding operation deadline was exceeded.");
         }
-        this.throwIfInterrupted(options, deadlineController);
-        try {
-          await this.sleep(delayMs, signal);
-        } catch {
-          this.throwIfInterrupted(options, deadlineController);
-          throw new EmbeddingProviderError("PROVIDER_FAILURE", "OpenAI embedding retry delay failed.");
-        }
-        this.throwIfInterrupted(options, deadlineController);
+        await this.sleep(delayMs, signal);
       }
-      throw new EmbeddingProviderError(
-        "RETRY_EXHAUSTED",
-        "OpenAI embedding request exhausted its retry budget.",
-      );
+
+      throw new EmbeddingProviderError("PROVIDER_FAILURE", "Voyage AI embedding request failed.");
     } finally {
-      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
-      releaseRequestSlot?.();
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      if (releaseRequestSlot) releaseRequestSlot();
     }
   }
 
   async close(): Promise<void> {
-    if (!this.closePromise) {
-      this.closed = true;
-      this.closeController.abort();
-      this.closePromise = this.requestTail;
-    }
-    await this.closePromise;
+    if (this.closed) return;
+    if (this.closePromise) return this.closePromise;
+    this.closeController.abort();
+    this.closePromise = (async () => {
+      try {
+        await this.requestTail;
+      } finally {
+        this.closed = true;
+      }
+    })();
+    return this.closePromise;
   }
 }

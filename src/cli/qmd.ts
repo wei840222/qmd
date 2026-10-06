@@ -107,6 +107,10 @@ import {
   OpenAIEmbeddingProvider,
   UnavailableOpenAIEmbeddingProvider,
 } from "../embedding/openai.js";
+import {
+  VoyageEmbeddingProvider,
+  UnavailableVoyageEmbeddingProvider,
+} from "../embedding/voyage.js";
 import type { EmbeddingProviderOwner } from "../embedding/provider.js";
 import { createCliEmbeddingProviderOwner } from "./embedding-owner.js";
 import { readStoredEmbeddingIdentity } from "../embedding/identity.js";
@@ -203,7 +207,62 @@ function getStore(): ReturnType<typeof createStore> {
         rerankModel: modelsForLlm.rerank,
       });
       setDefaultLlamaCpp(cliLlama);
-      if (embedding.canonical.provider === "openai") {
+      if (embedding.canonical.provider === "voyageai") {
+        const apiKey =
+          config?.models?.embed_api_key?.trim() ||
+          process.env.VOYAGE_API_KEY?.trim() ||
+          process.env.OPENAI_API_KEY?.trim();
+        const configuredModel = embedding.canonical.model;
+        const configuredDimension = embedding.canonical.dimension;
+        const configuredBaseUrl = embedding.canonical.baseUrl;
+        const canConstruct = (apiKey != null && apiKey !== "") || embedding.credentialAvailable;
+        const provider = canConstruct
+          ? new VoyageEmbeddingProvider({
+              apiKey: apiKey || undefined,
+              model: configuredModel,
+              dimension: configuredDimension,
+              baseUrl: configuredBaseUrl,
+              authorizeRequest: request => {
+                const activeProvider = store?.embeddingProvider;
+                if (!activeProvider?.remote) {
+                  throw new EmbeddingConfigError("Remote embedding provider is not active.");
+                }
+                const storedIdentity = readStoredEmbeddingIdentity(store!.db);
+                const requestIdentity = [
+                  storedIdentity,
+                  remoteEmbeddingIdentity(activeProvider, "regex"),
+                  remoteEmbeddingIdentity(activeProvider, "auto"),
+                ].find(identity => identity?.fingerprint === request.fingerprint);
+                if (!requestIdentity) {
+                  throw new EmbeddingConfigError(
+                    "Remote request fingerprint does not match an active embedding identity.",
+                  );
+                }
+                authorizeRemoteEmbeddingRequest(store!.db, requestIdentity, request.purpose, {
+                  lease: request.buildLease,
+                  requestFingerprint: request.fingerprint,
+                });
+              },
+            })
+          : new UnavailableVoyageEmbeddingProvider({ model: configuredModel, dimension: configuredDimension, baseUrl: configuredBaseUrl });
+        cliEmbeddingOwner = createCliEmbeddingProviderOwner(
+          embedding.canonical,
+          cliLlama,
+          provider,
+        );
+        store.embeddingProvider = provider;
+        store.authorizeRemoteRequest = (purpose, context) => {
+          authorizeRemoteEmbeddingRequest(
+            store!.db,
+            context.identity ?? remoteEmbeddingIdentity(provider!),
+            purpose,
+            { lease: context.lease },
+          );
+        };
+        store.authorizeRemoteBuildStart = identity => {
+          authorizeRemoteEmbeddingRequest(store!.db, identity, "capability-probe");
+        };
+      } else if (embedding.canonical.provider === "openai") {
         const apiKey =
           config?.models?.embed_api_key?.trim() ||
           process.env.OPENAI_API_KEY?.trim();
@@ -724,17 +783,29 @@ async function showStatus(): Promise<void> {
   }).canonical;
   const diagnostics = inspectIndexDiagnostics(db, {
     fallbackModel: statusEmbedding.model,
-    provider: statusEmbedding.provider === "openai"
-      ? new UnavailableOpenAIEmbeddingProvider({
-          model: statusEmbedding.model as any,
+    provider: statusEmbedding.provider === "voyageai"
+      ? new UnavailableVoyageEmbeddingProvider({
+          model: statusEmbedding.model,
           dimension: statusEmbedding.dimension ?? undefined,
           baseUrl: statusEmbedding.baseUrl,
         })
-      : undefined,
-    keyConfigured: Boolean(process.env.OPENAI_API_KEY?.trim()),
+      : statusEmbedding.provider === "openai"
+        ? new UnavailableOpenAIEmbeddingProvider({
+            model: statusEmbedding.model as any,
+            dimension: statusEmbedding.dimension ?? undefined,
+            baseUrl: statusEmbedding.baseUrl,
+          })
+        : undefined,
+    keyConfigured: statusEmbedding.provider === "voyageai"
+      ? Boolean(process.env.VOYAGE_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim())
+      : Boolean(process.env.OPENAI_API_KEY?.trim()),
     configuredProvider: {
-      id: statusEmbedding.provider === "openai" ? "openai" : "local-llama-cpp",
-      remote: statusEmbedding.provider === "openai",
+      id: statusEmbedding.provider === "voyageai"
+        ? "voyageai"
+        : statusEmbedding.provider === "openai"
+          ? "openai"
+          : "local-llama-cpp",
+      remote: statusEmbedding.provider === "voyageai" || statusEmbedding.provider === "openai",
       model: statusEmbedding.model,
       dimension: statusEmbedding.dimension,
     },
@@ -2491,6 +2562,11 @@ async function vectorIndex(
       console.log(`${c.green}✓ All content hashes already have embeddings.${c.reset}`);
       closeDb();
       return;
+    }
+    if (provider instanceof UnavailableVoyageEmbeddingProvider) {
+      throw new EmbeddingConfigError(
+        "Voyage AI document embedding is authorized, but VOYAGE_API_KEY is not configured.",
+      );
     }
     if (provider instanceof UnavailableOpenAIEmbeddingProvider) {
       throw new EmbeddingConfigError(
@@ -4286,6 +4362,7 @@ function checkModelDefaults(
 ): void {
   const isRemoteEmbed = Boolean(
     doctorEmbedding?.provider === "openai"
+    || doctorEmbedding?.provider === "voyageai"
     || configModels.embed_api_url
     || configModels.embed_base_url
     || configModels.embed_url
@@ -4665,18 +4742,25 @@ async function showDoctor(): Promise<void> {
 
   const isRemoteEmbed = Boolean(
     doctorEmbedding.provider === "openai"
+    || doctorEmbedding.provider === "voyageai"
     || configModels.embed_api_url
     || configModels.embed_base_url
     || configModels.embed_url
     || configModels.embed_api_model,
   );
   if (isRemoteEmbed) {
-    const embedEndpoint = (doctorEmbedding.provider === "openai" ? doctorEmbedding.baseUrl : undefined)
+    const isVoyage = doctorEmbedding.provider === "voyageai";
+    const defaultEndpoint = isVoyage ? "https://api.voyageai.com/v1" : (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1");
+    const embedEndpoint = (doctorEmbedding.provider === "openai" || doctorEmbedding.provider === "voyageai" ? doctorEmbedding.baseUrl : undefined)
       ?? configModels.embed_api_url
       ?? configModels.embed_base_url
       ?? configModels.embed_url
-      ?? (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1");
-    doctorCheck("openai embedding", true, `${doctorEmbedding.model} (endpoint: ${embedEndpoint})`);
+      ?? defaultEndpoint;
+    doctorCheck(
+      isVoyage ? "voyageai embedding" : "openai embedding",
+      true,
+      `${doctorEmbedding.model} (endpoint: ${embedEndpoint})`,
+    );
   }
 
   const isRemoteGen = Boolean(
@@ -4720,17 +4804,29 @@ async function showDoctor(): Promise<void> {
 
   const diagnostics = inspectIndexDiagnostics(db, {
     fallbackModel: embedModel,
-    provider: doctorEmbedding.provider === "openai"
-      ? new UnavailableOpenAIEmbeddingProvider({
-          model: doctorEmbedding.model as any,
+    provider: doctorEmbedding.provider === "voyageai"
+      ? new UnavailableVoyageEmbeddingProvider({
+          model: doctorEmbedding.model,
           dimension: doctorEmbedding.dimension ?? undefined,
           baseUrl: doctorEmbedding.baseUrl,
         })
-      : undefined,
-    keyConfigured: Boolean(process.env.OPENAI_API_KEY?.trim()),
+      : doctorEmbedding.provider === "openai"
+        ? new UnavailableOpenAIEmbeddingProvider({
+            model: doctorEmbedding.model as any,
+            dimension: doctorEmbedding.dimension ?? undefined,
+            baseUrl: doctorEmbedding.baseUrl,
+          })
+        : undefined,
+    keyConfigured: doctorEmbedding.provider === "voyageai"
+      ? Boolean(process.env.VOYAGE_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim())
+      : Boolean(process.env.OPENAI_API_KEY?.trim()),
     configuredProvider: {
-      id: doctorEmbedding.provider === "openai" ? "openai" : "local-llama-cpp",
-      remote: doctorEmbedding.provider === "openai",
+      id: doctorEmbedding.provider === "voyageai"
+        ? "voyageai"
+        : doctorEmbedding.provider === "openai"
+          ? "openai"
+          : "local-llama-cpp",
+      remote: doctorEmbedding.provider === "voyageai" || doctorEmbedding.provider === "openai",
       model: doctorEmbedding.model,
       dimension: doctorEmbedding.dimension,
     },

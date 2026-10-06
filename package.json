@@ -1,6 +1,6 @@
 {
   "name": "@wei840222/qmd",
-  "version": "2026.9.30",
+  "version": "2026.10.6",
   "description": "Query Markup Documents - On-device hybrid search for markdown files with BM25, vector search, and LLM reranking",
   "author": "Wan, Jiun Wei <wei840222@gmail.com>",
   "license": "MIT",

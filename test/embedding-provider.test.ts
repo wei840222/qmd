@@ -27,6 +27,7 @@ import {
   createStore,
   generateEmbeddings,
   hybridQuery,
+  resetInflightState,
   structuredSearch,
 } from "../src/store.js";
 
@@ -483,6 +484,71 @@ describe("embedding config resolver", () => {
         env: { OPENAI_API_KEY: "[REDACTED]" },
       })).toThrowError(EmbeddingConfigError);
     }
+
+    expect(resolveEmbeddingConfig({
+      config: {
+        collections: {},
+        models: {
+          embed_api_url: "https://api.voyageai.com/v1",
+          embed_api_model: "voyage-4",
+        },
+      },
+      defaultLocalModel,
+      env: { OPENAI_API_KEY: "[REDACTED]" },
+    }).canonical).toEqual({
+      provider: "voyageai",
+      model: "voyage-4",
+      dimension: 1024,
+      baseUrl: "https://api.voyageai.com/v1",
+    });
+
+    expect(resolveEmbeddingConfig({
+      config: {
+        collections: {},
+        models: {
+          embed_api_url: "https://api.voyageai.com/v1",
+          embed_api_model: "voyage-4",
+          embed_dimension: 512,
+        },
+      },
+      defaultLocalModel,
+      env: { VOYAGE_API_KEY: "vy-secret" },
+    }).canonical).toEqual({
+      provider: "voyageai",
+      model: "voyage-4",
+      dimension: 512,
+      baseUrl: "https://api.voyageai.com/v1",
+    });
+
+    expect(resolveEmbeddingConfig({
+      config: {
+        collections: {},
+        models: {
+          embed_api_url: "https://api.voyageai.com/v1",
+          embed_api_model: "voyage-4",
+        },
+      },
+      defaultLocalModel,
+      env: { VOYAGE_API_KEY: "vy-secret" },
+    }).credentialAvailable).toBe(true);
+
+    expect(resolveEmbeddingConfig({
+      config: {
+        collections: {},
+        models: {
+          embed_api_url: "http://127.0.0.1:8080/v1",
+          embed_api_model: "custom-bge-large",
+          embed_dimension: 768,
+        },
+      },
+      defaultLocalModel,
+      env: {},
+    }).canonical).toEqual({
+      provider: "openai",
+      model: "custom-bge-large",
+      dimension: 768,
+      baseUrl: "http://127.0.0.1:8080/v1",
+    });
   });
 
   test("creates isolated immutable results for concurrent SDK configs", () => {
@@ -641,6 +707,7 @@ describe.skipIf(!!process.env.CI)("Store embedding provider seam", () => {
       expect(embedBatch.mock.calls[0]?.[0]).toEqual(["query:cache invalidation"]);
 
       embedBatch.mockClear();
+      resetInflightState();
       await hybridQuery(store, "cache invalidation", {
         expansion: "skip",
         skipRerank: true,

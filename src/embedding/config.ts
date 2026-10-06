@@ -5,15 +5,37 @@ export const OPENAI_EMBEDDING_DIMENSION = 1536 as const;
 export const EMBEDDING_CONFIG_DB_KEY = "embedding_config" as const;
 export const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1" as const;
 
-/** Supported OpenAI embedding models and their native dimensions. */
+/** Supported remote OpenAI embedding models and their default/native dimensions. */
 export const OPENAI_EMBEDDING_MODELS: ReadonlyMap<string, number> = new Map([
   ["text-embedding-3-small", 1536],
   ["text-embedding-3-large", 3072],
 ]);
 
-export type OpenAIEmbeddingModel = "text-embedding-3-small" | "text-embedding-3-large";
+export const DEFAULT_VOYAGE_BASE_URL = "https://api.voyageai.com/v1" as const;
+export const DEFAULT_VOYAGE_EMBEDDING_MODEL = "voyage-4" as const;
+export const DEFAULT_VOYAGE_EMBEDDING_DIMENSION = 1024 as const;
 
-export type EmbeddingProviderName = "local" | "openai";
+/** Supported Voyage AI embedding models and their default/native dimensions. */
+export const VOYAGE_EMBEDDING_MODELS: ReadonlyMap<string, number> = new Map([
+  ["voyage-4", 1024],
+  ["voyage-4-large", 1024],
+  ["voyage-4-lite", 1024],
+  ["voyage-3.5", 1024],
+  ["voyage-3.5-lite", 512],
+  ["voyage-3", 1024],
+  ["voyage-3-large", 1024],
+  ["voyage-3-lite", 512],
+  ["voyage-code-3", 1024],
+  ["voyage-finance-2", 1024],
+  ["voyage-law-2", 1024],
+  ["voyage-multilingual-2", 1024],
+  ["voyage-2", 1024],
+]);
+
+export type OpenAIEmbeddingModel = "text-embedding-3-small" | "text-embedding-3-large" | (string & {});
+export type VoyageEmbeddingModel = "voyage-4" | "voyage-4-large" | (string & {});
+
+export type EmbeddingProviderName = "local" | "openai" | "voyageai";
 
 export type EmbeddingConfig =
   | {
@@ -24,6 +46,12 @@ export type EmbeddingConfig =
   | {
       provider: "openai";
       model?: OpenAIEmbeddingModel;
+      dimension?: number;
+      baseUrl?: string;
+    }
+  | {
+      provider: "voyageai" | "voyage";
+      model?: VoyageEmbeddingModel;
       dimension?: number;
       baseUrl?: string;
     };
@@ -37,6 +65,12 @@ export type CanonicalEmbeddingConfig = Readonly<
   | {
       provider: "openai";
       model: OpenAIEmbeddingModel;
+      dimension: number;
+      baseUrl: string;
+    }
+  | {
+      provider: "voyageai";
+      model: VoyageEmbeddingModel;
       dimension: number;
       baseUrl: string;
     }
@@ -116,6 +150,37 @@ function assertKnownKeys(value: Record<string, unknown>, label: string): void {
   }
 }
 
+export function inferRemoteProviderFromModel(
+  model: string | undefined,
+  baseUrl?: string,
+): "voyageai" | "openai" {
+  if (model) {
+    const trimmed = model.trim().toLowerCase();
+    if (
+      trimmed.startsWith("voyage")
+      || trimmed.includes("voyage-")
+      || trimmed.includes("voyageai")
+      || VOYAGE_EMBEDDING_MODELS.has(trimmed)
+    ) {
+      return "voyageai";
+    }
+    if (
+      trimmed.startsWith("text-embedding")
+      || trimmed.includes("openai")
+      || OPENAI_EMBEDDING_MODELS.has(trimmed)
+    ) {
+      return "openai";
+    }
+  }
+  if (baseUrl) {
+    const lowerUrl = baseUrl.toLowerCase();
+    if (lowerUrl.includes("voyage")) {
+      return "voyageai";
+    }
+  }
+  return "openai";
+}
+
 function parseEmbeddingBlock(
   input: unknown,
   defaultLocalModel: string,
@@ -127,9 +192,17 @@ function parseEmbeddingBlock(
 
   const rawProvider = hasOwn(value, "provider") ? value.provider : undefined;
   const rawBaseUrl = hasOwn(value, "baseUrl") ? value.baseUrl : undefined;
+  const rawModel = hasOwn(value, "model") ? String(value.model) : undefined;
 
-  // Infer provider: "openai" if provider is omitted but baseUrl is present
-  const provider = rawProvider ?? (rawBaseUrl ? "openai" : "local");
+  // Infer provider if omitted
+  let provider = rawProvider;
+  if (!provider) {
+    if (rawBaseUrl) {
+      provider = inferRemoteProviderFromModel(rawModel, String(rawBaseUrl));
+    } else {
+      provider = "local";
+    }
+  }
 
   if (provider === "local") {
     const model = hasOwn(value, "model")
@@ -147,40 +220,85 @@ function parseEmbeddingBlock(
     return Object.freeze({ provider: "local", model, dimension });
   }
 
-  if (provider === "openai") {
+  if (provider === "voyageai" || provider === "voyage") {
     const model = hasOwn(value, "model")
       ? requireModel(value.model, `${label}.model`)
-      : OPENAI_EMBEDDING_MODEL;
-    const expectedDimension = OPENAI_EMBEDDING_MODELS.get(model);
-    if (expectedDimension === undefined) {
-      const supported = Array.from(OPENAI_EMBEDDING_MODELS.keys()).join(", ");
-      throw new EmbeddingConfigError(
-        `${label}.model must be one of: ${supported}. Got: ${model}`,
-      );
-    }
-
-    const dimension = hasOwn(value, "dimension")
-      ? parseDimension(value.dimension, `${label}.dimension`)
-      : expectedDimension;
-    if (dimension !== expectedDimension) {
-      throw new EmbeddingConfigError(
-        `${label}.dimension must be ${expectedDimension} for model ${model}.`,
-      );
-    }
-
+      : DEFAULT_VOYAGE_EMBEDDING_MODEL;
     const baseUrl = rawBaseUrl
       ? requireBaseUrl(rawBaseUrl, `${label}.baseUrl`)
-      : DEFAULT_OPENAI_BASE_URL;
+      : DEFAULT_VOYAGE_BASE_URL;
+
+    const knownDimension = VOYAGE_EMBEDDING_MODELS.get(model);
+    let dimension: number;
+    if (hasOwn(value, "dimension")) {
+      dimension = parseDimension(value.dimension, `${label}.dimension`);
+    } else if (knownDimension !== undefined) {
+      dimension = knownDimension;
+    } else {
+      dimension = DEFAULT_VOYAGE_EMBEDDING_DIMENSION;
+    }
 
     return Object.freeze({
-      provider: "openai",
-      model: model as OpenAIEmbeddingModel,
-      dimension: expectedDimension,
+      provider: "voyageai",
+      model: model as VoyageEmbeddingModel,
+      dimension,
       baseUrl,
     });
   }
 
-  throw new EmbeddingConfigError(`${label}.provider must be local or openai.`);
+  if (provider === "openai") {
+    const model = hasOwn(value, "model")
+      ? requireModel(value.model, `${label}.model`)
+      : OPENAI_EMBEDDING_MODEL;
+    const baseUrl = rawBaseUrl
+      ? requireBaseUrl(rawBaseUrl, `${label}.baseUrl`)
+      : DEFAULT_OPENAI_BASE_URL;
+
+    if (baseUrl === DEFAULT_OPENAI_BASE_URL) {
+      const expectedDimension = OPENAI_EMBEDDING_MODELS.get(model);
+      if (expectedDimension === undefined || !model.startsWith("text-embedding-3")) {
+        throw new EmbeddingConfigError(
+          `${label}.model must be one of: text-embedding-3-small, text-embedding-3-large. Got: ${model}`,
+        );
+      }
+      const dimension = hasOwn(value, "dimension")
+        ? parseDimension(value.dimension, `${label}.dimension`)
+        : expectedDimension;
+      if (dimension !== expectedDimension) {
+        throw new EmbeddingConfigError(
+          `${label}.dimension must be ${expectedDimension} for model ${model}.`,
+        );
+      }
+      return Object.freeze({
+        provider: "openai",
+        model: model as OpenAIEmbeddingModel,
+        dimension: expectedDimension,
+        baseUrl,
+      });
+    }
+
+    // Custom or non-default endpoints (e.g. Bifrost proxy, self-hosted LLM)
+    const knownDimension = OPENAI_EMBEDDING_MODELS.get(model);
+    let dimension: number;
+    if (hasOwn(value, "dimension")) {
+      dimension = parseDimension(value.dimension, `${label}.dimension`);
+    } else if (knownDimension !== undefined) {
+      dimension = knownDimension;
+    } else {
+      throw new EmbeddingConfigError(
+        `${label}.dimension must be specified for custom model ${model}.`,
+      );
+    }
+
+    return Object.freeze({
+      provider: "openai",
+      model: model as OpenAIEmbeddingModel,
+      dimension,
+      baseUrl,
+    });
+  }
+
+  throw new EmbeddingConfigError(`${label}.provider must be local, openai, or voyageai.`);
 }
 
 function resolveSource(
@@ -197,7 +315,7 @@ function resolveSource(
         "embedding config",
         false,
       );
-      if (canonical.provider === "openai") {
+      if (canonical.provider === "openai" || canonical.provider === "voyageai") {
         throw new EmbeddingConfigError(
           "embedding config no longer selects remote embeddings; configure models.embed_api_url and models.embed_api_model instead.",
         );
@@ -221,14 +339,35 @@ function resolveSource(
       const customDimension = hasOwn(models, "embed_dimension")
         ? parseDimension(models.embed_dimension, "models.embed_dimension")
         : undefined;
+      const env = options.env ?? process.env;
+      const rawEnvModel = (typeof env.EMBEDDING_MODEL === "string" && env.EMBEDDING_MODEL.trim() !== "")
+        ? env.EMBEDDING_MODEL.trim()
+        : (typeof env.EMBED_API_MODEL === "string" && env.EMBED_API_MODEL.trim() !== "")
+          ? env.EMBED_API_MODEL.trim()
+          : undefined;
+
       const embedApiModel = hasOwn(models, "embed_api_model")
         ? requireModel(models.embed_api_model, "models.embed_api_model")
-        : undefined;
+        : (hasEmbedBaseUrl && hasOwn(models, "embed_model")
+            ? requireModel(models.embed_model, "models.embed_model")
+            : (hasEmbedBaseUrl && hasOwn(models, "embed") && typeof models.embed === "string" && models.embed.trim() !== "" && !models.embed.startsWith("hf:") && !models.embed.startsWith("ollama:") && models.embed !== "default"
+                ? models.embed.trim()
+                : rawEnvModel));
+      const rawProvider = models.embed_provider ?? models.provider;
 
       if (hasEmbedBaseUrl && embedApiModel !== undefined) {
+        let provider: "voyageai" | "openai";
+        if (rawProvider === "voyageai" || rawProvider === "voyage") {
+          provider = "voyageai";
+        } else if (rawProvider === "openai") {
+          provider = "openai";
+        } else {
+          provider = inferRemoteProviderFromModel(embedApiModel, String(rawEmbedBaseUrl));
+        }
+
         return {
           canonical: parseEmbeddingBlock({
-            provider: "openai",
+            provider,
             model: embedApiModel,
             ...(customDimension === undefined ? {} : { dimension: customDimension }),
             baseUrl: requireBaseUrl(rawEmbedBaseUrl, "models.embed_api_url"),
@@ -277,10 +416,15 @@ export function resolveEmbeddingConfig(
 ): ResolvedEmbeddingConfig {
   const resolved = resolveSource(options);
   const env = options.env ?? process.env;
-  const hasApiKey = typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim() !== "";
+  const isVoyage = resolved.canonical.provider === "voyageai";
+  const isOpenAI = resolved.canonical.provider === "openai";
+  const hasApiKey = isVoyage
+    ? (typeof env.VOYAGE_API_KEY === "string" && env.VOYAGE_API_KEY.trim() !== "")
+      || (typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim() !== "")
+    : (typeof env.OPENAI_API_KEY === "string" && env.OPENAI_API_KEY.trim() !== "");
   // For non-default endpoints (self-hosted / proxy), API key is optional
-  const isNonDefaultEndpoint = resolved.canonical.provider === "openai"
-    && resolved.canonical.baseUrl !== DEFAULT_OPENAI_BASE_URL;
+  const isNonDefaultEndpoint = (resolved.canonical.provider === "openai" && resolved.canonical.baseUrl !== DEFAULT_OPENAI_BASE_URL)
+    || (resolved.canonical.provider === "voyageai" && resolved.canonical.baseUrl !== DEFAULT_VOYAGE_BASE_URL);
   const credentialAvailable = resolved.canonical.provider === "local"
     || hasApiKey
     || isNonDefaultEndpoint;
@@ -289,7 +433,7 @@ export function resolveEmbeddingConfig(
     canonical: resolved.canonical,
     source: resolved.source,
     credentialAvailable,
-    remoteRequestsEnabled: resolved.canonical.provider === "openai" && credentialAvailable,
+    remoteRequestsEnabled: (isOpenAI || isVoyage) && credentialAvailable,
   });
 }
 
@@ -299,9 +443,9 @@ export function resolveEmbeddingModelOverride(
 ): string {
   if (override === undefined) return resolved.canonical.model;
   const model = requireModel(override, "embedding model override");
-  if (resolved.canonical.provider === "openai" && model !== resolved.canonical.model) {
+  if ((resolved.canonical.provider === "openai" || resolved.canonical.provider === "voyageai") && model !== resolved.canonical.model) {
     throw new EmbeddingConfigError(
-      `OpenAI embedding model override must be ${resolved.canonical.model}.`,
+      `${resolved.canonical.provider === "voyageai" ? "Voyage AI" : "OpenAI"} embedding model override must be ${resolved.canonical.model}.`,
     );
   }
   return model;

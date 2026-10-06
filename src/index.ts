@@ -95,6 +95,10 @@ import {
   UnavailableOpenAIEmbeddingProvider,
 } from "./embedding/openai.js";
 import {
+  VoyageEmbeddingProvider,
+  UnavailableVoyageEmbeddingProvider,
+} from "./embedding/voyage.js";
+import {
   authorizeRemoteEmbeddingRequest,
   remoteEmbeddingIdentity,
 } from "./embedding/remote-embedding.js";
@@ -519,6 +523,61 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     });
     internal.embeddingProvider = embeddingOwner.provider;
     closeEmbeddingResources = () => embeddingOwner.close();
+  } else if (embedding.canonical.provider === "voyageai") {
+    const apiKey =
+      config?.models?.embed_api_key?.trim() ||
+      process.env.VOYAGE_API_KEY?.trim() ||
+      process.env.OPENAI_API_KEY?.trim();
+    remoteKeyConfigured = apiKey != null && apiKey !== "";
+    const configuredModel = embedding.canonical.model;
+    const configuredDimension = embedding.canonical.dimension;
+    const configuredBaseUrl = embedding.canonical.baseUrl;
+    const canConstruct = remoteKeyConfigured || embedding.credentialAvailable;
+    const provider = canConstruct
+      ? new VoyageEmbeddingProvider({
+          apiKey: apiKey || undefined,
+          model: configuredModel,
+          dimension: configuredDimension,
+          baseUrl: configuredBaseUrl,
+          requestTimeoutMs: options.remoteRequestTimeoutMs,
+          authorizeRequest: request => {
+            const activeProvider = internal.embeddingProvider;
+            if (!activeProvider?.remote) {
+              throw new EmbeddingConfigError("Remote embedding provider is not active.");
+            }
+            const storedIdentity = readStoredEmbeddingIdentity(db);
+            const requestIdentity = [
+              storedIdentity,
+              remoteEmbeddingIdentity(activeProvider, "regex"),
+              remoteEmbeddingIdentity(activeProvider, "auto"),
+            ].find(identity => identity?.fingerprint === request.fingerprint);
+            if (!requestIdentity) {
+              throw new EmbeddingConfigError("Remote request fingerprint does not match an active embedding identity.");
+            }
+            authorizeRemoteEmbeddingRequest(
+              db,
+              requestIdentity,
+              request.purpose,
+              {
+                lease: request.buildLease,
+                requestFingerprint: request.fingerprint,
+              },
+            );
+          },
+        })
+      : new UnavailableVoyageEmbeddingProvider({ model: configuredModel, dimension: configuredDimension, baseUrl: configuredBaseUrl });
+    internal.embeddingProvider = provider;
+    closeEmbeddingResources = async () => {
+      try {
+        await provider.close();
+      } finally {
+        try {
+          await waitForLLMSessionsToDrain(localLlm);
+        } finally {
+          await llm.dispose();
+        }
+      }
+    };
   } else {
     const apiKey =
       config?.models?.embed_api_key?.trim() ||

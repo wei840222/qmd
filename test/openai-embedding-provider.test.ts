@@ -1382,3 +1382,4 @@ describe("OpenAIEmbeddingProvider", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
+
