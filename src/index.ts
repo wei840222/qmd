@@ -118,6 +118,7 @@ import { RemoteJev } from "./remote-jev.js";
 import type { ExpansionMode } from "./search/query-expansion.js";
 import {
   createCollectionConfigSource,
+  resolveEmbeddingCacheDir,
   loadConfig,
   addCollection as collectionsAddCollection,
   removeCollection as collectionsRemoveCollection,
@@ -461,6 +462,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
   }
   // else: DB-only mode — no external config, use existing store_collections
 
+  const embeddingCacheDir = resolveEmbeddingCacheDir(config, externalConfigSource);
   const embedding = resolveEmbeddingConfig({
     config,
     dbConfig: readCanonicalEmbeddingConfig(db),
@@ -540,6 +542,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
           model: configuredModel,
           dimension: configuredDimension,
           baseUrl: configuredBaseUrl,
+          cacheDir: options.readOnly ? undefined : embeddingCacheDir,
           requestTimeoutMs: options.remoteRequestTimeoutMs,
           authorizeRequest: request => {
             const activeProvider = internal.embeddingProvider;
@@ -595,6 +598,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
           model: configuredModel,
           dimension: configuredDimension,
           baseUrl: configuredBaseUrl,
+          cacheDir: options.readOnly ? undefined : embeddingCacheDir,
           requestTimeoutMs: options.remoteRequestTimeoutMs,
           authorizeRequest: request => {
             const activeProvider = internal.embeddingProvider;

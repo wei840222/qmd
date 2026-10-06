@@ -390,7 +390,8 @@ describe("OpenAIEmbeddingProvider", () => {
       Array.from({ length: 128 }, () => "x"),
       DOCUMENT_OPTIONS,
     )).resolves.toHaveLength(128);
-    expect(requestSizes).toEqual([8_192, 300_000, 128]);
+    // Full input budgets are validated before repeated documents are deduplicated.
+    expect(requestSizes).toEqual([8_192, 2_500, 1]);
     await provider.close();
   });
 
@@ -694,7 +695,7 @@ describe("OpenAIEmbeddingProvider", () => {
 
     const successful = await provider.embed("x", DOCUMENT_OPTIONS);
     expect(successful.usage).toEqual({ promptTokens: 1, totalTokens: 1 });
-    await expect(provider.embed("x", DOCUMENT_OPTIONS)).rejects.toMatchObject({ code: "PROVIDER_FAILURE" });
+    await expect(provider.embed("y", DOCUMENT_OPTIONS)).rejects.toMatchObject({ code: "PROVIDER_FAILURE" });
     expect(successful.usage).toEqual({ promptTokens: 1, totalTokens: 1 });
     expect(fetch).toHaveBeenCalledTimes(2);
     await provider.close();

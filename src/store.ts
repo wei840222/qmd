@@ -449,6 +449,7 @@ function createBorrowedEmbeddingSession(
   getBuildLease?: () => EmbeddingBuildLease | undefined,
   authorize?: Store["authorizeRemoteRequest"],
   getIdentity?: () => EmbeddingIdentity | undefined,
+  bypassCache = false,
 ): ILLMSession {
   const signal = AbortSignal.timeout(maxDurationMs);
   const deadlineMs = Date.now() + maxDurationMs;
@@ -484,6 +485,7 @@ function createBorrowedEmbeddingSession(
         deadline: deadlineMs,
         buildLease: requestLease,
         identityFingerprint,
+        bypassCache,
       });
       return { embedding: result.vector, model: result.model };
     },
@@ -512,6 +514,7 @@ function createBorrowedEmbeddingSession(
           deadline: deadlineMs,
           buildLease: requestLease,
           identityFingerprint,
+          bypassCache,
         });
         return results.map(result => ({ embedding: result.vector, model: result.model }));
       } catch (batchError) {
@@ -525,6 +528,7 @@ function createBorrowedEmbeddingSession(
             deadline: deadlineMs,
             buildLease: requestLease,
             identityFingerprint,
+            bypassCache,
           });
           results.push({ embedding: result.vector, model: result.model });
         }
@@ -3510,6 +3514,7 @@ export async function generateEmbeddings(
         () => embeddingLease,
         store.authorizeRemoteRequest,
         () => embeddingIdentity,
+        options?.force === true,
         ))
       : await withLLMSessionForLlm(llm!, runEmbeddingPipeline, {
           maxDuration: maxDurationMs,

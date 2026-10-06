@@ -58,6 +58,8 @@ export interface EmbeddingOperationOptions {
   deadline?: number;
   /** Complete active build lease required for remote index-build requests. */
   buildLease?: EmbeddingBuildLease;
+  /** Recompute document vectors instead of reusing cached or in-flight results. */
+  bypassCache?: boolean;
   /** Full published/build identity fingerprint, including chunking policy. */
   identityFingerprint: string;
 }

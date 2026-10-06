@@ -140,6 +140,7 @@ import {
   listAllContexts,
   setConfigIndexName,
   loadConfig,
+  resolveEmbeddingCacheDir,
   saveConfig,
   setConfigSource,
   findLocalConfigPath,
@@ -186,13 +187,17 @@ function getStore(): ReturnType<typeof createStore> {
   if (!store) {
     store = createStore(storeDbPathOverride);
     let cliLlama: LlamaCpp | undefined;
-    let config: CollectionConfig | undefined;
+    const config = loadConfig();
     try {
-      config = loadConfig();
       syncConfigToDb(store.db, config);
       const dbEmbeddingConfig = readCanonicalEmbeddingConfig(store.db);
       const activeModels = ensureModelsConfiguredForCli();
-      const modelsForLlm = localConfigIsFullyTrusted() ? activeModels : resolveModels();
+      const configTrusted = localConfigIsFullyTrusted();
+      const modelsForLlm = configTrusted ? activeModels : resolveModels();
+      const configuredCacheDir = resolveEmbeddingCacheDir(config);
+      const embeddingCacheDir = configTrusted || (configuredCacheDir &&
+        isCollectionPathInsideProject(getConfigPath(), configuredCacheDir))
+        ? configuredCacheDir : undefined;
       const embedding = resolveEmbeddingConfig({
         config,
         dbConfig: dbEmbeddingConfig,
@@ -223,6 +228,7 @@ function getStore(): ReturnType<typeof createStore> {
               model: configuredModel,
               dimension: configuredDimension,
               baseUrl: configuredBaseUrl,
+              cacheDir: embeddingCacheDir,
               authorizeRequest: request => {
                 const activeProvider = store?.embeddingProvider;
                 if (!activeProvider?.remote) {
@@ -277,6 +283,7 @@ function getStore(): ReturnType<typeof createStore> {
               model: configuredModel,
               dimension: configuredDimension,
               baseUrl: configuredBaseUrl,
+              cacheDir: embeddingCacheDir,
               authorizeRequest: request => {
                 const activeProvider = store?.embeddingProvider;
                 if (!activeProvider?.remote) {
@@ -1046,6 +1053,7 @@ function collectSensitiveSnapshot(): SensitiveSnapshot {
       collection: name,
       path: col.path,
     })),
+    cacheDir: resolveEmbeddingCacheDir(config),
     models: {
       embed: config.models?.embed,
       rerank: config.models?.rerank,
@@ -1093,6 +1101,10 @@ async function confirmOnTty(question: string): Promise<boolean> {
 }
 
 function printGatedItems(gated: GatedItems): void {
+  if (gated.cacheDir) {
+    console.log(`${c.yellow}Embedding cache directory outside this project:${c.reset}`);
+    console.log(`  ${gated.cacheDir}`);
+  }
   if (gated.hooks.length > 0) {
     console.log(`${c.yellow}This project's config defines update commands:${c.reset}`);
     for (const hook of gated.hooks) {

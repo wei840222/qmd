@@ -57,6 +57,8 @@ export interface ModelsConfig {
   embed_api_key?: string;
   embed_dimension?: number;
   embed_provider?: string;
+  /** Shared remote document embedding cache; omitted means memory only. */
+  embed_cache_dir?: string;
   rerank?: string;
   generate?: string;
   generate_url?: string;
@@ -218,6 +220,30 @@ function ensureConfigDir(): void {
 // ============================================================================
 
 /**
+ * Resolve the optional embedding cache without creating it or rewriting YAML.
+ * Local `.qmd` paths use the project root, other YAML paths use their directory,
+ * and inline configuration uses the current working directory.
+ */
+export function resolveEmbeddingCacheDir(
+  config: Pick<CollectionConfig, "models"> | undefined,
+  source: CollectionConfigSource = configSource,
+): string | undefined {
+  const raw = config?.models?.embed_cache_dir;
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string" || !raw.trim()) {
+    throw new Error("models.embed_cache_dir must be a non-empty string");
+  }
+  const value = raw.trim();
+  const expanded = value === "~" ? qmdHomedir()
+    : /^~[/\\]/.test(value) ? join(qmdHomedir(), value.slice(2)) : value;
+  const configDir = source.type === "file"
+    ? dirname(resolve(source.path || getConfigFilePath())) : process.cwd();
+  const base = source.type === "file" && basename(configDir) === ".qmd"
+    ? dirname(configDir) : configDir;
+  return resolve(base, expanded);
+}
+
+/**
  * Load configuration from the configured source.
  * - Inline config: returns the in-memory object directly
  * - File-based: reads from YAML file (default ~/.config/qmd/index.yml)
@@ -226,6 +252,7 @@ function ensureConfigDir(): void {
 export function loadConfig(source: CollectionConfigSource = configSource): CollectionConfig {
   // SDK inline config mode
   if (source.type === 'inline') {
+    resolveEmbeddingCacheDir(source.config, source);
     return source.config;
   }
 
@@ -245,6 +272,7 @@ export function loadConfig(source: CollectionConfigSource = configSource): Colle
       config.collections = {};
     }
 
+    resolveEmbeddingCacheDir(config, source);
     return config;
   } catch (error) {
     throw new Error(`Failed to parse ${configPath}: ${error}`);
@@ -260,6 +288,7 @@ export function saveConfig(
   config: CollectionConfig,
   source: CollectionConfigSource = configSource,
 ): void {
+  resolveEmbeddingCacheDir(config, source);
   // SDK inline config mode: update in place, no file I/O
   if (source.type === 'inline') {
     source.config = config;

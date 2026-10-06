@@ -3,12 +3,13 @@
  *
  * A project-local `.qmd/index.yml` arrives with a `git clone`, and
  * `findLocalConfigPath` adopts it automatically for any command run inside the
- * tree. Three fields in that file can reach outside the project:
+ * tree. These fields in that file can reach outside the project:
  *
  * - `update:` — a shell command run by `qmd update` (#886)
  * - `collections.*.path` — any directory the process can read (#889)
  * - `models.embed` / `models.rerank` / `models.generate` — any `hf:` repo or
  *   local GGUF path (#889)
+ * - `models.embed_cache_dir` — a shared embedding cache directory
  *
  * Global `~/.config/qmd` is never gated. In-project collection paths and the
  * built-in default model URIs are also allowed without approval: those are
@@ -47,12 +48,14 @@ export type SensitiveSnapshot = {
   hooks: UpdateHook[];
   paths: CollectionPath[];
   models: ModelsSnapshot;
+  cacheDir?: string;
 };
 
 export type GatedItems = {
   hooks: UpdateHook[];
   paths: CollectionPath[];
   models: Array<{ slot: ModelSlot; uri: string }>;
+  cacheDir?: string;
 };
 
 export type BuiltinModels = Required<ModelsSnapshot>;
@@ -114,7 +117,11 @@ function realOrResolve(path: string): string {
   try {
     return realpathSync(path);
   } catch {
-    return resolve(path);
+    // A not-yet-created cache directory can still escape through a symlink
+    // in an existing parent. Resolve that parent before appending the leaf.
+    const absolute = resolve(path);
+    const parent = dirname(absolute);
+    return parent === absolute ? absolute : join(realOrResolve(parent), basename(absolute));
   }
 }
 
@@ -155,11 +162,13 @@ export function gatedItems(
     hooks: snapshot.hooks,
     paths: snapshot.paths.filter(p => !isCollectionPathInsideProject(configPath, p.path)),
     models: gatedModels(snapshot.models, builtins),
+    ...(snapshot.cacheDir && !isCollectionPathInsideProject(configPath, snapshot.cacheDir)
+      ? { cacheDir: snapshot.cacheDir } : {}),
   };
 }
 
 export function hasGatedItems(gated: GatedItems): boolean {
-  return gated.hooks.length > 0 || gated.paths.length > 0 || gated.models.length > 0;
+  return gated.hooks.length > 0 || gated.paths.length > 0 || gated.models.length > 0 || !!gated.cacheDir;
 }
 
 function byFirst(a: string[], b: string[]): number {
@@ -184,7 +193,7 @@ export function hookDigest(hooks: UpdateHook[]): string {
 
 /**
  * Digest of the gated surface of a project-local config: hooks, resolved
- * collection paths, and non-default model URIs. Missing model keys and the
+ * collection paths, external cache directories, and non-default model URIs. Missing model keys and the
  * built-in default URIs are equivalent so that `qmd init` filling defaults
  * into the YAML does not invalidate an approval.
  */
@@ -199,6 +208,7 @@ export function sensitiveDigest(
     paths: gated.paths
       .map(p => [p.collection, resolveConfigCollectionPath(p.path, configPath)] as [string, string])
       .sort(byFirst),
+    ...(gated.cacheDir ? { cacheDir: resolveConfigCollectionPath(gated.cacheDir, configPath) } : {}),
     models: gated.models
       .map(m => [m.slot, m.uri] as [string, string])
       .sort(byFirst),

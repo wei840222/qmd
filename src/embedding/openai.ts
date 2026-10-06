@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { documentCacheNamespace, embedDocumentsWithCache } from "./document-cache.js";
+import { embedDocumentsWithDiskCache } from "./disk-document-cache.js";
 import {
   OPENAI_EMBEDDING_DIMENSION,
   OPENAI_EMBEDDING_MODEL,
@@ -41,6 +43,8 @@ export interface OpenAIEmbeddingProviderOptions {
   dimension?: number;
   /** Override the base URL. Falls back to OPENAI_BASE_URL env or the official OpenAI endpoint. */
   baseUrl?: string;
+  /** Shared document cache directory; omitted keeps module-local memory caching. */
+  cacheDir?: string;
   maxAttempts?: number;
   fetch?: typeof globalThis.fetch;
   sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
@@ -276,6 +280,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   readonly remote = true;
 
   private readonly apiKey: string | undefined;
+  private readonly cacheDir: string | undefined;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly maxAttempts: number;
@@ -293,6 +298,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   private closed = false;
 
   constructor(options: OpenAIEmbeddingProviderOptions) {
+    this.cacheDir = options.cacheDir;
     const apiKey = options.apiKey?.trim() || undefined;
     const maxAttempts = options.maxAttempts ?? 3;
     if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 3) {
@@ -388,6 +394,14 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     texts: string[],
     options: EmbeddingOperationOptions,
   ): Promise<EmbeddingVector[]> {
+    return this.embedBatchInternal(texts, options, true);
+  }
+
+  private async embedBatchInternal(
+    texts: string[],
+    options: EmbeddingOperationOptions,
+    useCache: boolean,
+  ): Promise<EmbeddingVector[]> {
     options = Object.freeze({
       purpose: options.purpose,
       kind: options.kind,
@@ -395,6 +409,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
       deadline: options.deadline,
       buildLease: options.buildLease ? Object.freeze({ ...options.buildLease }) : undefined,
       identityFingerprint: options.identityFingerprint,
+      bypassCache: options.bypassCache,
     });
     if (typeof options.identityFingerprint !== "string" || options.identityFingerprint.length === 0) {
       throw new EmbeddingProviderError(
@@ -471,6 +486,44 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     const signal = AbortSignal.any(signals);
     let releaseRequestSlot: (() => void) | undefined;
     try {
+      if (useCache && options.purpose === "index-build") {
+        const authorizeReuse = async () => {
+          this.throwIfInterrupted(options, deadlineController);
+          if (!this.authorizeRequest) {
+            throw new EmbeddingProviderError("REMOTE_AUTHORIZATION_REQUIRED", "Remote embedding request authorization is not configured.");
+          }
+          await awaitWithSignal(this.authorizeRequest({
+            fingerprint: options.identityFingerprint,
+            purpose: options.purpose,
+            kind: options.kind,
+            attempt: 1,
+            buildLease: options.buildLease,
+          }), signal);
+          this.throwIfInterrupted(options, deadlineController);
+        };
+        const namespace = documentCacheNamespace(
+          JSON.stringify([this.canonicalIdentityMaterial(), options.identityFingerprint, "document"]),
+          this.apiKey, this.cacheDir ? undefined : this.fetchImpl,
+        );
+        try {
+          const fetchBatch = (missing: string[]) => this.embedBatchInternal(missing, { ...options, signal }, false);
+          const operation = this.cacheDir
+            ? embedDocumentsWithDiskCache(
+                this.cacheDir, namespace, inputs, this.model, this.dimension,
+                fetchBatch, authorizeReuse, signal, options.bypassCache,
+              )
+            : embedDocumentsWithCache(
+                namespace, inputs, this.model, this.dimension,
+                fetchBatch, authorizeReuse, options.bypassCache,
+              );
+          const results = await awaitWithSignal(operation, signal);
+          this.throwIfInterrupted(options, deadlineController);
+          return results;
+        } catch (error) {
+          this.throwIfInterrupted(options, deadlineController);
+          throw error;
+        }
+      }
       try {
         releaseRequestSlot = await this.acquireRequestSlot(signal);
       } catch {

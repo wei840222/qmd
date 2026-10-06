@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { documentCacheNamespace, embedDocumentsWithCache } from "./document-cache.js";
+import { embedDocumentsWithDiskCache } from "./disk-document-cache.js";
 import {
   DEFAULT_VOYAGE_BASE_URL,
   DEFAULT_VOYAGE_EMBEDDING_DIMENSION,
@@ -53,6 +55,8 @@ export interface VoyageEmbeddingProviderOptions {
   dimension?: number;
   /** Override the base URL. Falls back to VOYAGE_BASE_URL, OPENAI_BASE_URL, or official Voyage API. */
   baseUrl?: string;
+  /** Shared document cache directory; omitted keeps module-local memory caching. */
+  cacheDir?: string;
   maxAttempts?: number;
   fetch?: typeof globalThis.fetch;
   sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
@@ -303,6 +307,7 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
   readonly remote = true;
 
   private readonly apiKey: string | undefined;
+  private readonly cacheDir: string | undefined;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly maxAttempts: number;
@@ -320,6 +325,7 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
   private closed = false;
 
   constructor(options: VoyageEmbeddingProviderOptions) {
+    this.cacheDir = options.cacheDir;
     const apiKey = options.apiKey?.trim() || undefined;
     const maxAttempts = options.maxAttempts ?? 3;
     if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 3) {
@@ -433,6 +439,14 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
     texts: string[],
     options: EmbeddingOperationOptions,
   ): Promise<EmbeddingVector[]> {
+    return this.embedBatchInternal(texts, options, true);
+  }
+
+  private async embedBatchInternal(
+    texts: string[],
+    options: EmbeddingOperationOptions,
+    useCache: boolean,
+  ): Promise<EmbeddingVector[]> {
     options = Object.freeze({
       purpose: options.purpose,
       kind: options.kind,
@@ -440,6 +454,7 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
       deadline: options.deadline,
       buildLease: options.buildLease ? Object.freeze({ ...options.buildLease }) : undefined,
       identityFingerprint: options.identityFingerprint,
+      bypassCache: options.bypassCache,
     });
     if (typeof options.identityFingerprint !== "string" || options.identityFingerprint.length === 0) {
       throw new EmbeddingProviderError(
@@ -517,6 +532,44 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
     const signal = AbortSignal.any(signals);
     let releaseRequestSlot: (() => void) | undefined;
     try {
+      if (useCache && options.purpose === "index-build") {
+        const authorizeReuse = async () => {
+          this.throwIfInterrupted(options, deadlineController);
+          if (!this.authorizeRequest) {
+            throw new EmbeddingProviderError("REMOTE_AUTHORIZATION_REQUIRED", "Remote embedding request authorization is not configured.");
+          }
+          await awaitWithSignal(this.authorizeRequest({
+            fingerprint: options.identityFingerprint,
+            purpose: options.purpose,
+            kind: options.kind,
+            attempt: 1,
+            buildLease: options.buildLease,
+          }), signal);
+          this.throwIfInterrupted(options, deadlineController);
+        };
+        const namespace = documentCacheNamespace(
+          JSON.stringify([this.canonicalIdentityMaterial(), options.identityFingerprint, "document"]),
+          this.apiKey, this.cacheDir ? undefined : this.fetchImpl,
+        );
+        try {
+          const fetchBatch = (missing: string[]) => this.embedBatchInternal(missing, { ...options, signal }, false);
+          const operation = this.cacheDir
+            ? embedDocumentsWithDiskCache(
+                this.cacheDir, namespace, inputs, this.model, this.dimension,
+                fetchBatch, authorizeReuse, signal, options.bypassCache,
+              )
+            : embedDocumentsWithCache(
+                namespace, inputs, this.model, this.dimension,
+                fetchBatch, authorizeReuse, options.bypassCache,
+              );
+          const results = await awaitWithSignal(operation, signal);
+          this.throwIfInterrupted(options, deadlineController);
+          return results;
+        } catch (error) {
+          this.throwIfInterrupted(options, deadlineController);
+          throw error;
+        }
+      }
       try {
         releaseRequestSlot = await this.acquireRequestSlot(signal);
       } catch {

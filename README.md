@@ -672,6 +672,24 @@ qmd embed
 
 Configure `embed_url`, `embed_base_url`, or `embed_api_url` together with `embed_api_model` to enable remote embeddings. OpenAI-compatible providers receive `POST /embeddings`; Voyage AI uses its native embeddings payload (`input_type`, optional `output_dimension`). Changing the endpoint, provider, or model changes the remote embedding identity and requires a vector rebuild.
 
+Remote document embeddings use a bounded memory cache by default, shared by stores using the same loaded QMD module instance. To share results across processes, plugin reloads, and process restarts, add an optional cache directory to the existing `models` configuration:
+
+```yaml
+models:
+  embed_api_url: https://api.openai.com/v1
+  embed_api_model: text-embedding-3-small
+  embed_cache_dir: ~/.cache/qmd/embeddings
+  # Linux tmpfs alternative: /dev/shm/qmd-embeddings
+```
+
+The SDK accepts the same field in `createStore({ config: { collections: ..., models: ... } })`; callers such as plugins must forward it into QMD's config. Paths support `~`. Relative paths resolve from the YAML directory, except project-local `.qmd/index.yml`, where they resolve from the project root; inline SDK paths resolve from the working directory. Project-local cache paths outside the project follow the existing `qmd trust` policy. Omitting the field keeps memory-only caching; a blank value is invalid.
+
+With a directory configured, OpenAI-compatible and Voyage providers use `document-embeddings-v1.sqlite` as the authoritative document cache. Processes pointing to the same local directory share atomic writes and a crash-released SQLite lock, including separate OpenClaw plugin generations. Cache-miss batches in one directory are serialized; use separate directories for unrelated workloads if independent throughput matters. A normal disk retains the cache across restarts; tmpfs works too, but its contents disappear on reboot and consume RAM. QMD creates the directory as needed and does not mount tmpfs.
+
+Both modes reuse results for up to two hours, with at most 2,000 entries and a 64 MiB payload budget (SQLite files and journals add overhead). Reuse requires matching provider configuration, credentials, build identity, and exact formatted input. Memory mode also separates different fetch transports; disk mode deliberately shares across transports and processes using that configured directory. Only vectors and hashed keys are persisted, never input text or raw API keys. Each store retains its own authorization, build lease, and index. Forced rebuilds bypass reuse and refresh the shared vectors. Query embeddings keep their separate cache, and read-only SDK stores do not open the disk document cache.
+
+Corrupt individual entries are recomputed. An unavailable or corrupt cache database emits a warning and falls back to normal computation without deleting the file or blocking indexing. Expiration, eviction, forced rebuilds, failed requests, and crash recovery can require new API calls; this is deduplication, not an exactly-once billing guarantee.
+
 `vectors_vec` can store only one dimension. A dimension or identity change requires a forced rebuild:
 
 ```sh
