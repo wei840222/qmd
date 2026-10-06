@@ -5,6 +5,7 @@ import {
   VoyageEmbeddingProvider as RuntimeVoyageEmbeddingProvider,
   UnavailableVoyageEmbeddingProvider,
   canonicalVoyageEmbeddingIdentityMaterial,
+  getMaxInputTokenLimit,
   type VoyageEmbeddingProviderOptions,
 } from "../src/embedding/voyage.js";
 import {
@@ -279,6 +280,15 @@ describe("resolveEmbeddingConfig with voyageai", () => {
     });
     expect(openaiResolved.canonical.provider).toBe("openai");
     expect(openaiResolved.canonical.dimension).toBe(3072);
+  });
+
+  test("getMaxInputTokenLimit returns appropriate limits per model family", () => {
+    expect(getMaxInputTokenLimit("voyage-2")).toBe(4_000);
+    expect(getMaxInputTokenLimit("voyage-law-2")).toBe(16_000);
+    expect(getMaxInputTokenLimit("voyage-multilingual-2")).toBe(16_000);
+    expect(getMaxInputTokenLimit("voyage-3")).toBe(32_000);
+    expect(getMaxInputTokenLimit("voyage-4")).toBe(32_000);
+    expect(getMaxInputTokenLimit("custom-model")).toBe(32_000);
   });
 });
 

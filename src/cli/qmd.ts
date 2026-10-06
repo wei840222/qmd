@@ -797,8 +797,8 @@ async function showStatus(): Promise<void> {
           })
         : undefined,
     keyConfigured: statusEmbedding.provider === "voyageai"
-      ? Boolean(process.env.VOYAGE_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim())
-      : Boolean(process.env.OPENAI_API_KEY?.trim()),
+      ? Boolean(statusConfig.models?.embed_api_key?.trim() || process.env.VOYAGE_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim())
+      : Boolean(statusConfig.models?.embed_api_key?.trim() || process.env.OPENAI_API_KEY?.trim()),
     configuredProvider: {
       id: statusEmbedding.provider === "voyageai"
         ? "voyageai"
@@ -4818,8 +4818,8 @@ async function showDoctor(): Promise<void> {
           })
         : undefined,
     keyConfigured: doctorEmbedding.provider === "voyageai"
-      ? Boolean(process.env.VOYAGE_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim())
-      : Boolean(process.env.OPENAI_API_KEY?.trim()),
+      ? Boolean(configModels?.embed_api_key?.trim() || process.env.VOYAGE_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim())
+      : Boolean(configModels?.embed_api_key?.trim() || process.env.OPENAI_API_KEY?.trim()),
     configuredProvider: {
       id: doctorEmbedding.provider === "voyageai"
         ? "voyageai"

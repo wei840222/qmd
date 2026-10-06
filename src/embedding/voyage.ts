@@ -16,10 +16,16 @@ import {
 import { canonicalRemoteChunkProfile } from "./remote-chunking.js";
 
 const MAX_INPUTS_PER_REQUEST = 128;
-const MAX_INPUT_TOKEN_UPPER_BOUND = 32_000;
+export const DEFAULT_MAX_INPUT_TOKEN_UPPER_BOUND = 32_000;
 const MAX_BATCH_TOKEN_UPPER_BOUND = 320_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const utf8Encoder = new TextEncoder();
+
+export function getMaxInputTokenLimit(model: string): number {
+  if (model === "voyage-2") return 4_000;
+  if (model.includes("-2")) return 16_000;
+  return DEFAULT_MAX_INPUT_TOKEN_UPPER_BOUND;
+}
 
 function normalizeVoyageBaseUrl(baseUrl: string | undefined): string {
   return (baseUrl?.trim() || DEFAULT_VOYAGE_BASE_URL).replace(/\/+$/, "");
@@ -451,13 +457,14 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
         `Voyage AI embedding batches must contain between 1 and ${MAX_INPUTS_PER_REQUEST} inputs.`,
       );
     }
+    const maxInputTokenLimit = getMaxInputTokenLimit(this.model);
     let batchUpperBound = 0;
     for (const text of inputs) {
       const upperBound = this.estimateTokens(text);
-      if (upperBound === 0 || upperBound > MAX_INPUT_TOKEN_UPPER_BOUND) {
+      if (upperBound === 0 || upperBound > maxInputTokenLimit) {
         throw new EmbeddingProviderError(
           "INPUT_BUDGET_EXCEEDED",
-          `Voyage AI embedding input exceeds the ${MAX_INPUT_TOKEN_UPPER_BOUND}-token upper bound.`,
+          `Voyage AI embedding input exceeds the ${maxInputTokenLimit}-token upper bound.`,
         );
       }
       batchUpperBound += upperBound;
