@@ -71,8 +71,8 @@ for (const Provider of [OpenAIEmbeddingProvider, VoyageEmbeddingProvider]) {
       fetch.mockImplementationOnce(async (_url, init) => {
         started.resolve();
         await gate.promise;
-        const body = await response(init).json();
-        body.data[0].embedding = [0.9, 0.9, 0.9];
+        const body = await response(init).json() as { data: Array<{ embedding: number[] }> };
+        body.data[0]!.embedding = [0.9, 0.9, 0.9];
         return new Response(JSON.stringify(body));
       });
       const older = open().embed("shared", options);
@@ -176,9 +176,9 @@ for (const Provider of [OpenAIEmbeddingProvider, VoyageEmbeddingProvider]) {
         if (failure === "timeout") {
           await new Promise((_, reject) => init!.signal!.addEventListener("abort", () => reject(new Error("timeout")), { once: true }));
         }
-        const body = await response(init).json();
+        const body = await response(init).json() as { data: Array<{ embedding: number[] }> };
         if (failure === "missing") body.data.pop();
-        else body.data[0].embedding.pop();
+        else body.data[0]!.embedding.pop();
         return new Response(JSON.stringify(body));
       });
       const a = open({ requestTimeoutMs: 10 });

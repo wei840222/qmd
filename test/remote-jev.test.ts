@@ -253,7 +253,11 @@ describe("RemoteJev & Hybrid Integration", () => {
       };
       const jev = new RemoteJev({ client, concurrency: 2, batchSize: 1 });
       let rerankSettled = false;
-      const rerank = jev.rerank("query", ["first", "second", "must remain queued"])
+      const rerank = jev.rerank("query", [
+        { file: "first.md", text: "first" },
+        { file: "second.md", text: "second" },
+        { file: "queued.md", text: "must remain queued" },
+      ])
         .catch(error => { rerankSettled = true; return error; });
       const failure = new Error("first batch failed");
       failFirst(failure);

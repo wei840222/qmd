@@ -241,7 +241,7 @@ describe("listMetadata match", () => {
     await insertMetadataDoc("notes", { topics: ["typescript", "PostgreSQL"], owner: "search-team", reviewers: ["docs-team", "security-team"], "mem-scope": "user", priority: 10, reviewed: false });
   });
 
-  function keysOf(match: MetadataFilter): string[] {
+  function keysOf(match: MetadataMatch): string[] {
     return listMetadata(store.db, { match }).keys.map(summary => summary.key);
   }
 

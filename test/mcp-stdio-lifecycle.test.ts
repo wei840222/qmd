@@ -15,7 +15,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { registerStdioEofShutdown, createInflightGate } from "../src/mcp/server";
+import { registerStdioEofShutdown, createInflightGate } from "../src/mcp/server.js";
 
 class FakeStdin extends EventEmitter {
   readableEnded = false;
@@ -278,7 +278,7 @@ describe("qmd mcp stdio process lifecycle", () => {
 
       const runtimeArgs = ["--import", "tsx", cliPath, "mcp"];
 
-      child = spawn(process.execPath, runtimeArgs, {
+      const server = spawn(process.execPath, runtimeArgs, {
         cwd: repoRoot,
         env: {
           ...process.env,
@@ -287,9 +287,10 @@ describe("qmd mcp stdio process lifecycle", () => {
         },
         stdio: ["pipe", "pipe", "pipe"],
       });
+      child = server;
 
       const stderrChunks: string[] = [];
-      child.stderr.on("data", (chunk) => stderrChunks.push(String(chunk)));
+      server.stderr.on("data", (chunk) => stderrChunks.push(String(chunk)));
 
       // Complete one request/response round-trip so EOF arrives on a live,
       // already-connected server rather than during startup.
@@ -298,16 +299,16 @@ describe("qmd mcp stdio process lifecycle", () => {
         const onData = (chunk: Buffer) => {
           buffer += String(chunk);
           if (buffer.includes("\n")) {
-            child.stdout.off("data", onData);
+            server.stdout.off("data", onData);
             resolve(buffer);
           }
         };
-        child.stdout.on("data", onData);
-        child.once("error", reject);
-        child.once("exit", (code) =>
+        server.stdout.on("data", onData);
+        server.once("error", reject);
+        server.once("exit", (code) =>
           reject(new Error(`server exited before responding (code ${code}): ${stderrChunks.join("")}`))
         );
-        child.stdin.write(
+        server.stdin.write(
           JSON.stringify({
             jsonrpc: "2.0",
             id: 1,
@@ -324,16 +325,16 @@ describe("qmd mcp stdio process lifecycle", () => {
 
       // Parent goes away: close stdin and require a clean, prompt exit.
       const exitCode = await new Promise<number | null>((resolve, reject) => {
-        child.removeAllListeners("exit");
+        server.removeAllListeners("exit");
         const timer = setTimeout(() => {
-          child.kill("SIGKILL");
+          server.kill("SIGKILL");
           reject(new Error(`server did not exit after stdin EOF: ${stderrChunks.join("")}`));
         }, 30_000);
-        child.once("exit", (code) => {
+        server.once("exit", (code) => {
           clearTimeout(timer);
           resolve(code);
         });
-        child.stdin.end();
+        server.stdin.end();
       });
 
       expect(exitCode).toBe(0);

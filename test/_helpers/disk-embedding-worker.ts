@@ -38,7 +38,7 @@ process.once("message", async (request: Request) => {
     process.exitCode = 1;
   } finally {
     await provider.close();
-    process.disconnect();
+    process.disconnect?.();
   }
 });
 process.send?.({ ready: true });

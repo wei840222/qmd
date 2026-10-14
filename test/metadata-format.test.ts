@@ -8,7 +8,8 @@ import * as childProcess from "node:child_process";
 
 import { describe, test, expect } from "vitest";
 import { formatMetadataKeySummaries, formatMetadataOverview, type FormatMetadataOptions } from "../src/metadata-format.js";
-import type { ListMetadataResult, MetadataKeyTypeSummary, MetadataScalar } from "../src/metadata-store.js";
+import type { ListMetadataResult, MetadataKeyTypeSummary } from "../src/metadata-store.js";
+import type { MetadataScalar } from "../src/metadata.js";
 
 const OPTIONS: FormatMetadataOptions = {
   valueWindowHint: "--value-limit <n>",

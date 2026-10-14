@@ -31,7 +31,7 @@ import {
   generateEmbeddings,
   reciprocalRankFusion,
   type RankedResult,
-} from "../src/store";
+} from "../src/store.js";
 
 // Eval queries with expected documents
 const evalQueries: {
