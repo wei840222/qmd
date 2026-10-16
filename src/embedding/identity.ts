@@ -79,7 +79,11 @@ export interface BeginEmbeddingBuildOptions {
   allowDestructiveRebuild: boolean;
   /** Force a same-identity global reset inside this transaction. */
   forceRebuild?: boolean;
-  /** Remote identity changes require force independently from destructive permission. */
+  /**
+   * Vector-space changes (model, dimension, format, chunking) require force
+   * independently from destructive permission. An endpoint-only change reuses
+   * stored vectors and adopts the new routing fingerprint.
+   */
   requireForceForIdentityChange?: boolean;
   /** Runs under BEGIN IMMEDIATE before any identity state or vector data mutation. */
   beforeMutation?: () => void;
@@ -111,6 +115,12 @@ export function endpointFreeIdentityMaterial(material: string): string | undefin
   }
   const { endpointFingerprint: _endpointFingerprint, ...vectorSpace } = providerIdentity as Record<string, unknown>;
   return JSON.stringify(vectorSpace);
+}
+
+function sameVectorSpace(storedMaterial: string, activeMaterial: string): boolean {
+  const stored = endpointFreeIdentityMaterial(storedMaterial);
+  const active = endpointFreeIdentityMaterial(activeMaterial);
+  return stored !== undefined && stored === active;
 }
 
 function parseProviderIdentity(providerIdentity: string): unknown {
@@ -352,15 +362,19 @@ export function beginEmbeddingBuild(
     options.beforeMutation?.();
     let row = readState(db);
     const hasEmbeddingData = embeddingRowsExist(db);
-    const mismatch = row
+    const fingerprintMismatch = row
       ? row.status === "incompatible" || row.fingerprint !== identity.fingerprint
       : hasEmbeddingData;
-    if (mismatch && options.requireForceForIdentityChange && !options.forceRebuild) {
+    const vectorSpaceMismatch = row
+      ? row.status === "incompatible" || !sameVectorSpace(row.canonical_material, identity.canonicalMaterial)
+      : hasEmbeddingData;
+    if (vectorSpaceMismatch && options.requireForceForIdentityChange && !options.forceRebuild) {
       throw new EmbeddingIdentityStateError(
         "IDENTITY_MISMATCH",
-        "Remote embedding identity changes require both force and destructive rebuild authorization.",
+        "Remote embedding vector-space changes require both force and destructive rebuild authorization.",
       );
     }
+    const mismatch = vectorSpaceMismatch || (fingerprintMismatch && !options.requireForceForIdentityChange);
     if (mismatch || options.forceRebuild) {
       if (!options.allowDestructiveRebuild) {
         throw new EmbeddingIdentityStateError(
@@ -387,7 +401,10 @@ export function beginEmbeddingBuild(
     }
 
     const mode: EmbeddingBuildMode = row ? "resume" : "rebuild";
-    const preservePublishedReady = row?.status === "ready" && !mismatch && !options.forceRebuild;
+    const preservePublishedReady = row?.status === "ready"
+      && !mismatch
+      && !fingerprintMismatch
+      && !options.forceRebuild;
     const generation = (row?.generation ?? 0) + 1;
     const leaseExpiresAt = options.now + options.leaseMs;
     db.prepare(`

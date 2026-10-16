@@ -86,7 +86,7 @@ function openAIEmbeddingIdentityPayload(
   });
 }
 
-/** Rebuild identity. Endpoint changes stay distinct so an unforced build cannot re-embed. */
+/** Rebuild identity. The endpoint stays in the fingerprint, but an endpoint-only change reuses stored vectors. */
 export function canonicalOpenAIEmbeddingIdentityMaterial(
   model: OpenAIEmbeddingModel = OPENAI_EMBEDDING_MODEL,
   dimension?: number,

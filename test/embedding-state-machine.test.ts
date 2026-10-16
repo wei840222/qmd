@@ -72,13 +72,23 @@ function insertCorruptEmbedding(
     .run(`${hash}_0`, collection, vector);
 }
 
-function remoteIdentity(model = "text-embedding-3-small", dimension = 1_536) {
+function remoteIdentity(
+  model = "text-embedding-3-small",
+  dimension = 1_536,
+  endpointFingerprint?: string,
+) {
   return createEmbeddingIdentity({
     providerId: "openai",
     model,
     dimension,
     remote: true,
-    canonicalMaterial: JSON.stringify({ provider: "openai", model, dimension }),
+    canonicalMaterial: JSON.stringify({
+      provider: "openai",
+      model,
+      dimension,
+      format: "qmd-openai-embedding-v1",
+      ...(endpointFingerprint ? { endpointFingerprint } : {}),
+    }),
   });
 }
 
@@ -472,6 +482,41 @@ describe("embedding identity state machine", () => {
     store.close();
   });
 
+  test("adopts a new remote endpoint without clearing stored vectors", async () => {
+    const store = await createTempStore();
+    const oldIdentity = remoteIdentity("text-embedding-3-small", 1_536, "old-endpoint");
+    const nextIdentity = remoteIdentity("text-embedding-3-small", 1_536, "new-endpoint");
+    const initial = beginEmbeddingBuild(store.db, oldIdentity, {
+      ownerId: "worker-a",
+      now: 1_000,
+      leaseMs: 100,
+      allowDestructiveRebuild: true,
+    });
+    store.insertContent("hash-remote", "body", new Date(0).toISOString());
+    store.db.prepare(
+      "INSERT INTO content_vectors(hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, ?, ?)",
+    ).run("hash-remote", oldIdentity.model, new Date(0).toISOString());
+    completeEmbeddingBuild(store.db, initial, 1_010);
+
+    const adopted = beginEmbeddingBuild(store.db, nextIdentity, {
+      ownerId: "worker-b",
+      now: 1_100,
+      leaseMs: 100,
+      allowDestructiveRebuild: true,
+      forceRebuild: false,
+      requireForceForIdentityChange: true,
+    });
+
+    expect(adopted.mode).toBe("resume");
+    expect(adopted.fingerprint).toBe(nextIdentity.fingerprint);
+    expect(store.db.prepare("SELECT COUNT(*) AS count FROM content_vectors").get()).toEqual({ count: 1 });
+    expect(inspectEmbeddingIndexState(store.db, nextIdentity, 1_100)).toMatchObject({
+      status: "building",
+      identity: nextIdentity,
+    });
+    store.close();
+  });
+
   test("renews and completes only with the current owner and generation", async () => {
     const store = await createTempStore();
     const identity = localIdentity();
@@ -826,17 +871,20 @@ describe("embedding identity state machine", () => {
         });
         expect((moved.db.prepare(`SELECT COUNT(*) AS n FROM content_vectors`).get() as { n: number }).n).toBe(before.vectors);
 
-        expect(() => beginEmbeddingBuild(moved.db, remoteEmbeddingIdentity(provider), {
+        const adopted = beginEmbeddingBuild(moved.db, remoteEmbeddingIdentity(provider), {
           ownerId: "unforced",
           now: 2_000,
           leaseMs: 60_000,
           allowDestructiveRebuild: false,
           requireForceForIdentityChange: true,
-        })).toThrowError(EmbeddingIdentityStateError);
+        });
+        expect(adopted.mode, subject.name).toBe("resume");
         const preserved = moved.db.prepare(`
-          SELECT canonical_material, fingerprint, generation FROM embedding_index_state WHERE singleton = 1
-        `).get();
-        expect(preserved, subject.name).toEqual(after);
+          SELECT generation FROM embedding_index_state WHERE singleton = 1
+        `).get() as { generation: number };
+        expect(preserved.generation, subject.name).toBe(after.generation + 1);
+        expect((moved.db.prepare(`SELECT COUNT(*) AS n FROM content_vectors`).get() as { n: number }).n, subject.name).toBe(before.vectors);
+        abandonEmbeddingBuild(moved.db, adopted, 2_010);
         moved.close();
         await provider.close();
       } finally {
