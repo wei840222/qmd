@@ -5777,10 +5777,64 @@ function searchFtsChannel(
   });
 }
 
+function quoteCjkSignalTerm(term: string): string {
+  return `"${term.replace(/"/g, '""')}"`;
+}
+
+function cjkSignalTerms(signal: string): string[] {
+  return signal.split(/\s+/).filter(Boolean);
+}
+
 function buildCjkSignalQuery(signal: string): string | null {
-  const terms = signal.split(/\s+/).filter(Boolean);
+  const terms = cjkSignalTerms(signal);
   if (terms.length === 0) return null;
-  return terms.map(term => `"${term.replace(/"/g, '""')}"`).join(" AND ");
+  return terms.map(quoteCjkSignalTerm).join(" AND ");
+}
+
+function wordSignalTermExists(
+  db: Database,
+  term: string,
+  collectionFilter?: CollectionFilter,
+): boolean {
+  const params: string[] = [quoteCjkSignalTerm(term)];
+  const collections = normalizeCollectionFilter(collectionFilter);
+  const collectionJoin = collections.length > 0
+    ? "JOIN documents filtered_d ON filtered_d.id = documents_fts_words.rowid"
+    : "";
+  const collectionPredicate = collections.length > 0
+    ? `AND filtered_d.active = 1 AND filtered_d.collection IN (${collections.map(() => "?").join(", ")})`
+    : "";
+  params.push(...collections);
+  const row = db.prepare(`
+    SELECT 1 AS present
+    FROM documents_fts_words
+    ${collectionJoin}
+    WHERE documents_fts_words MATCH ?
+    ${collectionPredicate}
+    LIMIT 1
+  `).get(...params) as { present: number } | undefined;
+  return row != null;
+}
+
+/**
+ * A long word query is one conjunction. One absent word clears the channel.
+ * After that happens, drop words absent from the scoped index and AND what
+ * remains. Three words is the minimum: fewer is too broad for this channel.
+ * Character and bigram channels stay strict.
+ */
+export function relaxWordSignalQuery(
+  db: Database,
+  signal: string,
+  collectionFilter?: CollectionFilter,
+): { query: string; droppedTerms: string[] } | null {
+  const terms = cjkSignalTerms(signal);
+  if (terms.length < 4) return null;
+  const present = terms.filter(term => wordSignalTermExists(db, term, collectionFilter));
+  if (present.length < 3 || present.length === terms.length) return null;
+  return {
+    query: present.map(quoteCjkSignalTerm).join(" AND "),
+    droppedTerms: terms.filter(term => !present.includes(term)),
+  };
 }
 
 export function searchCharFTS(
@@ -5856,11 +5910,22 @@ export function searchFTS(
       channels.push({ channel: entry.channel, status: "omitted", reason: reason ?? "empty-token-signal" });
       continue;
     }
+    let results = searchFtsChannel(db, entry.table, ftsQuery, candidateDepth, collectionFilter, filter);
+    let channelReason: string | undefined;
+    if (results.length === 0 && entry.channel === "word") {
+      const relaxed = relaxWordSignalQuery(db, entry.signal, collectionFilter);
+      if (relaxed) {
+        results = searchFtsChannel(db, entry.table, relaxed.query, candidateDepth, collectionFilter, filter);
+        if (results.length > 0) channelReason = `dropped-absent-terms:${relaxed.droppedTerms.join(",")}`;
+      }
+    }
     rankedChannels.push({
       channel: entry.channel,
-      results: searchFtsChannel(db, entry.table, ftsQuery, candidateDepth, collectionFilter, filter),
+      results,
     });
-    channels.push({ channel: entry.channel, status: "used" });
+    channels.push(channelReason
+      ? { channel: entry.channel, status: "used", reason: channelReason }
+      : { channel: entry.channel, status: "used" });
   }
 
   const fused = new Map<string, {

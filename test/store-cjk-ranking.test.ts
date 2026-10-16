@@ -8,6 +8,7 @@ import {
   getLexicalStrongSignal,
   insertContent,
   insertDocument,
+  relaxWordSignalQuery,
   searchFTS,
 } from "../src/store.js";
 import { rebuildCjkLexicalIndex } from "../src/search/cjk-index.js";
@@ -159,6 +160,27 @@ describe("CJK lexical search", () => {
         { channel: "bigram", status: "omitted", reason: "index-dirty" },
       ]);
       expect(results[0]?.lexicalTrace?.contributions.map((entry) => entry.channel)).toEqual(["char"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("drops only absent word terms after a full conjunction misses, keeping at least two", async () => {
+    const { dbPath } = await createFixture();
+    const db = openDatabase(dbPath);
+    try {
+      const results = searchFTS(db, "資料庫同步器提供操作程序", 10, "notes");
+      const match = results.find((result) => result.displayPath === "notes/sync.md");
+      const word = match?.lexicalTrace?.channels.find((entry) => entry.channel === "word");
+
+      expect(match?.displayPath).toBe("notes/sync.md");
+      expect(word).toEqual({
+        channel: "word",
+        status: "used",
+        reason: "dropped-absent-terms:操作程序",
+      });
+      expect(match?.lexicalTrace?.contributions.map((entry) => entry.channel)).toContain("word");
+      expect(relaxWordSignalQuery(db, "資料庫 同步器 操作程序", "notes")).toBeNull();
     } finally {
       db.close();
     }
