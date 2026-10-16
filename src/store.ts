@@ -5986,7 +5986,9 @@ function resolveReadyProviderEmbeddingIdentity(
   let expectedIdentity: EmbeddingIdentity;
   try {
     const providerCanonicalMaterial = queryProviderIdentityMaterial(provider);
-    const storedCanonicalMaterial = stripEndpointFingerprint(storedProviderIdentity(storedIdentity.canonicalMaterial));
+    const storedProviderMaterial = storedProviderIdentity(storedIdentity.canonicalMaterial);
+    if (!storedProviderMaterial) return undefined;
+    const storedCanonicalMaterial = stripEndpointFingerprint(storedProviderMaterial);
     if (storedCanonicalMaterial !== providerCanonicalMaterial) {
       return undefined;
     }

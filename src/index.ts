@@ -103,13 +103,13 @@ import {
   remoteEmbeddingIdentity,
 } from "./embedding/remote-embedding.js";
 import { readStoredEmbeddingIdentity, type EmbeddingIdentity } from "./embedding/identity.js";
-import type { EmbeddingProvider, RemoteEmbeddingRequest } from "./embedding/provider.js";
+import type { EmbeddingProvider, RemoteEmbeddingRequestAuthorization } from "./embedding/provider.js";
 import { Database } from "./db.js";
 
 function resolveRemoteRequestIdentity(
   db: Database,
   provider: EmbeddingProvider,
-  request: RemoteEmbeddingRequest,
+  request: RemoteEmbeddingRequestAuthorization,
 ): EmbeddingIdentity | undefined {
   const storedIdentity = readStoredEmbeddingIdentity(db);
   const candidates = [
