@@ -87,6 +87,40 @@ export interface BeginEmbeddingBuildOptions {
   afterVectorTablePrepared?: () => void;
 }
 
+/**
+ * Query compatibility ignores endpoint routing. Accepts either a published
+ * build envelope or a provider identity payload, and keeps every other field
+ * so a later identity field cannot silently drop out of one comparison.
+ */
+export function endpointFreeIdentityMaterial(material: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(material);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return undefined;
+  }
+  const envelope = parsed as { provider_identity?: unknown };
+  const providerIdentity = typeof envelope.provider_identity === "string"
+    ? parseProviderIdentity(envelope.provider_identity)
+    : parsed;
+  if (typeof providerIdentity !== "object" || providerIdentity === null || Array.isArray(providerIdentity)) {
+    return undefined;
+  }
+  const { endpointFingerprint: _endpointFingerprint, ...vectorSpace } = providerIdentity as Record<string, unknown>;
+  return JSON.stringify(vectorSpace);
+}
+
+function parseProviderIdentity(providerIdentity: string): unknown {
+  try {
+    return JSON.parse(providerIdentity);
+  } catch {
+    return undefined;
+  }
+}
+
 export function createEmbeddingIdentity(input: {
   providerId: string;
   model: string;

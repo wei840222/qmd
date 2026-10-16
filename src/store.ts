@@ -22,6 +22,7 @@ import {
   abandonEmbeddingBuild,
   beginEmbeddingBuild,
   completeEmbeddingBuild,
+  endpointFreeIdentityMaterial,
   createEmbeddingIdentity,
   EmbeddingIdentityStateError,
   ensureEmbeddingIdentitySchema,
@@ -5985,11 +5986,12 @@ function resolveReadyProviderEmbeddingIdentity(
   }
   let expectedIdentity: EmbeddingIdentity;
   try {
-    const providerCanonicalMaterial = queryProviderIdentityMaterial(provider);
+    const providerCanonicalMaterial = endpointFreeIdentityMaterial(queryProviderIdentityMaterial(provider));
     const storedProviderMaterial = storedProviderIdentity(storedIdentity.canonicalMaterial);
-    if (!storedProviderMaterial) return undefined;
-    const storedCanonicalMaterial = stripEndpointFingerprint(storedProviderMaterial);
-    if (storedCanonicalMaterial !== providerCanonicalMaterial) {
+    const storedCanonicalMaterial = storedProviderMaterial
+      ? endpointFreeIdentityMaterial(storedProviderMaterial)
+      : undefined;
+    if (!providerCanonicalMaterial || storedCanonicalMaterial !== providerCanonicalMaterial) {
       return undefined;
     }
     expectedIdentity = createEmbeddingIdentity({
@@ -6005,15 +6007,6 @@ function resolveReadyProviderEmbeddingIdentity(
   return inspectEmbeddingIndexState(db, expectedIdentity).status === "ready"
     ? expectedIdentity
     : undefined;
-}
-
-function stripEndpointFingerprint(providerIdentity: string): string {
-  const parsed = JSON.parse(providerIdentity) as unknown;
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return providerIdentity;
-  }
-  const { endpointFingerprint: _endpointFingerprint, ...vectorSpace } = parsed as Record<string, unknown>;
-  return JSON.stringify(vectorSpace);
 }
 
 function hasSearchableVectorIndex(store: Store): boolean {

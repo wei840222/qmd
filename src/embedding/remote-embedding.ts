@@ -1,6 +1,7 @@
 import type { Database } from "../db.js";
 import { canonicalEmbeddingBuildMaterial } from "../store.js";
 import {
+  endpointFreeIdentityMaterial,
   createEmbeddingIdentity,
   readStoredEmbeddingIdentity,
   type EmbeddingBuildLease,
@@ -25,27 +26,6 @@ export class RemoteEmbeddingAuthorizationError extends Error {
   }
 }
 
-
-function queryVectorSpace(canonicalMaterial: string): string {
-  const outer = JSON.parse(canonicalMaterial) as {
-    provider_identity?: unknown;
-    chunking?: unknown;
-  };
-  const providerIdentity = typeof outer.provider_identity === "string"
-    ? JSON.parse(outer.provider_identity) as Record<string, unknown>
-    : outer as Record<string, unknown>;
-  const {
-    endpointFingerprint: _endpointFingerprint,
-    ...vectorSpace
-  } = providerIdentity;
-  return JSON.stringify({
-    provider: vectorSpace.provider,
-    model: vectorSpace.model,
-    dimension: vectorSpace.dimension,
-    format: vectorSpace.format,
-    chunking: vectorSpace.chunking ?? outer.chunking,
-  });
-}
 
 export function remoteEmbeddingIdentity(
   provider: EmbeddingProvider,
@@ -140,12 +120,17 @@ export function authorizeRemoteEmbeddingRequest(
   }
 
   const storedIdentity = readStoredEmbeddingIdentity(db);
+  const storedQueryIdentity = storedIdentity
+    ? endpointFreeIdentityMaterial(storedIdentity.canonicalMaterial)
+    : undefined;
+  const requestQueryIdentity = endpointFreeIdentityMaterial(identity.canonicalMaterial);
   const sameVectorSpace = storedIdentity !== undefined
+    && storedQueryIdentity !== undefined
     && storedIdentity.providerId === identity.providerId
     && storedIdentity.model === identity.model
     && storedIdentity.dimension === identity.dimension
     && storedIdentity.remote === identity.remote
-    && queryVectorSpace(storedIdentity.canonicalMaterial) === queryVectorSpace(identity.canonicalMaterial);
+    && storedQueryIdentity === requestQueryIdentity;
   const vectorTable = db.prepare(`
     SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vectors_vec'
   `).get();
