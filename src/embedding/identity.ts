@@ -106,18 +106,37 @@ export function endpointFreeIdentityMaterial(material: string): string | undefin
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     return undefined;
   }
-  const envelope = parsed as { provider_identity?: unknown };
-  const providerIdentity = typeof envelope.provider_identity === "string"
-    ? parseProviderIdentity(envelope.provider_identity)
-    : parsed;
-  if (typeof providerIdentity !== "object" || providerIdentity === null || Array.isArray(providerIdentity)) {
-    return undefined;
+  const envelope = parsed as {
+    schema_version?: unknown;
+    provider_identity?: unknown;
+    chunking?: unknown;
+  };
+  if (typeof envelope.provider_identity !== "undefined") {
+    const providerIdentity = typeof envelope.provider_identity === "string"
+      ? parseProviderIdentity(envelope.provider_identity)
+      : envelope.provider_identity;
+    if (typeof providerIdentity !== "object" || providerIdentity === null || Array.isArray(providerIdentity)) {
+      return JSON.stringify({
+        schema_version: envelope.schema_version,
+        provider_identity: envelope.provider_identity,
+        chunking: envelope.chunking,
+      });
+    }
+    const { endpointFingerprint: _endpointFingerprint, ...vectorSpace } = providerIdentity as Record<string, unknown>;
+    return JSON.stringify({
+      schema_version: envelope.schema_version,
+      provider_identity: vectorSpace,
+      chunking: envelope.chunking,
+    });
   }
-  const { endpointFingerprint: _endpointFingerprint, ...vectorSpace } = providerIdentity as Record<string, unknown>;
+  const { endpointFingerprint: _endpointFingerprint, ...vectorSpace } = parsed as Record<string, unknown>;
   return JSON.stringify(vectorSpace);
 }
 
 function sameVectorSpace(storedMaterial: string, activeMaterial: string): boolean {
+  if (storedMaterial === activeMaterial) {
+    return true;
+  }
   const stored = endpointFreeIdentityMaterial(storedMaterial);
   const active = endpointFreeIdentityMaterial(activeMaterial);
   return stored !== undefined && stored === active;

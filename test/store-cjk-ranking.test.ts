@@ -165,7 +165,7 @@ describe("CJK lexical search", () => {
     }
   });
 
-  test("drops only absent word terms after a full conjunction misses, keeping at least two", async () => {
+  test("drops only absent word terms after a full conjunction misses, keeping at least three", async () => {
     const { dbPath } = await createFixture();
     const db = openDatabase(dbPath);
     try {
