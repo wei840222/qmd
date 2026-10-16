@@ -70,6 +70,27 @@ export interface VoyageEmbeddingProviderOptions {
   authorizeRequest?: RemoteEmbeddingRequestGuard;
 }
 
+function voyageEmbeddingIdentityPayload(
+  model: VoyageEmbeddingModel,
+  dimension: number,
+  baseUrl: string | undefined,
+  includeEndpoint: boolean,
+): string {
+  const endpoint = includeEndpoint
+    ? endpointFingerprint(normalizeVoyageBaseUrl(baseUrl))
+    : undefined;
+  return JSON.stringify({
+    provider: "voyageai",
+    model,
+    dimension,
+    remote: true,
+    format: "qmd-voyage-embedding-v1",
+    chunking: canonicalRemoteChunkProfile(),
+    ...(endpoint === undefined ? {} : { endpointFingerprint: endpoint }),
+  });
+}
+
+/** Rebuild identity. Endpoint changes stay distinct so an unforced build cannot re-embed. */
 export function canonicalVoyageEmbeddingIdentityMaterial(
   model: VoyageEmbeddingModel = DEFAULT_VOYAGE_EMBEDDING_MODEL,
   dimension?: number,
@@ -77,16 +98,18 @@ export function canonicalVoyageEmbeddingIdentityMaterial(
 ): string {
   const expectedDimension = VOYAGE_EMBEDDING_MODELS.get(model);
   const effectiveDimension = dimension ?? expectedDimension ?? DEFAULT_VOYAGE_EMBEDDING_DIMENSION;
-  const endpoint = endpointFingerprint(normalizeVoyageBaseUrl(baseUrl));
-  return JSON.stringify({
-    provider: "voyageai",
-    model,
-    dimension: effectiveDimension,
-    remote: true,
-    format: "qmd-voyage-embedding-v1",
-    chunking: canonicalRemoteChunkProfile(),
-    ...(endpoint === undefined ? {} : { endpointFingerprint: endpoint }),
-  });
+  return voyageEmbeddingIdentityPayload(model, effectiveDimension, baseUrl, true);
+}
+
+/** Query identity. The endpoint is routing, not part of the vector space. */
+export function canonicalVoyageQueryIdentityMaterial(
+  model: VoyageEmbeddingModel = DEFAULT_VOYAGE_EMBEDDING_MODEL,
+  dimension?: number,
+  baseUrl: string | undefined = undefined,
+): string {
+  const expectedDimension = VOYAGE_EMBEDDING_MODELS.get(model);
+  const effectiveDimension = dimension ?? expectedDimension ?? DEFAULT_VOYAGE_EMBEDDING_DIMENSION;
+  return voyageEmbeddingIdentityPayload(model, effectiveDimension, baseUrl, false);
 }
 
 export interface UnavailableVoyageEmbeddingProviderOptions {
@@ -113,6 +136,14 @@ export class UnavailableVoyageEmbeddingProvider implements EmbeddingProvider {
 
   canonicalIdentityMaterial(): string {
     return canonicalVoyageEmbeddingIdentityMaterial(
+      this.model,
+      this.dimension,
+      this.configuredBaseUrl ?? process.env.VOYAGE_BASE_URL ?? process.env.OPENAI_BASE_URL,
+    );
+  }
+
+  canonicalQueryIdentityMaterial(): string {
+    return canonicalVoyageQueryIdentityMaterial(
       this.model,
       this.dimension,
       this.configuredBaseUrl ?? process.env.VOYAGE_BASE_URL ?? process.env.OPENAI_BASE_URL,
@@ -362,6 +393,10 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
 
   canonicalIdentityMaterialForDimension(dimension: number): string {
     return canonicalVoyageEmbeddingIdentityMaterial(this.model, dimension, this.baseUrl);
+  }
+
+  canonicalQueryIdentityMaterial(): string {
+    return canonicalVoyageQueryIdentityMaterial(this.model, this.dimension, this.baseUrl);
   }
 
   formatQuery(query: string): string {

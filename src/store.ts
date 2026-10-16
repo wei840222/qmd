@@ -5962,6 +5962,15 @@ function annVecScan(
   `).all(new Float32Array(embedding), vecK) as { hash_seq: string; distance: number }[];
 }
 
+function queryProviderIdentityMaterial(provider: EmbeddingProvider): string {
+  return provider.canonicalQueryIdentityMaterial?.() ?? provider.canonicalIdentityMaterial();
+}
+
+/**
+ * Query compatibility ignores endpoint routing. A base URL change must keep the
+ * published vector space searchable and must not mint or persist a new identity.
+ * Model, dimension, format, and chunking still have to match the current provider.
+ */
 function resolveReadyProviderEmbeddingIdentity(
   db: Database,
   provider: EmbeddingProvider,
@@ -5971,12 +5980,14 @@ function resolveReadyProviderEmbeddingIdentity(
       || storedIdentity.model !== provider.model || storedIdentity.remote !== provider.remote) {
     return undefined;
   }
+  if (provider.dimension !== null && provider.dimension !== storedIdentity.dimension) {
+    return undefined;
+  }
   let expectedIdentity: EmbeddingIdentity;
   try {
-    const providerCanonicalMaterial = provider.canonicalIdentityMaterialForDimension
-      ? provider.canonicalIdentityMaterialForDimension(storedIdentity.dimension)
-      : provider.canonicalIdentityMaterial();
-    if (storedProviderIdentity(storedIdentity.canonicalMaterial) !== providerCanonicalMaterial) {
+    const providerCanonicalMaterial = queryProviderIdentityMaterial(provider);
+    const storedCanonicalMaterial = stripEndpointFingerprint(storedProviderIdentity(storedIdentity.canonicalMaterial));
+    if (storedCanonicalMaterial !== providerCanonicalMaterial) {
       return undefined;
     }
     expectedIdentity = createEmbeddingIdentity({
@@ -5992,6 +6003,15 @@ function resolveReadyProviderEmbeddingIdentity(
   return inspectEmbeddingIndexState(db, expectedIdentity).status === "ready"
     ? expectedIdentity
     : undefined;
+}
+
+function stripEndpointFingerprint(providerIdentity: string): string {
+  const parsed = JSON.parse(providerIdentity) as unknown;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return providerIdentity;
+  }
+  const { endpointFingerprint: _endpointFingerprint, ...vectorSpace } = parsed as Record<string, unknown>;
+  return JSON.stringify(vectorSpace);
 }
 
 function hasSearchableVectorIndex(store: Store): boolean {

@@ -58,6 +58,35 @@ export interface OpenAIEmbeddingProviderOptions {
   authorizeRequest?: RemoteEmbeddingRequestGuard;
 }
 
+function openAIEmbeddingIdentityPayload(
+  model: OpenAIEmbeddingModel,
+  dimension: number,
+  baseUrl: string | undefined,
+  includeEndpoint: boolean,
+): string {
+  const expectedDimension = OPENAI_EMBEDDING_MODELS.get(model);
+  const isDefaultOpenAI = normalizeOpenAIBaseUrl(baseUrl) === DEFAULT_OPENAI_BASE_URL;
+  if (expectedDimension !== undefined && isDefaultOpenAI && dimension !== expectedDimension) {
+    throw new EmbeddingProviderError(
+      "DIMENSION_MISMATCH",
+      `OpenAI embedding dimension must be ${expectedDimension} for model ${model}.`,
+    );
+  }
+  const endpoint = includeEndpoint
+    ? endpointFingerprint(normalizeOpenAIBaseUrl(baseUrl))
+    : undefined;
+  return JSON.stringify({
+    provider: "openai",
+    model,
+    dimension,
+    remote: true,
+    format: "qmd-openai-embedding-v1",
+    chunking: canonicalRemoteChunkProfile(),
+    ...(endpoint === undefined ? {} : { endpointFingerprint: endpoint }),
+  });
+}
+
+/** Rebuild identity. Endpoint changes stay distinct so an unforced build cannot re-embed. */
 export function canonicalOpenAIEmbeddingIdentityMaterial(
   model: OpenAIEmbeddingModel = OPENAI_EMBEDDING_MODEL,
   dimension?: number,
@@ -65,23 +94,18 @@ export function canonicalOpenAIEmbeddingIdentityMaterial(
 ): string {
   const expectedDimension = OPENAI_EMBEDDING_MODELS.get(model);
   const effectiveDimension = dimension ?? expectedDimension ?? OPENAI_EMBEDDING_DIMENSION;
-  const isDefaultOpenAI = normalizeOpenAIBaseUrl(baseUrl) === DEFAULT_OPENAI_BASE_URL;
-  if (expectedDimension !== undefined && isDefaultOpenAI && effectiveDimension !== expectedDimension) {
-    throw new EmbeddingProviderError(
-      "DIMENSION_MISMATCH",
-      `OpenAI embedding dimension must be ${expectedDimension} for model ${model}.`,
-    );
-  }
-  const endpoint = endpointFingerprint(normalizeOpenAIBaseUrl(baseUrl));
-  return JSON.stringify({
-    provider: "openai",
-    model,
-    dimension: effectiveDimension,
-    remote: true,
-    format: "qmd-openai-embedding-v1",
-    chunking: canonicalRemoteChunkProfile(),
-    ...(endpoint === undefined ? {} : { endpointFingerprint: endpoint }),
-  });
+  return openAIEmbeddingIdentityPayload(model, effectiveDimension, baseUrl, true);
+}
+
+/** Query identity. The endpoint is routing, not part of the vector space. */
+export function canonicalOpenAIQueryIdentityMaterial(
+  model: OpenAIEmbeddingModel = OPENAI_EMBEDDING_MODEL,
+  dimension?: number,
+  baseUrl: string | undefined = undefined,
+): string {
+  const expectedDimension = OPENAI_EMBEDDING_MODELS.get(model);
+  const effectiveDimension = dimension ?? expectedDimension ?? OPENAI_EMBEDDING_DIMENSION;
+  return openAIEmbeddingIdentityPayload(model, effectiveDimension, baseUrl, false);
 }
 
 export class UnavailableOpenAIEmbeddingProvider implements EmbeddingProvider {
@@ -99,6 +123,10 @@ export class UnavailableOpenAIEmbeddingProvider implements EmbeddingProvider {
 
   canonicalIdentityMaterial(): string {
     return canonicalOpenAIEmbeddingIdentityMaterial(this.model, this.dimension, this.configuredBaseUrl ?? process.env.OPENAI_BASE_URL);
+  }
+
+  canonicalQueryIdentityMaterial(): string {
+    return canonicalOpenAIQueryIdentityMaterial(this.model, this.dimension, this.configuredBaseUrl ?? process.env.OPENAI_BASE_URL);
   }
 
   formatQuery(query: string): string {
@@ -332,6 +360,10 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 
   canonicalIdentityMaterialForDimension(dimension: number): string {
     return canonicalOpenAIEmbeddingIdentityMaterial(this.model, dimension, this.baseUrl);
+  }
+
+  canonicalQueryIdentityMaterial(): string {
+    return canonicalOpenAIQueryIdentityMaterial(this.model, this.dimension, this.baseUrl);
   }
 
   formatQuery(query: string): string {

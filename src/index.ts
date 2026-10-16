@@ -102,7 +102,30 @@ import {
   authorizeRemoteEmbeddingRequest,
   remoteEmbeddingIdentity,
 } from "./embedding/remote-embedding.js";
-import { readStoredEmbeddingIdentity } from "./embedding/identity.js";
+import { readStoredEmbeddingIdentity, type EmbeddingIdentity } from "./embedding/identity.js";
+import type { EmbeddingProvider, RemoteEmbeddingRequest } from "./embedding/provider.js";
+import { Database } from "./db.js";
+
+function resolveRemoteRequestIdentity(
+  db: Database,
+  provider: EmbeddingProvider,
+  request: RemoteEmbeddingRequest,
+): EmbeddingIdentity | undefined {
+  const storedIdentity = readStoredEmbeddingIdentity(db);
+  const candidates = [
+    storedIdentity,
+    remoteEmbeddingIdentity(provider, "regex"),
+    remoteEmbeddingIdentity(provider, "auto"),
+  ].filter((identity): identity is EmbeddingIdentity => identity !== undefined);
+  const exact = candidates.find(identity => identity.fingerprint === request.fingerprint);
+  if (exact) return exact;
+  // A query may be embedded at the current endpoint while rows keep the published fingerprint.
+  if (request.purpose !== "query-embedding" || !storedIdentity) return undefined;
+  const current = ["regex", "auto"].some(strategy =>
+    remoteEmbeddingIdentity(provider, strategy as "regex" | "auto").fingerprint === request.fingerprint,
+  );
+  return current ? storedIdentity : undefined;
+}
 import { inspectIndexDiagnostics } from "./diagnostics.js";
 import {
   EmbeddingConfigError,
@@ -549,12 +572,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
             if (!activeProvider?.remote) {
               throw new EmbeddingConfigError("Remote embedding provider is not active.");
             }
-            const storedIdentity = readStoredEmbeddingIdentity(db);
-            const requestIdentity = [
-              storedIdentity,
-              remoteEmbeddingIdentity(activeProvider, "regex"),
-              remoteEmbeddingIdentity(activeProvider, "auto"),
-            ].find(identity => identity?.fingerprint === request.fingerprint);
+            const requestIdentity = resolveRemoteRequestIdentity(db, activeProvider, request);
             if (!requestIdentity) {
               throw new EmbeddingConfigError("Remote request fingerprint does not match an active embedding identity.");
             }
@@ -605,12 +623,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
             if (!activeProvider?.remote) {
               throw new EmbeddingConfigError("Remote embedding provider is not active.");
             }
-            const storedIdentity = readStoredEmbeddingIdentity(db);
-            const requestIdentity = [
-              storedIdentity,
-              remoteEmbeddingIdentity(activeProvider, "regex"),
-              remoteEmbeddingIdentity(activeProvider, "auto"),
-            ].find(identity => identity?.fingerprint === request.fingerprint);
+            const requestIdentity = resolveRemoteRequestIdentity(db, activeProvider, request);
             if (!requestIdentity) {
               throw new EmbeddingConfigError("Remote request fingerprint does not match an active embedding identity.");
             }

@@ -96,6 +96,12 @@ export interface EmbeddingProvider {
   canonicalIdentityMaterial(): string;
   /** Compute identity material from a persisted dimension without loading the model. */
   canonicalIdentityMaterialForDimension?(dimension: number): string;
+  /**
+   * Query-compatibility material. Endpoint routing is omitted so an existing
+   * vector space stays searchable after a base URL change. Rebuild identity
+   * still includes the endpoint.
+   */
+  canonicalQueryIdentityMaterial?(): string;
   formatQuery(query: string): string;
   formatDocument(text: string, title?: string): string;
   embed(text: string, options: EmbeddingOperationOptions): Promise<EmbeddingVector>;

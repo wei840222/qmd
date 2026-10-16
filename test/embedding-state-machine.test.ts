@@ -16,6 +16,17 @@ import {
 import type { EmbeddingProvider } from "../src/embedding/provider.js";
 import { remoteEmbeddingIdentity } from "../src/embedding/remote-embedding.js";
 import {
+  OpenAIEmbeddingProvider,
+  canonicalOpenAIEmbeddingIdentityMaterial,
+  canonicalOpenAIQueryIdentityMaterial,
+} from "../src/embedding/openai.js";
+import {
+  VoyageEmbeddingProvider,
+  canonicalVoyageEmbeddingIdentityMaterial,
+  canonicalVoyageQueryIdentityMaterial,
+} from "../src/embedding/voyage.js";
+import { canonicalEmbeddingBuildMaterial } from "../src/store.js";
+import {
   EmbeddingIdentityStateError,
   abandonEmbeddingBuild,
   beginEmbeddingBuild,
@@ -678,6 +689,206 @@ describe("embedding identity state machine", () => {
       );
 
       expect(results.map(result => result.displayPath)).toEqual(["target/only.md"]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("query ignores endpoint changes and an unforced build keeps the published vectors", async () => {
+    const cases = [
+      {
+        name: "openai",
+        indexUrl: "https://first.invalid/openai/v1",
+        queryUrl: "https://second.invalid/v1",
+        rebuild: canonicalOpenAIEmbeddingIdentityMaterial,
+        query: canonicalOpenAIQueryIdentityMaterial,
+        create: (baseUrl: string, fetch: typeof globalThis.fetch) => new OpenAIEmbeddingProvider({
+          apiKey: "test-key",
+          model: "text-embedding-3-small",
+          dimension: 3,
+          baseUrl,
+          maxAttempts: 1,
+          fetch,
+          authorizeRequest: async () => {},
+        }),
+      },
+      {
+        name: "voyage",
+        indexUrl: "https://first.invalid/voyage/v1",
+        queryUrl: "https://second.invalid/voyage/v1",
+        rebuild: canonicalVoyageEmbeddingIdentityMaterial,
+        query: canonicalVoyageQueryIdentityMaterial,
+        create: (baseUrl: string, fetch: typeof globalThis.fetch) => new VoyageEmbeddingProvider({
+          apiKey: "test-key",
+          model: "voyage-4",
+          dimension: 3,
+          baseUrl,
+          maxAttempts: 1,
+          fetch,
+          authorizeRequest: async () => {},
+        }),
+      },
+    ] as const;
+
+    for (const subject of cases) {
+      const model = subject.name === "openai" ? "text-embedding-3-small" : "voyage-4";
+      expect(subject.query(model as never, 3, subject.indexUrl)).toBe(subject.query(model as never, 3, subject.queryUrl));
+      expect(subject.rebuild(model as never, 3, subject.indexUrl)).not.toBe(subject.rebuild(model as never, 3, subject.queryUrl));
+      const published = createEmbeddingIdentity({
+        providerId: subject.name === "openai" ? "openai" : "voyageai",
+        model,
+        dimension: 3,
+        remote: true,
+        canonicalMaterial: canonicalEmbeddingBuildMaterial(
+          subject.rebuild(model as never, 3, subject.indexUrl),
+          "regex",
+        ),
+      });
+      const store = await createTempStore();
+      const now = new Date(0).toISOString();
+      const before = {
+        material: "",
+        fingerprint: "",
+        generation: 0,
+        vectors: 0,
+      };
+      try {
+        const lease = beginEmbeddingBuild(store.db, published, {
+          ownerId: "endpoint-writer",
+          now: Date.now(),
+          leaseMs: 60_000,
+          allowDestructiveRebuild: true,
+        });
+        store.insertContent("kept-hash", "kept body", now);
+        store.insertDocument("docs", "kept.md", "Kept", "kept-hash", now, now);
+        insertEmbedding(
+          store.db,
+          "kept-hash",
+          0,
+          0,
+          new Float32Array([1, 0, 0]),
+          model,
+          now,
+          1,
+          published.fingerprint,
+          lease,
+        );
+        completeEmbeddingBuild(store.db, lease);
+        const row = store.db.prepare(`
+          SELECT canonical_material, fingerprint, generation FROM embedding_index_state WHERE singleton = 1
+        `).get() as { canonical_material: string; fingerprint: string; generation: number };
+        before.material = row.canonical_material;
+        before.fingerprint = row.fingerprint;
+        before.generation = row.generation;
+        before.vectors = (store.db.prepare(`SELECT COUNT(*) AS n FROM content_vectors`).get() as { n: number }).n;
+
+        const fetch = vi.fn(async () => new Response(JSON.stringify(
+          subject.name === "openai"
+            ? {
+              object: "list",
+              model,
+              data: [{ object: "embedding", embedding: [1, 0, 0], index: 0 }],
+              usage: { prompt_tokens: 1, total_tokens: 1 },
+            }
+            : {
+              object: "list",
+              model,
+              data: [{ object: "embedding", embedding: [1, 0, 0], index: 0 }],
+              usage: { total_tokens: 1 },
+            },
+        ), { status: 200, headers: { "content-type": "application/json" } }));
+        const provider = subject.create(subject.queryUrl, fetch);
+        const moved = createStore(store.dbPath, { embeddingProvider: provider });
+        const results = await searchVec(
+          moved.db,
+          "kept",
+          provider.model,
+          10,
+          undefined,
+          undefined,
+          undefined,
+          provider,
+          () => {},
+        );
+        expect(results.map(result => result.displayPath), subject.name).toEqual(["docs/kept.md"]);
+        expect(fetch, subject.name).toHaveBeenCalled();
+        const requestUrl = String(fetch.mock.calls[0]?.[0]);
+        expect(requestUrl, subject.name).toContain("second.invalid");
+        expect(requestUrl, subject.name).not.toContain("first.invalid");
+
+        const after = moved.db.prepare(`
+          SELECT canonical_material, fingerprint, generation FROM embedding_index_state WHERE singleton = 1
+        `).get() as { canonical_material: string; fingerprint: string; generation: number };
+        expect(after, subject.name).toEqual({
+          canonical_material: before.material,
+          fingerprint: before.fingerprint,
+          generation: before.generation,
+        });
+        expect((moved.db.prepare(`SELECT COUNT(*) AS n FROM content_vectors`).get() as { n: number }).n).toBe(before.vectors);
+
+        expect(() => beginEmbeddingBuild(moved.db, remoteEmbeddingIdentity(provider), {
+          ownerId: "unforced",
+          now: 2_000,
+          leaseMs: 60_000,
+          allowDestructiveRebuild: false,
+          requireForceForIdentityChange: true,
+        })).toThrowError(EmbeddingIdentityStateError);
+        const preserved = moved.db.prepare(`
+          SELECT canonical_material, fingerprint, generation FROM embedding_index_state WHERE singleton = 1
+        `).get();
+        expect(preserved, subject.name).toEqual(after);
+        moved.close();
+        await provider.close();
+      } finally {
+        store.close();
+      }
+    }
+  });
+
+  test("query refuses a changed provider dimension without embedding or rewriting the index", async () => {
+    const publishedMaterial = canonicalOpenAIEmbeddingIdentityMaterial(
+      "text-embedding-3-small",
+      3,
+      "https://first.invalid/v1",
+    );
+    const published = createEmbeddingIdentity({
+      providerId: "openai",
+      model: "text-embedding-3-small",
+      dimension: 3,
+      remote: true,
+      canonicalMaterial: canonicalEmbeddingBuildMaterial(publishedMaterial, "regex"),
+    });
+    const store = await createTempStore();
+    const now = new Date(0).toISOString();
+    try {
+      const lease = beginEmbeddingBuild(store.db, published, {
+        ownerId: "dimension-writer",
+        now: Date.now(),
+        leaseMs: 60_000,
+        allowDestructiveRebuild: true,
+      });
+      store.insertContent("kept-hash", "kept body", now);
+      store.insertDocument("docs", "kept.md", "Kept", "kept-hash", now, now);
+      insertEmbedding(store.db, "kept-hash", 0, 0, new Float32Array([1, 0, 0]), published.model, now, 1, published.fingerprint, lease);
+      completeEmbeddingBuild(store.db, lease);
+      const before = store.db.prepare(`SELECT canonical_material, fingerprint, generation FROM embedding_index_state`).get();
+
+      const fetch = vi.fn();
+      const provider = new OpenAIEmbeddingProvider({
+        apiKey: "test-key",
+        model: "text-embedding-3-small",
+        dimension: 4,
+        baseUrl: "https://first.invalid/v1",
+        maxAttempts: 1,
+        fetch,
+        authorizeRequest: async () => {},
+      });
+      const reopened = createStore(store.dbPath, { embeddingProvider: provider });
+      await expect(reopened.searchVec("kept", provider.model)).resolves.toEqual([]);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(reopened.db.prepare(`SELECT canonical_material, fingerprint, generation FROM embedding_index_state`).get()).toEqual(before);
+      reopened.close();
+      await provider.close();
     } finally {
       store.close();
     }

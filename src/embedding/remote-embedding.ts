@@ -2,6 +2,7 @@ import type { Database } from "../db.js";
 import { canonicalEmbeddingBuildMaterial } from "../store.js";
 import {
   createEmbeddingIdentity,
+  readStoredEmbeddingIdentity,
   type EmbeddingBuildLease,
   type EmbeddingIdentity,
 } from "./identity.js";
@@ -24,6 +25,27 @@ export class RemoteEmbeddingAuthorizationError extends Error {
   }
 }
 
+
+function queryVectorSpace(canonicalMaterial: string): string {
+  const outer = JSON.parse(canonicalMaterial) as {
+    provider_identity?: unknown;
+    chunking?: unknown;
+  };
+  const providerIdentity = typeof outer.provider_identity === "string"
+    ? JSON.parse(outer.provider_identity) as Record<string, unknown>
+    : outer as Record<string, unknown>;
+  const {
+    endpointFingerprint: _endpointFingerprint,
+    ...vectorSpace
+  } = providerIdentity;
+  return JSON.stringify({
+    provider: vectorSpace.provider,
+    model: vectorSpace.model,
+    dimension: vectorSpace.dimension,
+    format: vectorSpace.format,
+    chunking: vectorSpace.chunking ?? outer.chunking,
+  });
+}
 
 export function remoteEmbeddingIdentity(
   provider: EmbeddingProvider,
@@ -117,18 +139,34 @@ export function authorizeRemoteEmbeddingRequest(
     return;
   }
 
+  const storedIdentity = readStoredEmbeddingIdentity(db);
+  const sameVectorSpace = storedIdentity !== undefined
+    && storedIdentity.providerId === identity.providerId
+    && storedIdentity.model === identity.model
+    && storedIdentity.dimension === identity.dimension
+    && storedIdentity.remote === identity.remote
+    && queryVectorSpace(storedIdentity.canonicalMaterial) === queryVectorSpace(identity.canonicalMaterial);
   const vectorTable = db.prepare(`
     SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vectors_vec'
   `).get();
+  // Query calls may carry the current endpoint fingerprint. Searchable rows keep
+  // the published fingerprint, so either fingerprint proves the same vector space.
+  const queryFingerprints = sameVectorSpace && state?.fingerprint && state.fingerprint !== identity.fingerprint
+    ? [identity.fingerprint, state.fingerprint]
+    : [identity.fingerprint];
   const hasQueryableRow = vectorTable == null ? false : db.prepare(`
     SELECT 1
     FROM content_vectors cv
     JOIN vectors_vec vv ON vv.hash_seq = cv.hash || '_' || cv.seq
-    WHERE cv.model = ? AND cv.embed_fingerprint = ?
+    WHERE cv.model = ? AND cv.embed_fingerprint IN (${queryFingerprints.map(() => "?").join(", ")})
     LIMIT 1
-  `).get(identity.model, identity.fingerprint) != null;
+  `).get(identity.model, ...queryFingerprints) != null;
+  const publishedFingerprint = state?.status === "ready" ? state.fingerprint : undefined;
+  const fingerprintMatches = context.requestFingerprint === undefined
+    || context.requestFingerprint === identity.fingerprint
+    || context.requestFingerprint === publishedFingerprint;
   if (state?.status !== "ready"
-    || state.fingerprint !== identity.fingerprint
+    || !fingerprintMatches
     || !hasQueryableRow) {
     throw new RemoteEmbeddingAuthorizationError(
       "INDEX_NOT_READY",
