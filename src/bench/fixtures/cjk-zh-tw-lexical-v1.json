@@ -23,8 +23,8 @@
     "measured": 50
   },
   "metrics": {
-    "recall_at_10": 0.84375,
-    "mrr_at_10": 0.828125,
+    "recall_at_10": 0.875,
+    "mrr_at_10": 0.859375,
     "shared_character_false_positive_count": 1
   },
   "approval": {
