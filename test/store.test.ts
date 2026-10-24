@@ -2164,6 +2164,46 @@ describe("FTS Search", () => {
     await cleanupTestDb(store);
   });
 
+  test("searchFTS scope is exact when an out-of-scope collection fills the candidate window (#922)", async () => {
+    const store = await createTestStore();
+    const noise = await createTestCollection({ name: "noise", pwd: "/test/noise" });
+    const target = await createTestCollection({ name: "target", pwd: "/test/target" });
+    const other = await createTestCollection({ name: "other", pwd: "/test/other" });
+
+    // limit=5 made the old scoped window limit*10 = 50: exactly as many
+    // stronger out-of-scope hits as fit in it.
+    for (let i = 0; i < 50; i++) {
+      await insertTestDocument(store.db, noise, {
+        name: `noise-${i}`,
+        title: "alpha alpha",
+        body: `Noise ${i}: alpha alpha alpha.`,
+        displayPath: `noise-${i}.md`,
+      });
+    }
+    await insertTestDocument(store.db, target, {
+      name: "t",
+      title: "Target",
+      body: `${"Unrelated prose. ".repeat(40)}One weaker mention of alpha.`,
+      displayPath: "t.md",
+    });
+    await insertTestDocument(store.db, other, {
+      name: "o",
+      title: "Other",
+      body: "Nothing relevant here.",
+      displayPath: "o.md",
+    });
+
+    expect(store.searchFTS("alpha", 5).every(r => r.collectionName === noise)).toBe(true);
+
+    const single = store.searchFTS("alpha", 5, target);
+    expect(single.map(r => r.displayPath)).toEqual([`${target}/t.md`]);
+
+    const multi = store.searchFTS("alpha", 5, [target, other]);
+    expect(multi.map(r => r.displayPath)).toEqual([`${target}/t.md`]);
+
+    await cleanupTestDb(store);
+  });
+
   test("searchFTS finds CJK documents by exact and mixed queries", async () => {
     const store = await createTestStore();
     const collectionName = await createTestCollection();
@@ -4013,6 +4053,122 @@ describe("Reindex Collection file sync state (#962)", () => {
   });
 });
 
+describe("Collection-scoped keyword search", () => {
+  // Short noise documents with the term in their titles outrank, globally, one
+  // long target in each of two small collections. The old scoped search took a
+  // global top (limit * 10) and filtered it, so the noise must fill that window.
+  async function crowdedCollections(store: Store, noiseCount: number): Promise<{ smallA: string; smallB: string }> {
+    const large = await createTestCollection({ name: "crowd-large", pwd: "/test/crowd-large" });
+    const smallA = await createTestCollection({ name: "crowd-small-a", pwd: "/test/crowd-small-a" });
+    const smallB = await createTestCollection({ name: "crowd-small-b", pwd: "/test/crowd-small-b" });
+    for (let i = 0; i < noiseCount; i++) {
+      await insertTestDocument(store.db, large, {
+        name: `noise-${i}`,
+        title: `zebra zebra ${i}`,
+        body: `# Noise ${i}\n\nzebra zebra zebra, noise document ${i}.`,
+        displayPath: `noise-${i}.md`,
+      });
+    }
+    for (const collection of [smallA, smallB]) {
+      await insertTestDocument(store.db, collection, {
+        name: `target-${collection}`,
+        title: "Target",
+        body: `# Target\n\n${"filler prose without the search term. ".repeat(40)}zebra.`,
+        displayPath: "target.md",
+      });
+    }
+    return { smallA, smallB };
+  }
+
+  test("searchFTS over two crowded-out collections returns a match from each", async () => {
+    const store = await createTestStore();
+    try {
+      const { smallA, smallB } = await crowdedCollections(store, 40);
+      const results = store.searchFTS("zebra", 2, [smallA, smallB]);
+      expect(results.map(r => r.displayPath).sort()).toEqual([`${smallA}/target.md`, `${smallB}/target.md`]);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("equal scores at the limit keep the smaller filepath whichever collection was indexed first", async () => {
+    const store = await createTestStore();
+    try {
+      const beta = await createTestCollection({ name: "tie-beta", pwd: "/test/tie-beta" });
+      const alpha = await createTestCollection({ name: "tie-alpha", pwd: "/test/tie-alpha" });
+      // Same title and body, so the keyword scores are exactly equal. The
+      // lexically later collection is indexed first, so row order cannot decide.
+      for (const collection of [beta, alpha]) {
+        await insertTestDocument(store.db, collection, {
+          name: "same",
+          title: "Shared",
+          body: "# Shared\n\nquillmarrow notes",
+          displayPath: "same.md",
+        });
+      }
+      for (const scope of [[alpha, beta], [beta, alpha]]) {
+        expect(store.searchFTS("quillmarrow", 1, scope).map(r => r.filepath)).toEqual([`qmd://${alpha}/same.md`]);
+      }
+      // At a limit that keeps both, the order is by path as well.
+      expect(store.searchFTS("quillmarrow", 2, [beta, alpha]).map(r => r.filepath))
+        .toEqual([`qmd://${alpha}/same.md`, `qmd://${beta}/same.md`]);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("searchFTS over several collections runs one keyword query and returns the same results", async () => {
+    const store = await createTestStore();
+    try {
+      const { smallA, smallB } = await crowdedCollections(store, 40);
+      const scope = ["crowd-large", smallA, smallB];
+      const perCollection = scope.flatMap(name => store.searchFTS("zebra", 5, name))
+        .sort((a, b) => b.score - a.score || (a.filepath < b.filepath ? -1 : a.filepath > b.filepath ? 1 : 0))
+        .slice(0, 5);
+      // Counts the keyword queries the scoped search runs.
+      let ftsQueries = 0;
+      const counting: Database = {
+        prepare: (sql: string) => {
+          const real = store.db.prepare(sql);
+          if (!sql.includes("documents_fts MATCH")) return real;
+          return {
+            ...real,
+            run: real.run.bind(real),
+            get: real.get.bind(real),
+            iterate: real.iterate.bind(real),
+            all: (...params: Parameters<typeof real.all>) => { ftsQueries++; return real.all(...params); },
+          };
+        },
+        transaction: (fn) => store.db.transaction(fn),
+        exec: (sql: string) => store.db.exec(sql),
+        loadExtension: (path: string) => store.db.loadExtension(path),
+        close: () => store.db.close(),
+      };
+
+      const { searchFTS } = await import("../src/store.js");
+      const results = searchFTS(counting, "zebra", 5, scope);
+      expect(ftsQueries).toBe(1);
+      expect(results.map(r => r.filepath)).toEqual(perCollection.map(r => r.filepath));
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("structuredSearch over two crowded-out collections returns a match from each", async () => {
+    const store = await createTestStore();
+    try {
+      // structuredSearch asks searchFTS for 20 results, a window of 200.
+      const { smallA, smallB } = await crowdedCollections(store, 250);
+      const results = await structuredSearch(store, [{ type: "lex", query: "zebra" }], {
+        collections: [smallA, smallB], skipRerank: true,
+      });
+      expect(results.map(r => r.displayPath).sort()).toEqual([`${smallA}/target.md`, `${smallB}/target.md`]);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+});
+
 // =============================================================================
 // Index Status Tests
 // =============================================================================
@@ -4759,6 +4915,44 @@ describe("Vector Search collection filter", () => {
     );
     expect(union.map(r => r.collectionName).sort()).toEqual([knowledge, notes].sort());
     expect(union.every((r) => r.collectionName !== large)).toBe(true);
+
+    await cleanupTestDb(store);
+  });
+
+  test("searchFTS finds a scoped doc the global candidate window does not contain", async () => {
+    const store = await createTestStore();
+    const large = await createTestCollection({ name: "large-fts", pwd: "/test/large-fts" });
+    const small = await createTestCollection({ name: "small-fts", pwd: "/test/small-fts" });
+
+    // 40 short noise docs carrying the term in the title (bm25 title weight
+    // 4.0), so every one of them outranks the target globally.
+    for (let i = 0; i < 40; i++) {
+      await insertTestDocument(store.db, large, {
+        name: `noise-${i}`,
+        title: `zebra zebra ${i}`,
+        body: `# Noise ${i}\n\nzebra zebra zebra, noise document ${i}.`,
+        displayPath: `noise-${i}.md`,
+      });
+    }
+
+    // One long target doc that mentions the term once, dead last globally.
+    await insertTestDocument(store.db, small, {
+      name: "target",
+      title: "Target",
+      body: `# Target\n\n${"filler prose without the search term. ".repeat(40)}zebra.`,
+      displayPath: "target.md",
+    });
+
+    // Unscoped, the target is nowhere near the top of the ranking.
+    const global = store.searchFTS("zebra", 2);
+    expect(global).toHaveLength(2);
+    expect(global.every(r => r.collectionName === large)).toBe(true);
+
+    // Scoped, it is the only answer. Taking a global top-(limit * 10) and
+    // filtering afterwards returned nothing here: all 20 candidates were
+    // large-fts documents.
+    const scoped = store.searchFTS("zebra", 2, small);
+    expect(scoped.map(r => r.displayPath)).toEqual([`${small}/target.md`]);
 
     await cleanupTestDb(store);
   });

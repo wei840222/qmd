@@ -5643,9 +5643,15 @@ function mergeSearchResultsByScore(lists: SearchResult[][], limit: number): Sear
       if (!prev || r.score > prev.score) best.set(r.filepath, r);
     }
   }
+  // Ties go to the smaller filepath, so the order the collections were named
+  // never decides which of two equal hits survives the limit.
   return Array.from(best.values())
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => b.score - a.score || compareFilepaths(a, b))
     .slice(0, limit);
+}
+
+function compareFilepaths(a: { filepath: string }, b: { filepath: string }): number {
+  return a.filepath < b.filepath ? -1 : a.filepath > b.filepath ? 1 : 0;
 }
 
 function searchFtsChannel(
@@ -5668,20 +5674,31 @@ function searchFtsChannel(
     : "";
   params.push(...collections);
 
-  // When filtering by metadata, fetch extra candidates from the FTS index
-  // since some will be filtered out. Without a filter we can fetch exactly the requested limit.
-  const ftsLimit = filter ? limit * 10 : limit;
-  params.push(ftsLimit);
+  // The collection scope sits inside the ranked candidate set, so the LIMIT
+  // counts only documents in scope. A metadata filter is applied after the CTE,
+  // so it must see the COMPLETE match set: any inner LIMIT (the old `limit * 10`)
+  // returns false-empty results whenever stronger matches outside the filter
+  // fill the window (#922). MATERIALIZED keeps the planner from flattening the
+  // CTE and folding the filter back into the MATCH. The set is corpus-bounded:
+  // at most one row per matching document.
+  const needsFullMatchSet = Boolean(filter);
+  // Equal scores are ordered by file path before the LIMIT, so which of two
+  // tied hits survives it never depends on row order. Only a collection scope
+  // has the documents joined here; an unscoped search keeps its
+  // early-terminating plan and orders ties after the LIMIT.
+  const collectionTieBreak = collections.length > 0
+    ? ", 'qmd://' || filtered_d.collection || '/' || filtered_d.path ASC"
+    : "";
+  if (!needsFullMatchSet) params.push(limit);
 
   let sql = `
-    WITH fts_matches AS (
+    WITH fts_matches AS ${needsFullMatchSet ? "MATERIALIZED " : ""}(
       SELECT ${table}.rowid AS rowid, bm25(${table}, 1.5, 4.0, 1.0) as bm25_score
       FROM ${table}
       ${collectionJoin}
       WHERE ${table} MATCH ?
       ${collectionPredicate}
-      ORDER BY bm25_score ASC
-      LIMIT ?
+      ${needsFullMatchSet ? "" : `ORDER BY bm25_score ASC${collectionTieBreak} LIMIT ?`}
     )
     SELECT
       'qmd://' || d.collection || '/' || d.path as filepath,
@@ -5706,8 +5723,9 @@ function searchFtsChannel(
     params.push(...compiledFilter.params);
   }
 
-  // bm25 lower is better; sort ascending.
-  sql += ` ORDER BY fm.bm25_score ASC LIMIT ?`;
+  // bm25 lower is better; sort ascending, ties by filepath as in
+  // mergeSearchResultsByScore.
+  sql += ` ORDER BY fm.bm25_score ASC, filepath ASC LIMIT ?`;
   params.push(limit);
 
   const rows = db.prepare(sql).all(...params) as { filepath: string; display_path: string; title: string; body: string; hash: string; bm25_score: number; metadata_json: string | null }[];
@@ -5817,10 +5835,17 @@ export function searchFTS(
   filter?: MetadataFilter,
 ): SearchResult[] {
   const names = scopedCollectionNames(collectionFilter);
-  if (names && names.length > 1) {
+  // A CJK query keeps one search per collection, merged by score. The word
+  // channel drops terms absent from the scoped index, and that has to be decided
+  // per collection: a term found only in another selected collection would
+  // otherwise block a document that matches in its own.
+  if (names && names.length > 1 && containsCjk(query)) {
     return mergeSearchResultsByScore(names.map(name => searchFTS(db, query, limit, name, filter)), limit);
   }
 
+  // A plain query runs once over the whole collection list: the scope sees every
+  // match, so it returns what a query per collection merged by score would
+  // (#775), without a large collection crowding the others out of a window.
   if (!containsCjk(query)) return searchCharFTS(db, query, limit, collectionFilter, filter);
   const charQuery = buildFTS5Query(query);
   if (!charQuery) return [];
@@ -8155,27 +8180,27 @@ export async function structuredSearch(
   const docidMap = new Map<string, string>(); // filepath -> docid
   const hasVectors = hasSearchableVectorIndex(store);
 
-  // Helper to run search across collections (or all if undefined)
-  const collectionList = collections ?? [undefined]; // undefined = all collections
+  // Each search yields ONE ranked list over the union of the named collections
+  // (undefined = all): searchFTS runs one query over the list (a CJK query runs
+  // one per collection) and searchVec searches each collection, and both merge by
+  // score, so the RRF weight below boosts the first search, not the first collection.
 
   // Step 1: Run FTS for all lex searches (sync, instant)
   for (const [searchIndex, search] of searches.entries()) {
     if (search.type === 'lex') {
-      for (const coll of collectionList) {
-        const ftsResults = store.searchFTS(search.query, 20, coll, filter);
-        if (ftsResults.length > 0) {
-          for (const r of ftsResults) docidMap.set(r.filepath, r.docid);
-          rankedLists.push(ftsResults.map(r => ({
-            file: r.filepath, displayPath: r.displayPath,
-            title: r.title, body: r.body || "", score: r.score,
-          })));
-          rankedListMeta.push({
-            source: "fts",
-            queryType: "lex",
-            query: search.query,
-          });
-          rankedListSearchIndexes.push(searchIndex);
-        }
+      const ftsResults = store.searchFTS(search.query, 20, collections, filter);
+      if (ftsResults.length > 0) {
+        for (const r of ftsResults) docidMap.set(r.filepath, r.docid);
+        rankedLists.push(ftsResults.map(r => ({
+          file: r.filepath, displayPath: r.displayPath,
+          title: r.title, body: r.body || "", score: r.score,
+        })));
+        rankedListMeta.push({
+          source: "fts",
+          queryType: "lex",
+          query: search.query,
+        });
+        rankedListSearchIndexes.push(searchIndex);
       }
     }
   }
@@ -8201,24 +8226,22 @@ export async function structuredSearch(
         const embedding = embeddings[i];
         if (!embedding || embedding.length === 0) continue;
 
-        for (const coll of collectionList) {
-          const vecResults = await store.searchVec(
-            vecSearches[i]!.search.query, embedModel, 20, coll,
-            undefined, embedding, filter
-          );
-          if (vecResults.length > 0) {
-            for (const r of vecResults) docidMap.set(r.filepath, r.docid);
-            rankedLists.push(vecResults.map(r => ({
-              file: r.filepath, displayPath: r.displayPath,
-              title: r.title, body: r.body || "", score: r.score,
-            })));
-            rankedListMeta.push({
-              source: "vec",
-              queryType: vecSearches[i]!.search.type,
-              query: vecSearches[i]!.search.query,
-            });
-            rankedListSearchIndexes.push(vecSearches[i]!.searchIndex);
-          }
+        const vecResults = await store.searchVec(
+          vecSearches[i]!.search.query, embedModel, 20, collections,
+          undefined, embedding, filter
+        );
+        if (vecResults.length > 0) {
+          for (const r of vecResults) docidMap.set(r.filepath, r.docid);
+          rankedLists.push(vecResults.map(r => ({
+            file: r.filepath, displayPath: r.displayPath,
+            title: r.title, body: r.body || "", score: r.score,
+          })));
+          rankedListMeta.push({
+            source: "vec",
+            queryType: vecSearches[i]!.search.type,
+            query: vecSearches[i]!.search.query,
+          });
+          rankedListSearchIndexes.push(vecSearches[i]!.searchIndex);
         }
       }
     }
