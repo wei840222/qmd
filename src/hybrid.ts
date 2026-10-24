@@ -16,12 +16,30 @@ import {
 import { RemoteLLM } from "./remote-llm.js";
 import { RemoteJev } from "./remote-jev.js";
 
+/** How long a failed rerank API is skipped while Jev can rerank in its place. */
+export const DEFAULT_RERANK_COOLDOWN_MS = 60_000;
+
+export interface HybridOptions {
+  /** Cooldown after a rerank API failure when Jev is the fallback. 0 never skips the API. */
+  rerankCooldownMs?: number;
+}
+
 /** Remote query services. Embeddings are owned by the store's authorized provider. */
 export class Hybrid implements LLM {
+  private remoteRerankSkippedUntil = 0;
+  private readonly rerankCooldownMs: number;
+
   constructor(
     private readonly remoteLLM?: RemoteLLM,
     private readonly remoteJev?: RemoteJev,
-  ) {}
+    options: HybridOptions = {},
+  ) {
+    const rerankCooldownMs = options.rerankCooldownMs ?? DEFAULT_RERANK_COOLDOWN_MS;
+    if (!Number.isFinite(rerankCooldownMs) || rerankCooldownMs < 0) {
+      throw new Error("Rerank cooldown must not be negative.");
+    }
+    this.rerankCooldownMs = rerankCooldownMs;
+  }
   get jev(): RemoteJev | undefined {
     return this.remoteJev;
   }
@@ -36,8 +54,17 @@ export class Hybrid implements LLM {
       this.remoteJev?.supportsRerank || this.remoteLLM?.supportsRerank,
     );
   }
+  /**
+   * The configured rerank API is skipped only while Jev can answer in its place.
+   * Without a fallback there is nothing to save by skipping it, so every request
+   * tries it and a recovered backend is used on the next request.
+   */
+  private get remoteRerankAvailable(): boolean {
+    if (!this.remoteLLM?.supportsRerank) return false;
+    return !(this.remoteJev?.supportsRerank && Date.now() < this.remoteRerankSkippedUntil);
+  }
   get rerankModelName(): string | undefined {
-    if (this.remoteLLM?.supportsRerank) return this.remoteLLM.rerankModelName;
+    if (this.remoteRerankAvailable) return this.remoteLLM?.rerankModelName;
     return this.remoteJev?.rerankModelName ?? this.remoteLLM?.rerankModelName;
   }
   get generateModelName(): string | undefined {
@@ -107,13 +134,16 @@ export class Hybrid implements LLM {
     options?: RerankOptions,
   ): Promise<RerankResult> {
     // An explicitly configured rerank API wins; Jev reranks only when none is
-    // configured, or as a fallback when the configured API fails.
-    if (this.remoteLLM?.supportsRerank) {
+    // configured, or as a fallback when the configured API fails. After a failure
+    // the API is skipped for a cooldown so an outage does not make every query
+    // wait for the request timeout before Jev answers.
+    if (this.remoteRerankAvailable) {
       try {
-        return await this.remoteLLM.rerank(query, documents, options);
+        return await this.remoteLLM!.rerank(query, documents, options);
       } catch (error) {
         if (options?.signal?.aborted || !this.remoteJev?.supportsRerank)
           throw error;
+        this.remoteRerankSkippedUntil = Date.now() + this.rerankCooldownMs;
       }
     }
     if (this.remoteJev?.supportsRerank)

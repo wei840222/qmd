@@ -29,11 +29,7 @@ export interface RemoteLLMOptions {
   timeZone?: string;
   fetch?: typeof globalThis.fetch;
   timeoutMs?: number;
-  /** How long a failed rerank API is skipped before the next request retries it. 0 never skips it. */
-  rerankCooldownMs?: number;
 }
-
-export const DEFAULT_RERANK_COOLDOWN_MS = 60_000;
 
 export function sigmoid(x: number): number {
   return 1 / (1 + Math.exp(-x));
@@ -153,18 +149,6 @@ export class RemoteLLM implements LLM {
     return AbortSignal.any([this.controller.signal, AbortSignal.timeout(this.timeoutMs), ...(signal ? [signal] : [])]);
   }
 
-  private generateCircuitBroken = false;
-  private rerankBrokenUntil = 0;
-  private readonly rerankCooldownMs: number;
-
-  private get rerankCircuitBroken(): boolean {
-    return Date.now() < this.rerankBrokenUntil;
-  }
-
-  private tripRerankCircuit(): void {
-    this.rerankBrokenUntil = Date.now() + this.rerankCooldownMs;
-  }
-
   constructor(options: RemoteLLMOptions) {
     const rawGenerateUrl = options.generateUrl ?? options.generateBaseUrl ?? options.generateApiUrl;
     const rawRerankUrl = options.rerankUrl ?? options.rerankBaseUrl ?? options.rerankApiUrl;
@@ -182,19 +166,16 @@ export class RemoteLLM implements LLM {
       throw new Error("Remote request timeout must be positive.");
     }
     this.timeoutMs = timeoutMs;
-    const rerankCooldownMs = options.rerankCooldownMs ?? DEFAULT_RERANK_COOLDOWN_MS;
-    if (!Number.isFinite(rerankCooldownMs) || rerankCooldownMs < 0) {
-      throw new Error("Remote rerank cooldown must not be negative.");
-    }
-    this.rerankCooldownMs = rerankCooldownMs;
   }
 
   get supportsExpand(): boolean {
-    return Boolean(this.generateApiUrl && this.generateApiModel && !this.generateCircuitBroken && !this.controller.signal.aborted);
+    // Capabilities describe configuration and lifetime, not backend health.
+    // A failed request must not disable later queries on a shared client.
+    return Boolean(this.generateApiUrl && this.generateApiModel && !this.controller.signal.aborted);
   }
 
   get supportsRerank(): boolean {
-    return Boolean(this.rerankApiUrl && this.rerankApiModel && !this.rerankCircuitBroken && !this.controller.signal.aborted);
+    return Boolean(this.rerankApiUrl && this.rerankApiModel && !this.controller.signal.aborted);
   }
 
   get rerankModelName(): string | undefined {
@@ -213,7 +194,7 @@ export class RemoteLLM implements LLM {
     return this.operation(() => this.generateRequest(prompt, options), options?.signal);
   }
   private async generateRequest(prompt: string, options?: GenerateOptions): Promise<GenerateResult | null> {
-    if (!this.supportsExpand) throw new Error("Remote generation is not configured or circuit is broken.");
+    if (!this.supportsExpand) throw new Error("Remote generation is not configured or the client is disposed.");
     const response = await this.fetchImpl(this.generateApiUrl!, {
       method: "POST",
       headers: { "content-type": "application/json", ...(this.generateApiKey ? { authorization: `Bearer ${this.generateApiKey}` } : {}) },
@@ -247,7 +228,7 @@ export class RemoteLLM implements LLM {
     },
   ): Promise<Queryable[]> {
     if (!this.supportsExpand) {
-      throw new Error("Remote expansion is not configured or circuit is broken.");
+      throw new Error("Remote expansion is not configured or the client is disposed.");
     }
 
     const includeLexical = options?.includeLexical !== false;
@@ -336,59 +317,53 @@ ${escapedQuery}
 Return only the prefix lines specified in the output format.
 </final_instruction>`;
 
-    try {
-      const url = this.generateApiUrl!;
+    const url = this.generateApiUrl!;
 
-      const res = await this.fetchImpl(url, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(this.generateApiKey ? { authorization: `Bearer ${this.generateApiKey}` } : {}),
-        },
-        body: JSON.stringify({
-          model: this.generateApiModel,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-          temperature: 0.3,
-        }),
-        signal: this.requestSignal(options?.signal),
-      });
+    const res = await this.fetchImpl(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(this.generateApiKey ? { authorization: `Bearer ${this.generateApiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model: this.generateApiModel,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0.3,
+      }),
+      signal: this.requestSignal(options?.signal),
+    });
 
-      if (!res.ok) {
-        this.generateCircuitBroken = true;
-        throw new Error(`Remote expansion API returned status ${res.status}`);
-      }
+    if (!res.ok) {
+      throw new Error(`Remote expansion API returned status ${res.status}`);
+    }
 
-      const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-      const rawText = data.choices?.[0]?.message?.content ?? "";
+    const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const rawText = data.choices?.[0]?.message?.content ?? "";
 
-      const results: Queryable[] = [];
-      const seenTypes = new Set<Queryable["type"]>();
-      const lines = rawText.split("\n");
-      for (const line of lines) {
-        const match = /^(lex|vec|hyde)\s*:\s*(.+)$/i.exec(line.trim());
-        if (match && match[1] && match[2]) {
-          const type = match[1].toLowerCase() as "lex" | "vec" | "hyde";
-          if (type === "lex" && !includeLexical) continue;
-          if (type === "hyde" && !includeHyde) continue;
-          if (!seenTypes.has(type)) {
-            seenTypes.add(type);
-            results.push({ type, text: match[2].trim() });
-          }
+    const results: Queryable[] = [];
+    const seenTypes = new Set<Queryable["type"]>();
+    const lines = rawText.split("\n");
+    for (const line of lines) {
+      const match = /^(lex|vec|hyde)\s*:\s*(.+)$/i.exec(line.trim());
+      if (match && match[1] && match[2]) {
+        const type = match[1].toLowerCase() as "lex" | "vec" | "hyde";
+        if (type === "lex" && !includeLexical) continue;
+        if (type === "hyde" && !includeHyde) continue;
+        if (!seenTypes.has(type)) {
+          seenTypes.add(type);
+          results.push({ type, text: match[2].trim() });
         }
       }
-
-      if (results.length === 0) {
-        results.push({ type: "vec", text: query });
-      }
-
-      return results;
-    } catch (err) {
-      if (!options?.signal?.aborted && !this.controller.signal.aborted) this.generateCircuitBroken = true;
-      throw err;
     }
+
+    if (results.length === 0) {
+      results.push({ type: "vec", text: query });
+    }
+
+    return results;
   }
 
   async rerank(query: string, documents: RerankDocument[], options?: RerankOptions | string | (RerankOptions & { timeZone?: string })): Promise<RerankResult> {
@@ -397,7 +372,7 @@ Return only the prefix lines specified in the output format.
   private async rerankRequest(query: string, documents: RerankDocument[], options?: RerankOptions | string | (RerankOptions & { timeZone?: string })): Promise<RerankResult> {
     const model = this.rerankApiModel || (typeof options === "string" ? options : options?.model) || "remote-rerank";
     if (!this.supportsRerank) {
-      throw new Error("Remote reranking is not configured or circuit is broken.");
+      throw new Error("Remote reranking is not configured or the client is disposed.");
     }
 
     if (documents.length === 0) {
@@ -413,59 +388,53 @@ Return only the prefix lines specified in the output format.
       return this.rerankViaChatCompletions(query, documents, model, timeZoneOption, typeof options === "object" ? options.signal : undefined);
     }
 
-    try {
-      const url = this.rerankApiUrl!;
+    const url = this.rerankApiUrl!;
 
-      const docsPayload = documents.map(d => {
-        if (typeof d === "string") return d;
-        const header = [d.title, d.file ? `(${d.file})` : ""].filter(Boolean).join(" ");
-        return header ? `${header}\n\n${d.text}` : d.text;
-      });
+    const docsPayload = documents.map(d => {
+      if (typeof d === "string") return d;
+      const header = [d.title, d.file ? `(${d.file})` : ""].filter(Boolean).join(" ");
+      return header ? `${header}\n\n${d.text}` : d.text;
+    });
 
-      const res = await this.fetchImpl(url, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(this.rerankApiKey ? { authorization: `Bearer ${this.rerankApiKey}` } : {}),
-        },
-        body: JSON.stringify({
-          model,
-          query,
-          documents: docsPayload,
-        }),
-        signal: this.requestSignal(typeof options === "object" ? options.signal : undefined),
-      });
+    const res = await this.fetchImpl(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(this.rerankApiKey ? { authorization: `Bearer ${this.rerankApiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model,
+        query,
+        documents: docsPayload,
+      }),
+      signal: this.requestSignal(typeof options === "object" ? options.signal : undefined),
+    });
 
-      // If /rerank returns 404 (endpoint not supported), fallback to LLM Chat Reranking
-      if (res.status === 404) {
-        return this.rerankViaChatCompletions(query, documents, model, timeZoneOption, typeof options === "object" ? options.signal : undefined);
-      }
-
-      if (!res.ok) {
-        this.tripRerankCircuit();
-        throw new Error(`Remote rerank API returned status ${res.status}`);
-      }
-
-      const data = (await res.json()) as {
-        results?: Array<{ index: number; relevance_score: number }>;
-      };
-
-      const rawResults = data.results ?? [];
-      const formattedResults: RerankDocumentResult[] = rawResults.map(r => {
-        const doc = documents[r.index];
-        const file = typeof doc === "string" ? doc : doc?.file ?? `doc_${r.index}`;
-        return {
-          file,
-          score: normalizeRerankScore(r.relevance_score),
-          index: r.index,
-        };
-      });
-
-      return { results: formattedResults, model };
-    } catch (err) {
-      if (!(typeof options === "object" && options.signal?.aborted) && !this.controller.signal.aborted) this.tripRerankCircuit();
-      throw err;
+    // If /rerank returns 404 (endpoint not supported), fallback to LLM Chat Reranking
+    if (res.status === 404) {
+      return this.rerankViaChatCompletions(query, documents, model, timeZoneOption, typeof options === "object" ? options.signal : undefined);
     }
+
+    if (!res.ok) {
+      throw new Error(`Remote rerank API returned status ${res.status}`);
+    }
+
+    const data = (await res.json()) as {
+      results?: Array<{ index: number; relevance_score: number }>;
+    };
+
+    const rawResults = data.results ?? [];
+    const formattedResults: RerankDocumentResult[] = rawResults.map(r => {
+      const doc = documents[r.index];
+      const file = typeof doc === "string" ? doc : doc?.file ?? `doc_${r.index}`;
+      return {
+        file,
+        score: normalizeRerankScore(r.relevance_score),
+        index: r.index,
+      };
+    });
+
+    return { results: formattedResults, model };
   }
 
   /**
@@ -585,7 +554,6 @@ Return raw JSON only: start with { and end with }. No Markdown fences.
 
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
-      this.tripRerankCircuit();
       throw new Error(`LLM Chat Rerank API returned status ${res.status}: ${errText}`);
     }
 

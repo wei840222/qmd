@@ -180,4 +180,67 @@ describe("remote-only CLI and MCP", () => {
     expect(await lexical.text()).toContain("deploy.md");
     expect(requests).toHaveLength(lexicalStart);
   }, 60_000);
+
+  test("a shared HTTP MCP server resumes reranking after its backend recovers", async () => {
+    let unavailable = false;
+    let rerankRequests = 0;
+    const backend = createServer(async (req, res) => {
+      let raw = "";
+      for await (const chunk of req) raw += chunk;
+      const body = JSON.parse(raw);
+      rerankRequests++;
+      res.setHeader("content-type", "application/json");
+      if (unavailable) {
+        res.statusCode = 503;
+        res.end(JSON.stringify({ error: "temporary outage" }));
+      } else {
+        res.end(JSON.stringify({ results: body.documents.map((_: unknown, index: number) => ({ index, relevance_score: 0.95 })) }));
+      }
+    });
+    servers.push(backend);
+    await new Promise<void>(resolve => backend.listen(0, "127.0.0.1", resolve));
+    const address = backend.address();
+    if (!address || typeof address === "string") throw new Error("missing loopback address");
+    const { root, configPath } = await fixture({
+      rerank_api_url: `http://127.0.0.1:${address.port}/v1/rerank`,
+      rerank_api_model: "test-rerank",
+    });
+    setConfigSource({ configPath });
+    const mcp = await startMcpHttpServer(0, { dbPath: join(root, "index.sqlite"), quiet: true });
+    mcpServers.push(mcp);
+
+    const query = async (context: string) => {
+      const response = await fetch(`http://127.0.0.1:${mcp.port}/mcp`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": "query" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: context, method: "tools/call", params: {
+          name: "query", arguments: {
+            searches: [{ type: "lex", query: "unicorn" }],
+            rerankContext: context, rerank: true,
+          },
+          _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": { name: "recovery-test", version: "1" }, "io.modelcontextprotocol/clientCapabilities": {} },
+        } }),
+      });
+      const body = await response.json() as any;
+      expect(response.status, JSON.stringify(body)).toBe(200);
+      return body;
+    };
+
+    const initial = await query("baseline");
+    expect(initial.result?.isError).not.toBe(true);
+    expect(JSON.stringify(initial)).toContain("deploy.md");
+    expect(rerankRequests).toBe(1);
+
+    unavailable = true;
+    const failed = await query("outage");
+    expect(failed.result?.isError).toBe(true);
+    expect(JSON.stringify(failed)).toContain("503");
+    expect(rerankRequests).toBe(2);
+
+    unavailable = false;
+    const recovered = await query("recovered");
+    expect(recovered.result?.isError, JSON.stringify(recovered)).not.toBe(true);
+    expect(JSON.stringify(recovered)).toContain("deploy.md");
+    expect(rerankRequests).toBe(3);
+  });
 });

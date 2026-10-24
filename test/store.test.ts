@@ -1389,11 +1389,10 @@ describe("Caching", () => {
       const remote = new RemoteLLM({
         rerankApiUrl: "http://rerank.test/v1/rerank",
         rerankApiModel: "api-rerank",
-        rerankCooldownMs: cooldownMs,
         fetch: fetchImpl as any,
       });
       const jev = new RemoteJev({ client: jevClient, model: "jev-1.13" });
-      return { hybrid: new Hybrid(remote, jev), api, jevClient };
+      return { hybrid: new Hybrid(remote, jev, { rerankCooldownMs: cooldownMs }), api, jevClient };
     };
 
     test("Jev fallback scores are not served as the API's scores after the API recovers", async () => {

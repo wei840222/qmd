@@ -1593,8 +1593,10 @@ that API fails; without it, Jev reranks. Jev still guides query expansion either
 A `rerank_api_url` ending in `/rerank` posts `{model, query, documents}` and reads
 Cohere-style `results[].{index, relevance_score}`; one ending in `/chat/completions`
 scores with an LLM. Voyage's own `/v1/rerank` answers with `data` instead of `results`,
-so reach it through a Cohere-shaped gateway or proxy. A failed rerank API is skipped for
-a cooldown (60 seconds by default) and then retried.
+so reach it through a Cohere-shaped gateway or proxy. A failed expansion or rerank request
+does not disable the endpoint: the next request tries it again. When Jev is the rerank fallback,
+a failed rerank API is skipped for a cooldown (60 seconds by default) so an outage does not make
+every query wait for the request timeout, then tried again.
 Credentials belong in the process environment or an explicitly managed config;
 do not commit them. There are no local-model defaults for new configurations.
 

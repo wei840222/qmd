@@ -448,6 +448,118 @@ describe("RemoteJev & Hybrid Integration", () => {
       expect(new Hybrid(remote, jev).rerankModelName).toBe("rerank-3");
       expect(new Hybrid({ supportsRerank: false, rerankModelName: "rerank-3" } as any, jev).rerankModelName).toBe("jev:latest");
     });
+    describe("rerank cooldown", () => {
+      const COOLDOWN_MS = 30_000;
+      const makeProviders = (failing = true) => {
+        const api = { failing };
+        const remote = {
+          supportsRerank: true,
+          rerankModelName: "api-rerank",
+          rerank: vi.fn(async () => {
+            if (api.failing) throw new Error("unavailable");
+            return { results: [], model: "api-rerank" };
+          }),
+        } as any;
+        const jev = {
+          supportsRerank: true,
+          rerankModelName: "jev:jev-1.13",
+          rerank: vi.fn(async () => ({ results: [], model: "jev:jev-1.13" })),
+        } as any;
+        return { api, remote, jev };
+      };
+      const withFakeDate = async (run: () => Promise<void>) => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        try { await run(); } finally { vi.useRealTimers(); }
+      };
+
+      test("a failed API is skipped during the cooldown and retried after it", () => withFakeDate(async () => {
+        const { api, remote, jev } = makeProviders();
+        const hybrid = new Hybrid(remote, jev, { rerankCooldownMs: COOLDOWN_MS });
+
+        await expect(hybrid.rerank("q", [])).resolves.toMatchObject({ model: "jev:jev-1.13" });
+        expect(remote.rerank).toHaveBeenCalledTimes(1);
+
+        // Inside the cooldown Jev answers without waiting on the API.
+        vi.advanceTimersByTime(COOLDOWN_MS - 1);
+        await expect(hybrid.rerank("q", [])).resolves.toMatchObject({ model: "jev:jev-1.13" });
+        expect(remote.rerank).toHaveBeenCalledTimes(1);
+
+        // After the cooldown the API is asked again and, being healthy, answers.
+        vi.advanceTimersByTime(1);
+        api.failing = false;
+        await expect(hybrid.rerank("q", [])).resolves.toMatchObject({ model: "api-rerank" });
+        expect(remote.rerank).toHaveBeenCalledTimes(2);
+        expect(jev.rerank).toHaveBeenCalledTimes(2);
+      }));
+
+      test("a failed retry after the cooldown starts another cooldown", () => withFakeDate(async () => {
+        const { remote, jev } = makeProviders();
+        const hybrid = new Hybrid(remote, jev, { rerankCooldownMs: COOLDOWN_MS });
+
+        await hybrid.rerank("q", []);
+        vi.advanceTimersByTime(COOLDOWN_MS);
+        await hybrid.rerank("q", []);
+        expect(remote.rerank).toHaveBeenCalledTimes(2);
+
+        vi.advanceTimersByTime(COOLDOWN_MS - 1);
+        await hybrid.rerank("q", []);
+        expect(remote.rerank).toHaveBeenCalledTimes(2);
+      }));
+
+      test("without Jev there is nothing to fall back to, so every request tries the API", async () => {
+        const { api, remote } = makeProviders();
+        const hybrid = new Hybrid(remote, undefined, { rerankCooldownMs: COOLDOWN_MS });
+
+        await expect(hybrid.rerank("q", [])).rejects.toThrow("unavailable");
+        await expect(hybrid.rerank("q", [])).rejects.toThrow("unavailable");
+        expect(remote.rerank).toHaveBeenCalledTimes(2);
+
+        api.failing = false;
+        await expect(hybrid.rerank("q", [])).resolves.toMatchObject({ model: "api-rerank" });
+      });
+
+      test("a zero cooldown never skips the API", async () => {
+        const { api, remote, jev } = makeProviders();
+        const hybrid = new Hybrid(remote, jev, { rerankCooldownMs: 0 });
+
+        await hybrid.rerank("q", []);
+        await hybrid.rerank("q", []);
+        expect(remote.rerank).toHaveBeenCalledTimes(2);
+
+        api.failing = false;
+        await expect(hybrid.rerank("q", [])).resolves.toMatchObject({ model: "api-rerank" });
+      });
+
+      test("a cancelled request does not start a cooldown", async () => {
+        const { remote, jev } = makeProviders();
+        const hybrid = new Hybrid(remote, jev, { rerankCooldownMs: COOLDOWN_MS });
+        const controller = new AbortController();
+        controller.abort();
+
+        await expect(hybrid.rerank("q", [], { signal: controller.signal })).rejects.toThrow("unavailable");
+        await hybrid.rerank("q", []);
+        expect(remote.rerank).toHaveBeenCalledTimes(2);
+      });
+
+      test("the rerank model name follows the provider that will answer", () => withFakeDate(async () => {
+        const { api, remote, jev } = makeProviders();
+        const hybrid = new Hybrid(remote, jev, { rerankCooldownMs: COOLDOWN_MS });
+        expect(hybrid.rerankModelName).toBe("api-rerank");
+
+        await hybrid.rerank("q", []);
+        expect(hybrid.rerankModelName).toBe("jev:jev-1.13");
+
+        vi.advanceTimersByTime(COOLDOWN_MS);
+        api.failing = false;
+        expect(hybrid.rerankModelName).toBe("api-rerank");
+      }));
+
+      test("rejects a negative cooldown", () => {
+        const { remote, jev } = makeProviders();
+        expect(() => new Hybrid(remote, jev, { rerankCooldownMs: -1 })).toThrow("cooldown");
+      });
+    });
+
     test("Jev classification failure still allows direct remote expansion", async () => {
       const jev = { supportsExpand: true, classifyIntent: vi.fn(async () => { throw new Error("unavailable"); }) } as any;
       const remote = { supportsExpand: true, expandQuery: vi.fn(async () => [{type:"vec",text:"remote"}]) } as any;
