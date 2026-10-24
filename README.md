@@ -9,6 +9,7 @@ flowchart LR
   Q[User Query] --> X[Query Expansion]
   Q --> FTS[BM25 Search]
   Q --> VS[Vector Search]
+  JEV[Jev Intent Hints] -.-> X
   X --> HYDE[HyDE]
   X --> VEC[Vec dense sentences]
   X --> LEX[Lex BM25 keywords]
@@ -17,11 +18,13 @@ flowchart LR
   LEX --> FTS
   VS --> RRF[Reciprocal Rank Fusion]
   FTS --> RRF
-  RRF --> RR[LLM Reranker]
+  RRF --> RR[Reranker]
+  API[rerank_api_*] --> RR
+  JR[Jev] -.->|none configured or failed| RR
   RR --> OUT[Final ranked results]
 ```
 
-Typed expansions are routed exclusively: `lex` → BM25/FTS, `vec` and `hyde` → vector search. The original query is sent to both backends, then fused with RRF and reranked.
+Typed expansions are routed exclusively: `lex` → BM25/FTS, `vec` and `hyde` → vector search. The original query is sent to both backends, then fused with RRF and reranked. When Jev is configured it adds intent hints to expansion; a configured `rerank_api_*` endpoint reranks first, and Jev reranks only when none is configured or the API fails.
 
 You can read more about QMD's progress in the [CHANGELOG](CHANGELOG.md).
 
@@ -470,6 +473,7 @@ The SDK requires explicit `dbPath` — no defaults are assumed. This makes it sa
                 ┌─────────────────┐        ┌─────────────────┐
                 │ Original Query  │        │ Typed Expansions│
                 │      (×2)       │        │ lex / vec / HyDE│
+                │                 │        │ Jev-guided (opt)│
                 └────────┬────────┘        └────────┬────────┘
                          │                           │
                  ┌───────┴───────┐           ┌───────┴───────┐
@@ -489,14 +493,14 @@ The SDK requires explicit `dbPath` — no defaults are assumed. This makes it sa
                           │   RRF Fusion + Bonus  │
                           │ Original paths ×2     │
                           │  Top-rank bonus: +0.05│
-                          │     Top 30 Kept       │
+                          │     Top 40 Kept       │
                           └───────────┬───────────┘
                                       │
                                       ▼
                           ┌───────────────────────┐
-                          │    LLM Re-ranking     │
-                          │  (qwen3-reranker)     │
-                          │  Yes/No + logprobs    │
+                          │   Remote Re-ranking   │
+                          │ rerank_api_* first    │
+                          │ Jev: none or failed   │
                           └───────────┬───────────┘
                                       │
                                       ▼
@@ -508,6 +512,8 @@ The SDK requires explicit `dbPath` — no defaults are assumed. This makes it sa
                           └───────────────────────┘
 ```
 
+`Jev-guided` expansion applies when Jev is configured: it classifies the query intent and its hints steer the typed variants. Reranking uses a configured `rerank_api_*` endpoint first; TypeSafe Jev reranks only when none is configured, or as a fallback when that API fails.
+
 ## Score Normalization & Fusion
 
 ### Search Backends
@@ -516,18 +522,18 @@ The SDK requires explicit `dbPath` — no defaults are assumed. This makes it sa
 |---------|-----------|------------|-------|
 | **FTS (BM25)** | SQLite FTS5 BM25 | `Math.abs(score)` | 0 to ~25+ |
 | **Vector** | Cosine distance | `1 / (1 + distance)` | 0.0 to 1.0 |
-| **Reranker** | LLM 0-10 rating | `score / 10` | 0.0 to 1.0 |
+| **Reranker** | Provider relevance score (rerank API, LLM, or Jev probability) | Used as-is within 0-1, otherwise sigmoid | 0.0 to 1.0 |
 
 ### Fusion Strategy
 
 The `query` command uses **Reciprocal Rank Fusion (RRF)** with position-aware blending:
 
-1. **Query Expansion Policy**: `auto` uses the configured remote generator subject to the shared expansion policy; `force` runs the configured generator; `skip` uses only the original query. Original FTS and vector retrieval paths have ×2 RRF weight in every mode. When expansion runs, QMD adds zero or more typed LLM variants at ×1: `lex` variants use FTS, while `vec` and `hyde` variants use vector search.
+1. **Query Expansion Policy**: `auto` uses the configured remote generator subject to the shared expansion policy; `force` runs the configured generator; `skip` uses only the original query. Original FTS and vector retrieval paths have ×2 RRF weight in every mode. When expansion runs, QMD adds zero or more typed LLM variants at ×1: `lex` variants use FTS, while `vec` and `hyde` variants use vector search. If Jev is configured it classifies the query intent first, and its hints (strategy and whether to add HyDE) guide those variants.
 2. **Parallel Retrieval**: The original query searches both indexes; `lex` variants search FTS, while `vec` and `hyde` variants search the vector index
 3. **RRF Fusion**: Combine all result lists using `score = Σ(1/(k+rank+1))` where k=60
 4. **Top-Rank Bonus**: Documents ranking #1 in any list get +0.05, #2-3 get +0.02
-5. **Top-K Selection**: Take top 30 candidates for reranking
-6. **Re-ranking**: LLM scores each document (yes/no with logprobs confidence)
+5. **Top-K Selection**: Take top 40 candidates for reranking
+6. **Re-ranking**: A configured `rerank_api_*` endpoint scores each candidate chunk; Jev scores them when no rerank API is configured or that API fails. Scores are cached under the model that produced them
 7. **Position-Aware Blending**:
    - RRF rank 1-3: 75% retrieval, 25% reranker (preserves exact matches)
    - RRF rank 4-10: 60% retrieval, 40% reranker
@@ -611,8 +617,13 @@ models:
   generate_api_model: gemini-3.5-flash-lite         # or gpt-4o-mini
 
   # Optional: Remote Reranking (aliases: rerank_url, rerank_base_url, rerank_api_url)
-  rerank_api_url: https://generativelanguage.googleapis.com/v1beta/openai/v1/chat/completions # Supports both /v1/rerank and /v1/chat/completions LLM endpoints
+  rerank_api_url: https://generativelanguage.googleapis.com/v1beta/openai/v1/chat/completions # /v1/rerank (Cohere-style `results`) or /v1/chat/completions (LLM scoring)
   rerank_api_model: gemini-3.5-flash-lite           # or gpt-4o-mini
+
+  # Optional: TypeSafe Jev. Guides query expansion; reranks only when no rerank_api_* is configured, or as a fallback.
+  # jev_api_key: <key>                              # or TYPESAFE_API_KEY
+  # jev_base_url: https://jev.example.com           # or TYPESAFE_BASE_URL
+  # jev_api_model: jev-1.13                         # or TYPESAFE_DEFAULT_MODEL
 
 # Optional: Custom User Dictionary for CJK segmentation
 dictionary: ~/.config/qmd/dictionary.txt
@@ -1421,6 +1432,9 @@ llm_cache       -- Cached LLM responses (query expansion, rerank scores)
 | `XDG_CACHE_HOME` | `~/.cache` | Cache directory location |
 | `XDG_CONFIG_HOME` | `~/.config` | Config directory location (where `index.yml` lives) |
 | `QMD_CONFIG_DIR` | unset | Override the config directory outright (takes precedence over `XDG_CONFIG_HOME`) |
+| `TYPESAFE_API_KEY` | unset | TypeSafe Jev API key; enables Jev when `models.jev_api_key` is not set |
+| `TYPESAFE_BASE_URL` | TypeSafe client default | TypeSafe Jev endpoint; overridden by `models.jev_base_url` |
+| `TYPESAFE_DEFAULT_MODEL` | `jev-1.13` | TypeSafe Jev model; overridden by `models.jev_api_model` |
 
 ## How It Works
 
@@ -1506,6 +1520,7 @@ Query ──► Expansion policy (`auto` | `force` | `skip`)
   ┌──────────────────────┴──────────────────────┐
   ▼                                             ▼
 Original query (×2)                 Zero or more typed variants (×1)
+  │                                   (guided by Jev intent hints, if configured)
   │                                             │
   ├──► FTS (BM25) ──► Ranked List               ├──► lex ──────► FTS ────► Ranked List
   └──► Vector Search ─► Ranked List             └──► vec/hyde ─► Vector ─► Ranked List
@@ -1518,11 +1533,12 @@ Original query (×2)                 Zero or more typed variants (×1)
                                   Top-rank bonus: +0.05/#1, +0.02/#2-3
                                            │
                                            ▼
-                                  Top 30 candidates
+                                  Top 40 candidates
                                            │
                                            ▼
-                                  LLM Re-ranking
-                                  (yes/no + logprob confidence)
+                                  Remote Re-ranking
+                                  rerank_api_* first; Jev if none configured or on failure
+                                  (scores cached per producing model)
                                            │
                                            ▼
                                   Position-Aware Blend
@@ -1542,6 +1558,11 @@ OpenAI-compatible embeddings, or the dedicated Voyage settings above. Configure
 remains available through `models.jev_*` and its documented environment variables.
 When `rerank_api_*` is configured it reranks first and Jev is only a fallback if
 that API fails; without it, Jev reranks. Jev still guides query expansion either way.
+A `rerank_api_url` ending in `/rerank` posts `{model, query, documents}` and reads
+Cohere-style `results[].{index, relevance_score}`; one ending in `/chat/completions`
+scores with an LLM. Voyage's own `/v1/rerank` answers with `data` instead of `results`,
+so reach it through a Cohere-shaped gateway or proxy. A failed rerank API is skipped for
+a cooldown (60 seconds by default) and then retried.
 Credentials belong in the process environment or an explicitly managed config;
 do not commit them. There are no local-model defaults for new configurations.
 

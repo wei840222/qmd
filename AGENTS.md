@@ -1,6 +1,6 @@
 # QMD - Query Markup Documents
 
-Use Node.js (>=22) and pnpm (`pnpm` not `npm` or `bun`, `pnpm install` not `npm install`).
+Use Node.js (>=24.21.0) and pnpm (`pnpm` not `npm` or `bun`, `pnpm install` not `npm install`).
 
 ## Commands
 
