@@ -13,6 +13,30 @@
 
 ### Fixed
 
+- The MCP server caches its instructions per store for up to 60 seconds instead
+  of rebuilding them, with a full index-status scan, for every HTTP request.
+  Concurrent requests share one build and a failed build is not cached; index
+  changes from other processes show up in the instructions within a minute.
+  #815 (thanks @fxstein)
+- `qmd update` no longer reads files whose modification time and size match
+  the last pass (tracked in a new `file_sync_state` table), so re-indexing an
+  unchanged collection takes seconds. A cached entry counts only while its
+  document is still active at that path with that content, so a collection
+  removed and added back is re-indexed, while a renamed one keeps its entries;
+  files with missing or outdated metadata are still re-extracted. `qmd update`
+  and `qmd collection add` skip files over 10 MB with `FILE_TOO_LARGE`, and
+  `qmd update` deactivates a previously indexed file that becomes empty or is
+  over 10 MB, including one indexed by an earlier release. #962 (thanks
+  @rikvanriel)
+- Search results carry at most the first 262,144 characters of each document
+  body (`qmd search --full`, MCP results, keyword and vector hits), which
+  bounds memory on indexes with very large documents. A match past that point
+  is still found, but its snippet, and the passage the reranker scores, come
+  from the start of the document. #962 (thanks @rikvanriel)
+- `qmd update` and `qmd collection add` write a collection scan in short
+  transactions instead of committing every row on its own, so a first index
+  of 20,000 files takes about 5 s instead of about 3 minutes. #1021 (thanks
+  @brettdavies)
 - `qmd --help` no longer advertises `qmd update --pull`. The flag is still accepted so existing calls keep working, but `qmd update` never consumed it; running `git pull` before re-indexing is done with a per-collection update command (`qmd collection update-cmd`).
 - Reranking now prefers a configured `models.rerank_api_*` endpoint over TypeSafe Jev. Jev reranks only when no rerank API is configured, or as a fallback when the configured API fails (never after cancellation). Jev intent classification for query expansion is unchanged.
 - Reranking falls back to TypeSafe Jev without making every query wait for the request timeout during an outage: when the configured rerank API fails and Jev is available, `Hybrid` skips the API for a cooldown (60 seconds by default, `rerankCooldownMs` on `Hybrid`; `0` never skips it) and reranks with Jev, then tries the API again on the first request after the cooldown. Without Jev there is nothing to fall back to, so every request tries the API.
