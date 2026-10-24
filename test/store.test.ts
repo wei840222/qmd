@@ -1558,6 +1558,73 @@ describe("Caching", () => {
       }
     });
   });
+
+  describe("rerank result to chunk mapping", () => {
+    const docs = [
+      { file: "a.md", text: "chunk a" },
+      { file: "b.md", text: "chunk b" },
+      { file: "c.md", text: "chunk c" },
+    ];
+    const scoresByFile = (ranked: { file: string; score: number }[]) =>
+      Object.fromEntries(ranked.map(r => [r.file, r.score]));
+    const makeLlm = (results: { file: string; score: number; index?: number }[]) => {
+      const rerank = vi.fn(async () => ({ results, model: "mock-rerank" }));
+      return { rerank, llm: { rerank, rerankModelName: "mock-rerank" } as any };
+    };
+
+    test("a missing, non-integer, or out-of-range index falls back to the filename", async () => {
+      const store = await createTestStore();
+      const { rerank, llm } = makeLlm([
+        { file: "a.md", score: 0.9 }, // no index
+        { file: "b.md", score: 0.8, index: 99 }, // beyond the submitted batch
+        { file: "c.md", score: 0.7, index: 1.5 }, // not an integer
+      ]);
+      store.llm = llm;
+      try {
+        const ranked = await store.rerank("mapping fallback query", docs);
+        expect(scoresByFile(ranked)).toEqual({ "a.md": 0.9, "b.md": 0.8, "c.md": 0.7 });
+
+        // Each score was cached against its own chunk, so a repeat call makes no request.
+        const again = await store.rerank("mapping fallback query", docs);
+        expect(scoresByFile(again)).toEqual({ "a.md": 0.9, "b.md": 0.8, "c.md": 0.7 });
+        expect(rerank).toHaveBeenCalledTimes(1);
+      } finally {
+        await cleanupTestDb(store);
+      }
+    });
+
+    test("a negative index falls back to the filename instead of reading the wrong chunk", async () => {
+      const store = await createTestStore();
+      const { llm } = makeLlm([
+        { file: "a.md", score: 0.9, index: -1 },
+        { file: "b.md", score: 0.8, index: 1 },
+        { file: "c.md", score: 0.7, index: 2 },
+      ]);
+      store.llm = llm;
+      try {
+        const ranked = await store.rerank("negative index query", docs);
+        expect(scoresByFile(ranked)).toEqual({ "a.md": 0.9, "b.md": 0.8, "c.md": 0.7 });
+      } finally {
+        await cleanupTestDb(store);
+      }
+    });
+
+    test("a valid index maps to the submitted chunk even when the filename is unknown", async () => {
+      const store = await createTestStore();
+      const { llm } = makeLlm([
+        { file: "unknown-0", score: 0.9, index: 0 },
+        { file: "unknown-1", score: 0.4, index: 1 },
+        { file: "unknown-2", score: 0.6, index: 2 },
+      ]);
+      store.llm = llm;
+      try {
+        const ranked = await store.rerank("index mapping query", docs);
+        expect(scoresByFile(ranked)).toEqual({ "a.md": 0.9, "b.md": 0.4, "c.md": 0.6 });
+      } finally {
+        await cleanupTestDb(store);
+      }
+    });
+  });
 });
 
 describe("Query expansion cache (#818)", () => {
