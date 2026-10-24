@@ -186,6 +186,32 @@ describe("CJK lexical search", () => {
     }
   });
 
+  test("a word found only in another selected collection does not block relaxation in a document's own collection", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qmd-cjk-cross-collection-"));
+    tempDirs.push(dir);
+    const dbPath = join(dir, "index.sqlite");
+    const store = createStore(dbPath);
+    insertContent(store.db, "hash-alpha", "資料庫同步器提供可靠的資料同步功能", now);
+    insertDocument(store.db, "alpha", "sync.md", "資料庫同步器", "hash-alpha", now, now);
+    insertContent(store.db, "hash-beta", "操作程序", now);
+    insertDocument(store.db, "beta", "procedure.md", "操作程序", "hash-beta", now, now);
+    store.close();
+    expect((await rebuildCjkLexicalIndex(dbPath)).status).toBe("ready");
+
+    const db = openDatabase(dbPath);
+    try {
+      const query = "資料庫同步器提供操作程序";
+      // Alone, alpha drops the word it does not contain and still matches.
+      expect(searchFTS(db, query, 10, "alpha").map((result) => result.displayPath)).toContain("alpha/sync.md");
+      // Naming beta as well must not take that match away, whichever way round.
+      for (const scope of [["alpha", "beta"], ["beta", "alpha"]]) {
+        expect(searchFTS(db, query, 10, scope).map((result) => result.displayPath)).toContain("alpha/sync.md");
+      }
+    } finally {
+      db.close();
+    }
+  });
+
   test("omits both analyzed channels when Jieba is unavailable after a ready build", async () => {
     const { dbPath } = await createFixture();
     const db = openDatabase(dbPath);

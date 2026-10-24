@@ -4091,6 +4091,32 @@ describe("Collection-scoped keyword search", () => {
     }
   });
 
+  test("equal scores at the limit keep the smaller filepath whichever collection was indexed first", async () => {
+    const store = await createTestStore();
+    try {
+      const beta = await createTestCollection({ name: "tie-beta", pwd: "/test/tie-beta" });
+      const alpha = await createTestCollection({ name: "tie-alpha", pwd: "/test/tie-alpha" });
+      // Same title and body, so the keyword scores are exactly equal. The
+      // lexically later collection is indexed first, so row order cannot decide.
+      for (const collection of [beta, alpha]) {
+        await insertTestDocument(store.db, collection, {
+          name: "same",
+          title: "Shared",
+          body: "# Shared\n\nquillmarrow notes",
+          displayPath: "same.md",
+        });
+      }
+      for (const scope of [[alpha, beta], [beta, alpha]]) {
+        expect(store.searchFTS("quillmarrow", 1, scope).map(r => r.filepath)).toEqual([`qmd://${alpha}/same.md`]);
+      }
+      // At a limit that keeps both, the order is by path as well.
+      expect(store.searchFTS("quillmarrow", 2, [beta, alpha]).map(r => r.filepath))
+        .toEqual([`qmd://${alpha}/same.md`, `qmd://${beta}/same.md`]);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
   test("searchFTS over several collections runs one keyword query and returns the same results", async () => {
     const store = await createTestStore();
     try {
