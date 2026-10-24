@@ -66,6 +66,9 @@ describe("benchSummaryAllZero", () => {
     avg_mrr: 0,
     avg_f1: 0,
     avg_latency_ms: 12,
+    avg_recall_at_10: 0,
+    avg_mrr_at_10: 0,
+    false_positive_count: 0,
   };
 
   test("is true when every backend scored zero", () => {

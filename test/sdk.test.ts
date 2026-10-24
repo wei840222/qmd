@@ -931,8 +931,7 @@ describe("get and multiGet", () => {
       const { docs, errors } = await store.multiGet(`#${doc.docid}`, { includeBody: true });
       expect(errors).toHaveLength(0);
       expect(docs).toHaveLength(1);
-      expect(docs[0]!.doc.docid).toBe(doc.docid);
-      expect(docs[0]!.skipped).toBe(false);
+      expect(docs[0]).toMatchObject({ skipped: false, doc: { docid: doc.docid } });
       if (!docs[0]!.skipped) {
         expect(docs[0]!.doc.body).toContain("getting started guide");
       }

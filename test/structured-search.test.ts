@@ -660,8 +660,8 @@ describe("structuredSearch collection scope", () => {
       embedModelName: "scope-embed-model",
       embedBatch: async (texts: string[]) => texts.map(() => ({ embedding: [1, 0, 0], model: "scope-embed-model" })),
     } as any;
-    const searchVec = vi.fn(async () => []);
-    store.searchVec = searchVec as any;
+    const searchVec = vi.fn<Store["searchVec"]>(async () => []);
+    store.searchVec = searchVec;
 
     await structuredSearch(store, [{ type: "vec", query: "x" }], { collections: ["alpha", "beta"], skipRerank: true });
 

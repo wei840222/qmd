@@ -848,7 +848,7 @@ describe("embedding identity state machine", () => {
         before.generation = row.generation;
         before.vectors = (store.db.prepare(`SELECT COUNT(*) AS n FROM content_vectors`).get() as { n: number }).n;
 
-        const fetch = vi.fn(async () => new Response(JSON.stringify(
+        const fetch = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify(
           subject.name === "openai"
             ? {
               object: "list",

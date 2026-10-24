@@ -1802,7 +1802,7 @@ describe("Query expansion cache (#818)", () => {
       ];
       store.setCachedResult(getCacheKey("expandQuery", { query: "musubi", model: DEFAULT_QUERY_MODEL }), JSON.stringify(cached));
 
-      await hybridQuery(store, "musubi", { limit: 5, minScore: 0, skipRerank: true, intent: "x" });
+      await hybridQuery(store, "musubi", { limit: 5, minScore: 0, skipRerank: true, rerankContext: "x" });
 
       expect(embedBatchSpy).toHaveBeenCalledTimes(1);
       expect(embedBatchSpy.mock.calls[0]![0]).toHaveLength(3);
@@ -1836,7 +1836,7 @@ describe("Query expansion cache (#818)", () => {
     const embedModel = "dedupe-embed-model";
     publishSearchableFixture(store, embedModel);
     store.llm = { embedModelName: embedModel } as any;
-    const searchVecSpy = vi.fn(async () => [] as SearchResult[]);
+    const searchVecSpy = vi.fn(async (_query: string) => [] as SearchResult[]);
     store.searchVec = searchVecSpy as any;
     try {
       const cached = [
@@ -1861,7 +1861,7 @@ describe("Query expansion cache (#818)", () => {
     const embedModel = "dedupe-embed-model";
     publishSearchableFixture(store, embedModel);
     store.llm = { embedModelName: embedModel } as any;
-    const searchVecSpy = vi.fn(async () => [] as SearchResult[]);
+    const searchVecSpy = vi.fn(async (_query: string) => [] as SearchResult[]);
     store.searchVec = searchVecSpy as any;
     try {
       // Rows written before the cache stored `query` carry the line as `text`.
@@ -1889,7 +1889,7 @@ describe("Query expansion cache (#818)", () => {
       embedBatch: async (texts: string[]) => texts.map(() => ({ embedding: [1, 2, 3], model: embedModel })),
     } as any;
     store.searchVec = vi.fn(async () => [] as SearchResult[]) as any;
-    const searchFTSSpy = vi.fn(() => [] as SearchResult[]);
+    const searchFTSSpy = vi.fn((_query: string) => [] as SearchResult[]);
     store.searchFTS = searchFTSSpy as any;
     try {
       const cached = [
@@ -1898,7 +1898,7 @@ describe("Query expansion cache (#818)", () => {
       ];
       store.setCachedResult(getCacheKey("expandQuery", { query: "q", model: DEFAULT_QUERY_MODEL }), JSON.stringify(cached));
 
-      await hybridQuery(store, "q", { limit: 5, minScore: 0, skipRerank: true, intent: "x" });
+      await hybridQuery(store, "q", { limit: 5, minScore: 0, skipRerank: true, rerankContext: "x" });
 
       // The original query's probe, then the distinct lex line once.
       expect(searchFTSSpy.mock.calls.map(call => call[0])).toEqual(["q", "k"]);
@@ -4126,27 +4126,11 @@ describe("Collection-scoped keyword search", () => {
         .sort((a, b) => b.score - a.score || (a.filepath < b.filepath ? -1 : a.filepath > b.filepath ? 1 : 0))
         .slice(0, 5);
       // Counts the keyword queries the scoped search runs.
-      let ftsQueries = 0;
-      const counting: Database = {
-        prepare: (sql: string) => {
-          const real = store.db.prepare(sql);
-          if (!sql.includes("documents_fts MATCH")) return real;
-          return {
-            ...real,
-            run: real.run.bind(real),
-            get: real.get.bind(real),
-            iterate: real.iterate.bind(real),
-            all: (...params: Parameters<typeof real.all>) => { ftsQueries++; return real.all(...params); },
-          };
-        },
-        transaction: (fn) => store.db.transaction(fn),
-        exec: (sql: string) => store.db.exec(sql),
-        loadExtension: (path: string) => store.db.loadExtension(path),
-        close: () => store.db.close(),
-      };
-
+      const prepare = vi.spyOn(store.db, "prepare");
       const { searchFTS } = await import("../src/store.js");
-      const results = searchFTS(counting, "zebra", 5, scope);
+      const results = searchFTS(store.db, "zebra", 5, scope);
+      const ftsQueries = prepare.mock.calls.filter(([sql]) => sql.includes("documents_fts MATCH")).length;
+      prepare.mockRestore();
       expect(ftsQueries).toBe(1);
       expect(results.map(r => r.filepath)).toEqual(perCollection.map(r => r.filepath));
     } finally {
@@ -4319,19 +4303,15 @@ describe("cleanupOrphanedVectors atomicity", () => {
 
   // Fault injection: same connection, but the content_vectors DELETE throws —
   // after the vectors_vec DELETE already executed inside the transaction.
-  function makeFailingDb(db: Database): Database {
-    return {
-      prepare: (sql: string) => db.prepare(sql),
-      transaction: (fn) => db.transaction(fn),
-      exec: (sql: string) => {
-        if (sql.includes("DELETE FROM content_vectors")) {
-          throw new Error("injected failure between deletes");
-        }
-        return db.exec(sql);
-      },
-      loadExtension: (path: string) => db.loadExtension(path),
-      close: () => db.close(),
-    };
+  function injectContentVectorsDeleteFailure(db: Database): () => void {
+    const exec = db.exec.bind(db);
+    const spy = vi.spyOn(db, "exec").mockImplementation((sql: string) => {
+      if (sql.includes("DELETE FROM content_vectors")) {
+        throw new Error("injected failure between deletes");
+      }
+      return exec(sql);
+    });
+    return () => spy.mockRestore();
   }
 
   test("removes orphaned chunks from both tables and returns the count", async () => {
@@ -4361,7 +4341,12 @@ describe("cleanupOrphanedVectors atomicity", () => {
       // Without the transaction wrap this used to leave vectors_vec already
       // purged while content_vectors still claimed the chunks were embedded
       // (silent desync).
-      expect(() => cleanupOrphanedVectors(makeFailingDb(db))).toThrow("injected failure between deletes");
+      const restore = injectContentVectorsDeleteFailure(db);
+      try {
+        expect(() => cleanupOrphanedVectors(db)).toThrow("injected failure between deletes");
+      } finally {
+        restore();
+      }
 
       // Both tables must be untouched — the vectors_vec DELETE was rolled back.
       expect(vecCounts(db)).toEqual({ vec: 3, meta: 3 });
@@ -4404,13 +4389,16 @@ describe("cleanupOrphanedVectors atomicity", () => {
       const db = store.db;
 
       const outer = db.transaction(() => {
+        const restore = injectContentVectorsDeleteFailure(db);
         try {
-          cleanupOrphanedVectors(makeFailingDb(db));
+          cleanupOrphanedVectors(db);
           throw new Error("expected the injected failure to propagate");
         } catch (error) {
           if (!(error instanceof Error) || error.message !== "injected failure between deletes") {
             throw error;
           }
+        } finally {
+          restore();
         }
         // If the cleanup ran inline instead of inside its own savepoint, the
         // vectors_vec DELETE would survive the caught failure and commit with
@@ -5212,6 +5200,7 @@ describe("Remote query routing", () => {
       modifiedAt: new Date(0).toISOString(),
       bodyLength: 12,
       body: "search body",
+      metadata: {},
       score: 1,
       source,
     });
