@@ -29,7 +29,11 @@ export interface RemoteLLMOptions {
   timeZone?: string;
   fetch?: typeof globalThis.fetch;
   timeoutMs?: number;
+  /** How long a failed rerank API is skipped before the next request retries it. 0 never skips it. */
+  rerankCooldownMs?: number;
 }
+
+export const DEFAULT_RERANK_COOLDOWN_MS = 60_000;
 
 export function sigmoid(x: number): number {
   return 1 / (1 + Math.exp(-x));
@@ -150,7 +154,16 @@ export class RemoteLLM implements LLM {
   }
 
   private generateCircuitBroken = false;
-  private rerankCircuitBroken = false;
+  private rerankBrokenUntil = 0;
+  private readonly rerankCooldownMs: number;
+
+  private get rerankCircuitBroken(): boolean {
+    return Date.now() < this.rerankBrokenUntil;
+  }
+
+  private tripRerankCircuit(): void {
+    this.rerankBrokenUntil = Date.now() + this.rerankCooldownMs;
+  }
 
   constructor(options: RemoteLLMOptions) {
     const rawGenerateUrl = options.generateUrl ?? options.generateBaseUrl ?? options.generateApiUrl;
@@ -169,6 +182,11 @@ export class RemoteLLM implements LLM {
       throw new Error("Remote request timeout must be positive.");
     }
     this.timeoutMs = timeoutMs;
+    const rerankCooldownMs = options.rerankCooldownMs ?? DEFAULT_RERANK_COOLDOWN_MS;
+    if (!Number.isFinite(rerankCooldownMs) || rerankCooldownMs < 0) {
+      throw new Error("Remote rerank cooldown must not be negative.");
+    }
+    this.rerankCooldownMs = rerankCooldownMs;
   }
 
   get supportsExpand(): boolean {
@@ -424,7 +442,7 @@ Return only the prefix lines specified in the output format.
       }
 
       if (!res.ok) {
-        this.rerankCircuitBroken = true;
+        this.tripRerankCircuit();
         throw new Error(`Remote rerank API returned status ${res.status}`);
       }
 
@@ -445,7 +463,7 @@ Return only the prefix lines specified in the output format.
 
       return { results: formattedResults, model };
     } catch (err) {
-      if (!(typeof options === "object" && options.signal?.aborted) && !this.controller.signal.aborted) this.rerankCircuitBroken = true;
+      if (!(typeof options === "object" && options.signal?.aborted) && !this.controller.signal.aborted) this.tripRerankCircuit();
       throw err;
     }
   }
@@ -567,7 +585,7 @@ Return raw JSON only: start with { and end with }. No Markdown fences.
 
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
-      this.rerankCircuitBroken = true;
+      this.tripRerankCircuit();
       throw new Error(`LLM Chat Rerank API returned status ${res.status}: ${errText}`);
     }
 

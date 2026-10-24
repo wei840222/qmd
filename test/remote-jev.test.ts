@@ -419,11 +419,34 @@ describe("RemoteJev & Hybrid Integration", () => {
     });
 
 
-    test("Jev reranking failure uses the other configured remote service", async () => {
-      const jev = { supportsRerank: true, rerank: vi.fn(async () => { throw new Error("unavailable"); }) } as any;
+    test("configured rerank API is used before Jev", async () => {
+      const jev = { supportsRerank: true, rerank: vi.fn(async () => ({results: [], model:"jev"})) } as any;
       const remote = { supportsRerank: true, rerank: vi.fn(async () => ({results: [], model:"remote"})) } as any;
       await expect(new Hybrid(remote, jev).rerank("query", [])).resolves.toMatchObject({model:"remote"});
+      expect(jev.rerank).not.toHaveBeenCalled();
+    });
+    test("Jev reranks when no rerank API is configured", async () => {
+      const jev = { supportsRerank: true, rerank: vi.fn(async () => ({results: [], model:"jev"})) } as any;
+      const remote = { supportsRerank: false, rerank: vi.fn() } as any;
+      await expect(new Hybrid(remote, jev).rerank("query", [])).resolves.toMatchObject({model:"jev"});
+      await expect(new Hybrid(undefined, jev).rerank("query", [])).resolves.toMatchObject({model:"jev"});
+      expect(remote.rerank).not.toHaveBeenCalled();
+    });
+    test("configured rerank API failure falls back to Jev", async () => {
+      const jev = { supportsRerank: true, rerank: vi.fn(async () => ({results: [], model:"jev"})) } as any;
+      const remote = { supportsRerank: true, rerank: vi.fn(async () => { throw new Error("unavailable"); }) } as any;
+      await expect(new Hybrid(remote, jev).rerank("query", [])).resolves.toMatchObject({model:"jev"});
       expect(remote.rerank).toHaveBeenCalledOnce();
+    });
+    test("configured rerank API failure is thrown when Jev is not available", async () => {
+      const remote = { supportsRerank: true, rerank: vi.fn(async () => { throw new Error("unavailable"); }) } as any;
+      await expect(new Hybrid(remote).rerank("query", [])).rejects.toThrow("unavailable");
+    });
+    test("rerank model name follows the provider that reranks", () => {
+      const jev = { supportsRerank: true, rerankModelName: "jev:latest" } as any;
+      const remote = { supportsRerank: true, rerankModelName: "rerank-3" } as any;
+      expect(new Hybrid(remote, jev).rerankModelName).toBe("rerank-3");
+      expect(new Hybrid({ supportsRerank: false, rerankModelName: "rerank-3" } as any, jev).rerankModelName).toBe("jev:latest");
     });
     test("Jev classification failure still allows direct remote expansion", async () => {
       const jev = { supportsExpand: true, classifyIntent: vi.fn(async () => { throw new Error("unavailable"); }) } as any;
@@ -432,10 +455,10 @@ describe("RemoteJev & Hybrid Integration", () => {
     });
     test("cancellation never falls through to another provider", async () => {
       const controller = new AbortController(); controller.abort();
-      const jev = { supportsRerank:true, rerank: vi.fn(async () => { throw new Error("aborted"); }) } as any;
-      const remote = { supportsRerank:true, rerank: vi.fn() } as any;
+      const remote = { supportsRerank:true, rerank: vi.fn(async () => { throw new Error("aborted"); }) } as any;
+      const jev = { supportsRerank:true, rerank: vi.fn() } as any;
       await expect(new Hybrid(remote, jev).rerank("query", [], {signal:controller.signal})).rejects.toThrow("aborted");
-      expect(remote.rerank).not.toHaveBeenCalled();
+      expect(jev.rerank).not.toHaveBeenCalled();
     });
   });
 });

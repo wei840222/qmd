@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { RemoteLLM, resolveEndpointUrl, sigmoid, getFormattedLocalTime } from "../src/remote-llm.js";
 import { Hybrid } from "../src/hybrid.js";
 import type { LLM, Queryable, RerankDocument, RerankResult } from "../src/llm.js";
@@ -511,6 +511,76 @@ describe("RemoteLLM & Hybrid Integration", () => {
 
       // Circuit breaker is now active
       expect(llm.supportsRerank).toBe(false);
+    });
+
+    test("circuit breaker closes after the cooldown and the next request retries the API", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        mockResponseStatus = 500;
+        const llm = new RemoteLLM({
+          rerankApiUrl: `http://127.0.0.1:${serverPort}/v1/rerank`,
+          rerankApiModel: "bge-reranker-v2-m3",
+          rerankCooldownMs: 30_000,
+        });
+        await expect(llm.rerank("query", [{ file: "a.md", text: "doc" }])).rejects.toThrow();
+        expect(llm.supportsRerank).toBe(false);
+
+        vi.advanceTimersByTime(29_999);
+        expect(llm.supportsRerank).toBe(false);
+
+        vi.advanceTimersByTime(1);
+        expect(llm.supportsRerank).toBe(true);
+
+        mockResponseStatus = 200;
+        mockResponseBody = { results: [{ index: 0, relevance_score: 0.9 }] };
+        const res = await llm.rerank("query", [{ file: "a.md", text: "doc" }]);
+        expect(res.results).toEqual([{ file: "a.md", score: 0.9, index: 0 }]);
+        expect(llm.supportsRerank).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test("a failed retry after the cooldown opens the circuit for another cooldown", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        mockResponseStatus = 500;
+        const llm = new RemoteLLM({
+          rerankApiUrl: `http://127.0.0.1:${serverPort}/v1/rerank`,
+          rerankApiModel: "bge-reranker-v2-m3",
+          rerankCooldownMs: 30_000,
+        });
+        await expect(llm.rerank("query", [{ file: "a.md", text: "doc" }])).rejects.toThrow();
+        vi.advanceTimersByTime(30_000);
+        expect(llm.supportsRerank).toBe(true);
+
+        await expect(llm.rerank("query", [{ file: "a.md", text: "doc" }])).rejects.toThrow();
+        expect(llm.supportsRerank).toBe(false);
+        vi.advanceTimersByTime(30_000);
+        expect(llm.supportsRerank).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test("a zero cooldown never skips the rerank API", async () => {
+      mockResponseStatus = 500;
+      const llm = new RemoteLLM({
+        rerankApiUrl: `http://127.0.0.1:${serverPort}/v1/rerank`,
+        rerankApiModel: "bge-reranker-v2-m3",
+        rerankCooldownMs: 0,
+      });
+      await expect(llm.rerank("query", [{ file: "a.md", text: "doc" }])).rejects.toThrow();
+      expect(llm.supportsRerank).toBe(true);
+
+      mockResponseStatus = 200;
+      mockResponseBody = { results: [{ index: 0, relevance_score: 0.9 }] };
+      const res = await llm.rerank("query", [{ file: "a.md", text: "doc" }]);
+      expect(res.results).toEqual([{ file: "a.md", score: 0.9, index: 0 }]);
+    });
+
+    test("rejects a negative rerank cooldown", () => {
+      expect(() => new RemoteLLM({ rerankCooldownMs: -1 })).toThrow("cooldown");
     });
   });
 

@@ -1356,6 +1356,208 @@ describe("Caching", () => {
       await cleanupTestDb(store);
     }
   });
+
+  describe("rerank API fallback to Jev", () => {
+    const COOLDOWN_MS = 30_000;
+    const JEV_SCORE = 0.2;
+    const API_SCORE = 0.9;
+
+    // Real RemoteLLM + RemoteJev behind Hybrid, with a controllable rerank API.
+    const makeHybrid = async (cooldownMs = COOLDOWN_MS) => {
+      const { RemoteLLM } = await import("../src/remote-llm.js");
+      const { RemoteJev } = await import("../src/remote-jev.js");
+      const { Hybrid } = await import("../src/hybrid.js");
+      // failuresLeft forces the next N API calls to fail even while healthy.
+      const api = { healthy: false, calls: 0, failuresLeft: 0 };
+      const fetchImpl = vi.fn(async (_url: unknown, init?: { body?: string }) => {
+        api.calls++;
+        if (api.failuresLeft > 0) {
+          api.failuresLeft--;
+          return new Response("upstream down", { status: 500 });
+        }
+        if (!api.healthy) return new Response("upstream down", { status: 500 });
+        const body = JSON.parse(String(init?.body));
+        return new Response(JSON.stringify({
+          results: (body.documents as string[]).map((_, index) => ({ index, relevance_score: API_SCORE })),
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      });
+      const jevClient: any = {
+        systemOne: vi.fn(async ({ questions }: { questions: Record<string, unknown> }) => ({
+          answers: Object.fromEntries(Object.keys(questions).map(key => [key, { type: "noul", noul: JEV_SCORE }])),
+        })),
+      };
+      const remote = new RemoteLLM({
+        rerankApiUrl: "http://rerank.test/v1/rerank",
+        rerankApiModel: "api-rerank",
+        rerankCooldownMs: cooldownMs,
+        fetch: fetchImpl as any,
+      });
+      const jev = new RemoteJev({ client: jevClient, model: "jev-1.13" });
+      return { hybrid: new Hybrid(remote, jev), api, jevClient };
+    };
+
+    test("Jev fallback scores are not served as the API's scores after the API recovers", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const store = await createTestStore();
+      const docs = [{ file: "doc.md", text: "recovery chunk" }];
+      try {
+        const { hybrid, api, jevClient } = await makeHybrid();
+        store.llm = hybrid as any;
+
+        // API is down: Jev answers and the API is skipped for the cooldown.
+        const fallback = await store.rerank("recovery query", docs);
+        expect(fallback[0]!.score).toBe(JEV_SCORE);
+        expect(api.calls).toBe(1);
+        expect(jevClient.systemOne).toHaveBeenCalledTimes(1);
+
+        // Still inside the cooldown: the Jev score is reused from its own cache key.
+        const duringCooldown = await store.rerank("recovery query", docs);
+        expect(duringCooldown[0]!.score).toBe(JEV_SCORE);
+        expect(api.calls).toBe(1);
+
+        // Cooldown over and the API is healthy again: it must be asked, not the stale cache.
+        vi.advanceTimersByTime(COOLDOWN_MS);
+        api.healthy = true;
+        const recovered = await store.rerank("recovery query", docs);
+        expect(recovered[0]!.score).toBe(API_SCORE);
+        expect(api.calls).toBe(2);
+
+        // The API score is now cached under the API model.
+        const cached = await store.rerank("recovery query", docs);
+        expect(cached[0]!.score).toBe(API_SCORE);
+        expect(api.calls).toBe(2);
+      } finally {
+        vi.useRealTimers();
+        await cleanupTestDb(store);
+      }
+    });
+
+    test("a fallback never mixes its scores with chunks cached from the API", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const store = await createTestStore();
+      const cachedDoc = { file: "cached.md", text: "chunk already scored by the API" };
+      const freshDoc = { file: "fresh.md", text: "chunk scored only during the outage" };
+      try {
+        const { hybrid, api, jevClient } = await makeHybrid();
+        store.llm = hybrid as any;
+
+        // The API scores one chunk and it is cached under the API model.
+        api.healthy = true;
+        const primed = await store.rerank("mixed query", [cachedDoc]);
+        expect(primed[0]!.score).toBe(API_SCORE);
+
+        // The API goes down and a new chunk shows up next to the cached one.
+        api.healthy = false;
+        const ranked = await store.rerank("mixed query", [cachedDoc, freshDoc]);
+
+        // Both chunks are scored by Jev on one scale, not 0.9 (API) next to 0.2 (Jev).
+        expect(Object.fromEntries(ranked.map(r => [r.file, r.score]))).toEqual({
+          "cached.md": JEV_SCORE,
+          "fresh.md": JEV_SCORE,
+        });
+        const jevQuestions = jevClient.systemOne.mock.calls.map((call: any[]) => Object.keys(call[0].questions).length);
+        expect(jevQuestions).toEqual([1, 2]);
+
+        // The API's cached score for the first chunk is untouched for when it recovers.
+        vi.advanceTimersByTime(COOLDOWN_MS);
+        api.healthy = true;
+        const recovered = await store.rerank("mixed query", [cachedDoc]);
+        expect(recovered[0]!.score).toBe(API_SCORE);
+      } finally {
+        vi.useRealTimers();
+        await cleanupTestDb(store);
+      }
+    });
+
+    test("chunks that share a filename keep their own scores through the fallback rescore", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const store = await createTestStore();
+      const chunkA = { file: "same.md", text: "first chunk of the file" };
+      const chunkB = { file: "same.md", text: "second chunk of the same file" };
+      try {
+        const { hybrid, api, jevClient } = await makeHybrid();
+        store.llm = hybrid as any;
+
+        api.healthy = true;
+        await store.rerank("same file query", [chunkA]);
+
+        api.healthy = false;
+        const ranked = await store.rerank("same file query", [chunkA, chunkB]);
+
+        expect(ranked.map(r => r.score)).toEqual([JEV_SCORE, JEV_SCORE]);
+        const jevQuestions = jevClient.systemOne.mock.calls.map((call: any[]) => Object.keys(call[0].questions).length);
+        expect(jevQuestions).toEqual([1, 2]);
+      } finally {
+        vi.useRealTimers();
+        await cleanupTestDb(store);
+      }
+    });
+
+    test("chunks that share a filename are each scored when none are cached", async () => {
+      const store = await createTestStore();
+      const chunkA = { file: "same.md", text: "uncached chunk one" };
+      const chunkB = { file: "same.md", text: "uncached chunk two" };
+      try {
+        const { hybrid, api } = await makeHybrid();
+        store.llm = hybrid as any;
+        api.healthy = true;
+
+        const ranked = await store.rerank("uncached same file query", [chunkA, chunkB]);
+
+        expect(ranked.map(r => r.score)).toEqual([API_SCORE, API_SCORE]);
+      } finally {
+        await cleanupTestDb(store);
+      }
+    });
+
+    test("the rescore stays on one scale when the circuit never opens and the API fails again", async () => {
+      const store = await createTestStore();
+      const cachedDoc = { file: "cached.md", text: "chunk cached from the API" };
+      const freshDoc = { file: "fresh.md", text: "chunk first seen during the outage" };
+      try {
+        const { hybrid, api, jevClient } = await makeHybrid(0);
+        store.llm = hybrid as any;
+
+        api.healthy = true;
+        await store.rerank("zero cooldown query", [cachedDoc]);
+        expect(api.calls).toBe(1);
+
+        // With no cooldown the rescore asks the API again, which is still down.
+        api.healthy = false;
+        const ranked = await store.rerank("zero cooldown query", [cachedDoc, freshDoc]);
+
+        expect(ranked.map(r => r.score)).toEqual([JEV_SCORE, JEV_SCORE]);
+        expect(api.calls).toBe(3);
+        const jevQuestions = jevClient.systemOne.mock.calls.map((call: any[]) => Object.keys(call[0].questions).length);
+        expect(jevQuestions).toEqual([1, 2]);
+      } finally {
+        await cleanupTestDb(store);
+      }
+    });
+
+    test("the rescore stays on one scale when the API recovers between the two calls", async () => {
+      const store = await createTestStore();
+      const cachedDoc = { file: "cached.md", text: "chunk cached from the API, recovery case" };
+      const freshDoc = { file: "fresh.md", text: "chunk first seen during the blip" };
+      try {
+        const { hybrid, api, jevClient } = await makeHybrid(0);
+        store.llm = hybrid as any;
+
+        api.healthy = true;
+        await store.rerank("blip query", [cachedDoc]);
+
+        // One failed API call, then the API answers the rescore for every chunk.
+        api.failuresLeft = 1;
+        const ranked = await store.rerank("blip query", [cachedDoc, freshDoc]);
+
+        expect(ranked.map(r => r.score)).toEqual([API_SCORE, API_SCORE]);
+        expect(api.calls).toBe(3);
+        expect(jevClient.systemOne).toHaveBeenCalledTimes(1);
+      } finally {
+        await cleanupTestDb(store);
+      }
+    });
+  });
 });
 
 describe("Query expansion cache (#818)", () => {

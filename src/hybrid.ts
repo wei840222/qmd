@@ -37,6 +37,7 @@ export class Hybrid implements LLM {
     );
   }
   get rerankModelName(): string | undefined {
+    if (this.remoteLLM?.supportsRerank) return this.remoteLLM.rerankModelName;
     return this.remoteJev?.rerankModelName ?? this.remoteLLM?.rerankModelName;
   }
   get generateModelName(): string | undefined {
@@ -105,16 +106,18 @@ export class Hybrid implements LLM {
     documents: RerankDocument[],
     options?: RerankOptions,
   ): Promise<RerankResult> {
-    if (this.remoteJev?.supportsRerank) {
+    // An explicitly configured rerank API wins; Jev reranks only when none is
+    // configured, or as a fallback when the configured API fails.
+    if (this.remoteLLM?.supportsRerank) {
       try {
-        return await this.remoteJev.rerank(query, documents, options);
+        return await this.remoteLLM.rerank(query, documents, options);
       } catch (error) {
-        if (options?.signal?.aborted || !this.remoteLLM?.supportsRerank)
+        if (options?.signal?.aborted || !this.remoteJev?.supportsRerank)
           throw error;
       }
     }
-    if (this.remoteLLM?.supportsRerank)
-      return this.remoteLLM.rerank(query, documents, options);
+    if (this.remoteJev?.supportsRerank)
+      return this.remoteJev.rerank(query, documents, options);
     throw new ModelConfigurationError("Reranking");
   }
   async dispose(): Promise<void> {

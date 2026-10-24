@@ -6338,19 +6338,47 @@ export async function rerank(query: string, documents: { file: string; text: str
     }
   }
 
-  // Rerank uncached documents using the configured remote service
-  if (uncachedDocsByChunk.size > 0) {
-    const uncachedDocs = [...uncachedDocsByChunk.values()];
-    const rerankResult = await llm.rerank(rerankQuery, uncachedDocs, { model: cacheModel });
+  // Score documents and cache each score under the model that produced it.
+  // A composite LLM can answer with a fallback provider, so the result's own
+  // model name wins over the name resolved before the call.
+  const scoreChunks = async (docs: RerankDocument[]) => {
+    const rerankResult = await llm.rerank(rerankQuery, docs, { model: cacheModel });
+    const producedModel = (llm as any).rerankModelName !== undefined && rerankResult.model
+      ? rerankResult.model
+      : cacheModel;
 
     // Cache results by chunk text so identical chunks across files are scored once.
-    const textByFile = new Map(uncachedDocs.map(d => [d.file, d.text]));
+    // `index` is the position in the submitted batch, which stays unique when two
+    // chunks share a filename; fall back to the filename for results without one.
+    const textByFile = new Map(docs.map(d => [d.file, d.text]));
+    const scores: Map<string, number> = new Map();
     for (const result of rerankResult.results) {
-      const chunk = textByFile.get(result.file) || "";
-      const cacheKey = getCacheKey("rerank", { query: rerankQuery, model: cacheModel, chunk });
+      const submitted = Number.isInteger(result.index) ? docs[result.index] : undefined;
+      const chunk = submitted ? submitted.text : textByFile.get(result.file) || "";
+      const cacheKey = getCacheKey("rerank", { query: rerankQuery, model: producedModel, chunk });
       setCachedResult(db, cacheKey, result.score.toString());
-      cachedResults.set(chunk, result.score);
+      scores.set(chunk, result.score);
     }
+    return { producedModel, scores };
+  };
+
+  // Rerank uncached documents using the configured remote service
+  if (uncachedDocsByChunk.size > 0) {
+    const first = await scoreChunks([...uncachedDocsByChunk.values()]);
+    let scores = first.scores;
+
+    // A fallback provider answered while other chunks came from the preferred
+    // model's cache. Scores from different models are not comparable, so score
+    // every chunk in one call and drop the cached ones from this ranking.
+    if (first.producedModel !== cacheModel && cachedResults.size > 0) {
+      const allDocsByChunk = new Map<string, RerankDocument>();
+      for (const doc of documents) {
+        if (!allDocsByChunk.has(doc.text)) allDocsByChunk.set(doc.text, { file: doc.file, text: doc.text, title: doc.title });
+      }
+      cachedResults.clear();
+      scores = (await scoreChunks([...allDocsByChunk.values()])).scores;
+    }
+    for (const [chunk, score] of scores) cachedResults.set(chunk, score);
   }
 
   // Return all results sorted by score

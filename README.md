@@ -1540,6 +1540,8 @@ Use `models.embed_api_url`, `embed_api_model`, and `embed_dimension` for
 OpenAI-compatible embeddings, or the dedicated Voyage settings above. Configure
 `generate_api_*` for expansion and `rerank_api_*` for reranking. TypeSafe Jev
 remains available through `models.jev_*` and its documented environment variables.
+When `rerank_api_*` is configured it reranks first and Jev is only a fallback if
+that API fails; without it, Jev reranks. Jev still guides query expansion either way.
 Credentials belong in the process environment or an explicitly managed config;
 do not commit them. There are no local-model defaults for new configurations.
 
