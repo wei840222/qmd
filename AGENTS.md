@@ -162,6 +162,10 @@ pnpm run measure:cjk    # Measure CJK rebuild latency, DB payload size, and reca
 - SQLite FTS5 for full-text search (BM25)
 - sqlite-vec for vector similarity search
 - Remote embedding APIs (OpenAI-compatible and Voyage), expansion/reranking endpoints, and TypeSafe Jev; no local inference or model downloads
+- Reranking order (`src/hybrid.ts`): a configured `models.rerank_api_*` endpoint is used first. TypeSafe Jev reranks only when none is configured, or as a fallback when that API fails (never after cancellation). Jev still classifies intent for query expansion either way.
+- Rerank API: a `rerank_api_url` ending in `/rerank` posts `{model, query, documents}` and reads Cohere-style `results[].{index, relevance_score}`; one ending in `/chat/completions` scores with an LLM. Voyage's own `/v1/rerank` answers with `data`, not `results`, so reach it through a Cohere-shaped gateway or proxy.
+- A failed rerank API is skipped for a cooldown (60 seconds by default, `rerankCooldownMs` on `RemoteLLM`) and then retried, so one outage does not disable it for the process.
+- Rerank scores are cached under the model that produced them (the result's `model`), and results map back to chunks by `index`, not filename. When a fallback answers while other chunks came from the preferred model's cache, every chunk is rescored in one call so a ranking never mixes two models' scores.
 - Reciprocal Rank Fusion (RRF) for combining results
 - Smart chunking: 900 tokens/chunk with 15% overlap, prefers markdown headings as boundaries
 - AST-aware chunking: use `--chunk-strategy auto` to chunk code files (.ts/.js/.py/.go/.rs) at function/class/import boundaries via tree-sitter. Default is `regex` (existing behavior). Markdown and unknown file types always use regex chunking.
