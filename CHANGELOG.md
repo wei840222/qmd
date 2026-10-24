@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- `qmd --help` no longer advertises `qmd update --pull`. The flag is still accepted so existing calls keep working, but `qmd update` never consumed it; running `git pull` before re-indexing is done with a per-collection update command (`qmd collection update-cmd`).
 - Reranking now prefers a configured `models.rerank_api_*` endpoint over TypeSafe Jev. Jev reranks only when no rerank API is configured, or as a fallback when the configured API fails (never after cancellation). Jev intent classification for query expansion is unchanged.
 - A failed rerank API no longer stays disabled for the rest of the process: the circuit now closes after a cooldown (60 seconds by default, `rerankCooldownMs` on `RemoteLLM`; `0` never skips the API) and the next request retries it, opening again for another cooldown if it fails.
 - Rerank cache attribution: scores are now cached under the model that actually produced them instead of the model resolved before the call. A Jev fallback no longer leaves scores under the rerank API's cache key, so a recovered API is asked again instead of being served stale fallback scores. When a fallback answers while other chunks of the same request came from the API's cache, every chunk is rescored in one call so a ranking never mixes two models' scores. Rerank results are also mapped back to their chunk by batch position instead of filename, so two chunks of one file no longer collapse into one score (the other returned 0).

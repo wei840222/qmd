@@ -3427,7 +3427,7 @@ function parseCLI() {
       timeout: { type: "string" },  // embed session cap in minutes (0 = no limit; default 30)
 
       // Update options
-      pull: { type: "boolean" },  // git pull before update
+      pull: { type: "boolean" },  // Accepted and ignored so existing `qmd update --pull` calls keep working
       refresh: { type: "boolean" },
       progress: { type: "boolean" },  // Accepted for the retired pull command
       "dry-run": { type: "boolean" },  // cleanup: report what would be removed
@@ -3961,7 +3961,7 @@ function showHelp(): void {
   console.log("Maintenance:");
   console.log("  qmd init                      - Create a project-local .qmd index");
   console.log("  qmd status                    - View index + collection health");
-  console.log("  qmd update [--pull]           - Re-index collections (optionally git pull first)");
+  console.log("  qmd update                    - Re-index collections; configured update hooks run first");
   console.log("  qmd trust [list|revoke]       - Approve a checked-in .qmd config's hooks/paths/models");
   console.log("  qmd embed [-f] [-c <name>]    - Generate/refresh vector embeddings");
   console.log("    --max-docs-per-batch <n>    - Cap docs loaded into memory per embedding batch");

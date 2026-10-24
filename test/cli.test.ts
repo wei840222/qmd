@@ -264,6 +264,9 @@ describe("CLI Help", () => {
     expect(stdout).toContain("qmd search");
     expect(stdout).not.toContain("--no-gpu");
     expect(stdout).toContain("qmd skill show/install");
+    // update never consumed --pull, so help must not advertise it.
+    expect(stdout).not.toContain("--pull");
+    expect(stdout).toContain("qmd update");
   });
 
   test("shows help with no arguments", async () => {
