@@ -6537,6 +6537,21 @@ export function insertEmbedding(
 // Query expansion
 // =============================================================================
 
+/**
+ * Drop exact repeats. Every entry costs one FTS or vector search, and the
+ * model can emit the same line many times (#921). vec and hyde entries with
+ * the same text are both kept because they route to different searches.
+ */
+function uniqueExpansions(expansions: ExpandedQuery[]): ExpandedQuery[] {
+  const seen = new Set<string>();
+  return expansions.filter((e) => {
+    const key = `${e.type}\n${e.query}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database, expansionContext?: string, llmOverride?: LLM, options?: QueryExpansionOptions): Promise<ExpandedQuery[]> {
   if (!llmOverride || llmOverride.supportsExpand === false) throw new ModelConfigurationError("Query expansion");
   const includeLexical = options?.includeLexical ?? true;
@@ -6557,9 +6572,9 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
       const rows = parsed as Array<Record<string, unknown>>;
       // Migrate old cache format: { type, text } → { type, query }
       if (rows.length > 0 && typeof rows[0]?.query === "string") {
-        return rows.map((r) => ({ type: r.type as ExpandedQuery["type"], query: String(r.query) }));
+        return uniqueExpansions(rows.map((r) => ({ type: r.type as ExpandedQuery["type"], query: String(r.query) })));
       } else if (rows.length > 0 && typeof rows[0]?.text === "string") {
-        return rows.map((r) => ({ type: r.type as ExpandedQuery["type"], query: String(r.text) }));
+        return uniqueExpansions(rows.map((r) => ({ type: r.type as ExpandedQuery["type"], query: String(r.text) })));
       }
     } catch {
       // Old cache format (pre-typed, newline-separated text) — re-expand
@@ -6579,10 +6594,10 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
         });
 
         // Map Queryable[] → ExpandedQuery[] (same shape, decoupled from llm.ts internals).
-        // Filter out entries that duplicate the original query text.
-        const expanded: ExpandedQuery[] = results
+        // Filter out entries that duplicate the original query text, then drop exact repeats.
+        const expanded: ExpandedQuery[] = uniqueExpansions(results
           .filter(r => r.text !== query)
-          .map(r => ({ type: r.type, query: r.text }));
+          .map(r => ({ type: r.type, query: r.text })));
 
         if (
           expanded.length > 0 &&
