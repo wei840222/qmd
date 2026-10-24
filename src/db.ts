@@ -33,6 +33,11 @@ function sleepSync(ms: number): void {
 
 /** Synchronous SQLite connection with QMD-compatible transactions. */
 export class Database extends DatabaseSync {
+  /** True while a transaction or savepoint is open (the name the other SQLite drivers use). */
+  get inTransaction(): boolean {
+    return this.isTransaction;
+  }
+
   transaction<TArgs extends unknown[], TResult>(operation: (...args: TArgs) => TResult): Transaction<TArgs, TResult> {
     const execute = (mode: "DEFERRED" | "IMMEDIATE" | "EXCLUSIVE", args: TArgs): TResult => {
       if (!this.isTransaction) {
