@@ -1049,7 +1049,7 @@ describe("MCP HTTP Transport", () => {
     expect(headers.get("mcp-session-id")).toBeNull();
 
     const toolNames = json.result.tools.map((t: any) => t.name);
-    expect(toolNames).toEqual(["query", "get", "multi_get", "status"]);
+    expect(toolNames).toEqual(["query", "get", "multi_get", "status", "metadata"]);
     expect(toolNames).not.toContain("remote_embedding_preflight");
 
     const queryTool = json.result.tools.find((tool: any) => tool.name === "query");
@@ -1308,7 +1308,7 @@ describe("MCP HTTP Transport — 2026-07-28 protocol", () => {
     expect(json.result.ttlMs).toBe(60_000);
     expect(json.result.cacheScope).toBe("private");
     const toolNames = json.result.tools.map((t: { name: string }) => t.name);
-    expect(toolNames).toEqual(["query", "get", "multi_get", "status"]);
+    expect(toolNames).toEqual(["query", "get", "multi_get", "status", "metadata"]);
     const serverInfo = json.result._meta?.["io.modelcontextprotocol/serverInfo"];
     expect(serverInfo?.name).toBe("qmd");
   });
