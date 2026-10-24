@@ -121,7 +121,9 @@ import {
   syncDocumentMetadata,
   countDocumentsPendingMetadata,
   getMetadataByFilepath,
+  listMetadataCollectionSummaries,
   parseMetadataJson,
+  type MetadataKeyOverview,
 } from "./metadata-store.js";
 
 // =============================================================================
@@ -2176,6 +2178,7 @@ export type Store = {
   getHashesNeedingEmbedding: (model?: string) => number;
   getIndexHealth: (model?: string) => IndexHealthInfo;
   getStatus: (model?: string) => IndexStatus;
+  getStatusSummary: (model?: string) => IndexStatusSummary;
 
   // Caching
   getCacheKey: typeof getCacheKey;
@@ -3528,6 +3531,7 @@ export function createStore(dbPath?: string, options: CreateStoreOptions = {}): 
     getHashesNeedingEmbedding: (model?: string) => getHashesNeedingEmbedding(db, undefined, model ?? store.embeddingProvider?.model ?? DEFAULT_EMBED_MODEL),
     getIndexHealth: (model?: string) => getIndexHealth(db, model ?? store.embeddingProvider?.model ?? DEFAULT_EMBED_MODEL),
     getStatus: (model?: string) => getStatus(db, model ?? store.embeddingProvider?.model ?? DEFAULT_EMBED_MODEL),
+    getStatusSummary: (model?: string) => getStatusSummary(db, model ?? store.embeddingProvider?.model ?? DEFAULT_EMBED_MODEL),
 
     // Caching
     getCacheKey,
@@ -3918,7 +3922,18 @@ export type CollectionInfo = {
   pattern: string | null;
   documents: number;
   lastUpdated: string;
+  /** Distinct metadata keys declared in this collection. */
+  metadataKeyCount: number;
+  /**
+   * The most covered metadata keys in this collection, with coverage and
+   * types, by coverage. Windowed to STATUS_METADATA_KEY_LIMIT; `listMetadata`
+   * pages through the rest.
+   */
+  metadataKeys: MetadataKeyOverview[];
 };
+
+/** Keys a status view names per collection before pointing at discovery. */
+export const STATUS_METADATA_KEY_LIMIT = 10;
 
 export type IndexStatus = {
   totalDocuments: number;
@@ -3929,6 +3944,11 @@ export type IndexStatus = {
   collections: CollectionInfo[];
   /** Additive diagnostics populated by high-level composition roots. */
   diagnostics?: IndexDiagnostics;
+};
+
+/** Index facts for initialization, without computing unused metadata overviews. */
+export type IndexStatusSummary = Omit<IndexStatus, "collections"> & {
+  collections: Omit<CollectionInfo, "metadataKeyCount" | "metadataKeys">[];
 };
 
 // =============================================================================
@@ -5926,8 +5946,9 @@ export async function searchVec(
 
   const keys = vecRows.map(r => r.hash_seq);
   const distMap = new Map(vecRows.map(r => [r.hash_seq, r.distance]));
-  const placeholders = keys.map(() => "?").join(", ");
-
+  // One binding for candidate IDs leaves room for a valid near-ceiling
+  // metadata filter under Node's 32,766-variable limit. The same lookup
+  // serves exact scans and the capped global fallback.
   let metaSql = `
     SELECT
       cv.hash || '_' || cv.seq AS hash_seq,
@@ -5941,9 +5962,9 @@ export async function searchVec(
     FROM content_vectors cv
     JOIN documents d ON d.hash = cv.hash AND d.active = 1
     LEFT JOIN document_metadata dm ON dm.document_id = d.id
-    WHERE (cv.hash || '_' || cv.seq) IN (${placeholders})
+    WHERE cv.hash || '_' || cv.seq IN (SELECT value FROM json_each(?))
   `;
-  const metaParams: SQLiteValue[] = [...keys];
+  const metaParams: SQLiteValue[] = [JSON.stringify(keys)];
 
   if (activeFingerprint) {
     metaSql += ` AND cv.model = ? AND cv.embed_fingerprint = ?`;
@@ -6977,7 +6998,24 @@ export function getStatus(db: Database, model: string = DEFAULT_EMBED_MODEL): In
   return getStatusReadOnly(db, getHashesNeedingEmbedding(db, undefined, model));
 }
 
+/** Like getStatus, with the pending-embedding count supplied by the caller (no vector lookup here). */
 export function getStatusReadOnly(db: Database, needsEmbedding: number): IndexStatus {
+  const statusSummary = getStatusSummaryReadOnly(db, needsEmbedding);
+  const metadataOverviews = listMetadataCollectionSummaries(db, STATUS_METADATA_KEY_LIMIT);
+  return {
+    ...statusSummary,
+    collections: statusSummary.collections.map(collection => {
+      const metadataOverview = metadataOverviews.get(collection.name);
+      return { ...collection, metadataKeyCount: metadataOverview?.totalKeys ?? 0, metadataKeys: metadataOverview?.keys ?? [] };
+    }),
+  };
+}
+
+export function getStatusSummary(db: Database, model: string = DEFAULT_EMBED_MODEL): IndexStatusSummary {
+  return getStatusSummaryReadOnly(db, getHashesNeedingEmbedding(db, undefined, model));
+}
+
+export function getStatusSummaryReadOnly(db: Database, needsEmbedding: number): IndexStatusSummary {
   // DB is source of truth for collections — config provides supplementary metadata
   const dbCollections = db.prepare(`
     SELECT
@@ -6993,7 +7031,7 @@ export function getStatusReadOnly(db: Database, needsEmbedding: number): IndexSt
   const storeCollections = getStoreCollections(db);
   const configLookup = new Map(storeCollections.map(c => [c.name, { path: c.path, pattern: c.pattern }]));
 
-  const collections: CollectionInfo[] = dbCollections.map(row => {
+  const collections: IndexStatusSummary["collections"] = dbCollections.map(row => {
     const config = configLookup.get(row.name);
     return {
       name: row.name,
