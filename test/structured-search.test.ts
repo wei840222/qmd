@@ -9,18 +9,29 @@
  * Run with: pnpm vitest run test/structured-search.test.ts
  */
 
-import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { describe, test, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createStore,
+  canonicalEmbeddingBuildMaterial,
+  insertEmbedding,
+  hashContent,
+  insertContent,
+  insertDocument,
+  searchFTS,
   structuredSearch,
   validateSemanticQuery,
   validateLexQuery,
   type ExpandedQuery,
   type Store,
 } from "../src/store.js";
+import {
+  beginEmbeddingBuild,
+  completeEmbeddingBuild,
+  createEmbeddingIdentity,
+} from "../src/embedding/identity.js";
 import { parseStructuredQuery } from "../src/cli/qmd.ts";
 
 // =============================================================================
@@ -305,6 +316,40 @@ describe("structuredSearch", () => {
       { type: "lex", query: "\"unfinished phrase", line: 2 }
     ])).rejects.toThrow(/unmatched double quote/);
   });
+
+  test("ranks over the union of named collections, not by the order they are named", async () => {
+    const now = new Date().toISOString();
+    const add = async (collection: string, path: string, body: string) => {
+      const hash = await hashContent(body);
+      insertContent(store.db, hash, body, now);
+      insertDocument(store.db, collection, path, path, hash, now, now);
+    };
+    const filler = "lorem ipsum dolor sit amet consectetur adipiscing elit ".repeat(40);
+    await add("alpha", "alpha/weak.md", `${filler} zanzibarquartz ${filler}`);
+    await add("beta", "beta/strong.md", "zanzibarquartz zanzibarquartz zanzibarquartz notes");
+
+    const searches: ExpandedQuery[] = [{ type: "lex", query: "zanzibarquartz" }];
+    const unscoped = await structuredSearch(store, searches, { skipRerank: true });
+    expect(unscoped[0]?.displayPath).toContain("strong.md");
+
+    for (const collections of [["alpha", "beta"], ["beta", "alpha"]]) {
+      const results = await structuredSearch(store, searches, { collections, skipRerank: true });
+      expect(results.map(r => r.displayPath)).toEqual(unscoped.map(r => r.displayPath));
+    }
+  });
+
+  test("an exact tie between collections goes the same way whichever is named first", async () => {
+    const now = new Date().toISOString();
+    const body = "quillmarrow notes";
+    const hash = await hashContent(body);
+    insertContent(store.db, hash, body, now);
+    insertDocument(store.db, "alpha", "same.md", "same.md", hash, now, now);
+    insertDocument(store.db, "beta", "same.md", "same.md", hash, now, now);
+
+    for (const collections of [["alpha", "beta"], ["beta", "alpha"]]) {
+      expect(searchFTS(store.db, "quillmarrow", 1, collections).map(r => r.filepath)).toEqual(["qmd://alpha/same.md"]);
+    }
+  });
 });
 
 // =============================================================================
@@ -550,5 +595,108 @@ describe("buildFTS5Query (lex parser)", () => {
 
   test("plain negation still works (not confused with hyphen)", () => {
     expect(buildFTS5Query("performance -sports")).toBe('"performance"* NOT "sports"*');
+  });
+});
+
+// =============================================================================
+// structuredSearch collection scope
+// =============================================================================
+
+describe("structuredSearch collection scope", () => {
+  let testDir: string;
+  let store: Store;
+  const origConfigDir = process.env.QMD_CONFIG_DIR;
+
+  beforeEach(async () => {
+    testDir = await mkdtemp(join(tmpdir(), "qmd-structured-scope-"));
+    process.env.QMD_CONFIG_DIR = await mkdtemp(join(testDir, "config-"));
+    store = createStore(join(testDir, "index.sqlite"));
+  });
+
+  afterEach(async () => {
+    store.close();
+    if (origConfigDir === undefined) delete process.env.QMD_CONFIG_DIR;
+    else process.env.QMD_CONFIG_DIR = origConfigDir;
+    await rm(testDir, { recursive: true, force: true });
+  });
+
+  function addDocument(collection: string, path: string, body: string): void {
+    const now = new Date().toISOString();
+    const hash = `hash-${collection}-${path}`;
+    store.insertContent(hash, body, now);
+    store.insertDocument(collection, path, path, hash, now, now);
+  }
+
+  // Publish vectors through a remote embedding provider, as a configured store would.
+  function publishVectors(model: string, entries: Array<{ hash: string; embedding: number[] }>): void {
+    const dimension = entries[0]!.embedding.length;
+    const provider = {
+      providerId: "remote-test", model, dimension, remote: true,
+      canonicalIdentityMaterial: () => JSON.stringify({ provider: "remote-test", model, dimension }),
+      formatQuery: (text: string) => text,
+      formatDocument: (text: string) => text,
+      embed: async () => ({ vector: [1, 0, 0], model, dimension }),
+      embedBatch: async (texts: string[]) => texts.map(() => ({ vector: [1, 0, 0], model, dimension })),
+      close: async () => {},
+    };
+    store.embeddingProvider = provider as any;
+    store.authorizeRemoteRequest = () => {};
+    const identity = createEmbeddingIdentity({
+      providerId: provider.providerId, model, dimension, remote: true,
+      canonicalMaterial: canonicalEmbeddingBuildMaterial(provider.canonicalIdentityMaterial(), "regex"),
+    });
+    const lease = beginEmbeddingBuild(store.db, identity, { ownerId: "scope-fixture", now: Date.now(), leaseMs: 60_000, allowDestructiveRebuild: true });
+    const now = new Date(0).toISOString();
+    for (const { hash, embedding } of entries) {
+      insertEmbedding(store.db, hash, 0, 0, new Float32Array(embedding), model, now, 1, identity.fingerprint, lease);
+    }
+    completeEmbeddingBuild(store.db, lease);
+  }
+
+  test("a vec leg over several collections runs one vector search over the whole list", async () => {
+    addDocument("alpha", "a.md", "# A\n\nbody");
+    publishVectors("scope-embed-model", [{ hash: "hash-alpha-a.md", embedding: [1, 0, 0] }]);
+    store.llm = {
+      embedModelName: "scope-embed-model",
+      embedBatch: async (texts: string[]) => texts.map(() => ({ embedding: [1, 0, 0], model: "scope-embed-model" })),
+    } as any;
+    const searchVec = vi.fn(async () => []);
+    store.searchVec = searchVec as any;
+
+    await structuredSearch(store, [{ type: "vec", query: "x" }], { collections: ["alpha", "beta"], skipRerank: true });
+
+    expect(searchVec).toHaveBeenCalledTimes(1);
+    expect(searchVec.mock.calls[0]![3]).toEqual(["alpha", "beta"]);
+  });
+
+  test("a vec leg ranks the same whichever order the collections are named in", async () => {
+    const embedModel = "scope-embed-model";
+    store.llm = {
+      embedModelName: embedModel,
+      embedBatch: async (texts: string[]) => texts.map(() => ({ embedding: [1, 0, 0], model: embedModel })),
+    } as any;
+    const vectors: [string, string, number[]][] = [
+      ["alpha", "far.md", [0, 1, 0]],
+      ["beta", "near.md", [1, 0, 0]],
+      ["alpha", "mid.md", [0.8, 0.6, 0]],
+    ];
+    for (const [collection, path] of vectors) addDocument(collection, path, `# ${path}\n\nbody`);
+    publishVectors(embedModel, vectors.map(([collection, path, embedding]) => ({ hash: `hash-${collection}-${path}`, embedding })));
+
+    const searches: ExpandedQuery[] = [{ type: "vec", query: "x" }];
+    const unscoped = await structuredSearch(store, searches, { skipRerank: true });
+    expect(unscoped.map(r => r.displayPath)).toEqual(["beta/near.md", "alpha/mid.md", "alpha/far.md"]);
+    for (const collections of [["alpha", "beta"], ["beta", "alpha"]]) {
+      const scoped = await structuredSearch(store, searches, { collections, skipRerank: true });
+      expect(scoped.map(r => r.displayPath)).toEqual(unscoped.map(r => r.displayPath));
+    }
+  });
+
+  test("an empty collection list searches every collection", async () => {
+    addDocument("alpha", "a.md", "# A\n\nquokkascope in alpha");
+    addDocument("beta", "b.md", "# B\n\nquokkascope in beta");
+
+    const results = await structuredSearch(store, [{ type: "lex", query: "quokkascope" }], { collections: [], skipRerank: true });
+    expect(results.map(r => r.displayPath).sort()).toEqual(["alpha/a.md", "beta/b.md"]);
   });
 });

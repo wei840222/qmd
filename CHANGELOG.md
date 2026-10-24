@@ -13,6 +13,16 @@
 
 ### Fixed
 
+- Metadata-filtered keyword search (`--filter`) no longer returns false-empty or
+  incomplete results when stronger matches outside the filter fill the old
+  `limit * 10` candidate window. The filter now sees the complete match set;
+  a search that is not metadata-filtered keeps its early-terminating plan.
+  (thanks @Mr-Beasley, @brettdavies, @fxstein)
+- A `qmd query` or SDK structured search over several collections now yields one
+  ranked list per search instead of one per collection, so the first search's
+  rank-fusion weight is no longer multiplied by the number of collections.
+- Keyword results with equal scores are ordered by file path, so the order the
+  collections were named never decides which of two equal hits survives the limit.
 - `qmd query` and `qmd vsearch` now drop repeated query expansions before
   searching. The expansion model can repeat a line, and the cache kept every
   copy: one reported query ran 23 expansions where 9 were distinct, and each
