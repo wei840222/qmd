@@ -22,6 +22,9 @@ qmd doctor                        # Diagnose config, index, model, and device is
 qmd update                        # Re-index collections; configured update hooks run first
 qmd trust [list|revoke]           # Approve a checked-in .qmd config's hooks/paths/models
 qmd embed                         # Generate vectors through the configured remote embedding API
+qmd cleanup [--dry-run]           # Drop inactive docs/orphans, compact FTS, vacuum
+qmd skills list|get|path          # List and retrieve bundled runtime skills
+qmd skill show|install            # Show or install the QMD skill (writes ./.agents/skills/qmd)
 qmd query <query>                 # Search with query expansion + reranking (recommended)
 qmd search <query>                # Full-text keyword search (BM25, no LLM)
 qmd vsearch <query>               # Vector similarity search (no reranking)
@@ -126,7 +129,7 @@ qmd multi-get "#abc123, #def456"
 
 # Get / multi-get
 -l <num>                 # Maximum lines per file
---max-bytes <num>        # Skip files larger than this (default 10KB)
+--max-bytes <num>        # Skip files larger than this (default 64KB)
 --no-line-numbers        # Disable line numbers (on by default for get/multi-get)
 
 # Output format (search, query, multi-get)

@@ -88,6 +88,19 @@ qmd query "error handling" --all --files --min-score 0.4
 qmd get "docs/api-reference.md" --full
 ```
 
+QMD also ships a runtime skill that tells an agent how to use it:
+
+```sh
+qmd skills list              # List the bundled skills (name and description)
+qmd skills get qmd           # Print the QMD skill; add --full to include its references
+qmd skills path              # Print the directory the bundled skills live in
+qmd skill show               # Print the QMD skill
+qmd skill install            # Install it into ./.agents/skills/qmd
+qmd skill install --global   # ...or into ~/.agents/skills/qmd
+                             # --yes also creates the .claude/skills/qmd symlink
+                             # -f, --force replaces an existing install or symlink
+```
+
 ### MCP Server
 
 Although the tool works perfectly fine when you just tell your agent to use it on the command line, it also exposes an MCP (Model Context Protocol) server for tighter integration.
@@ -1067,6 +1080,24 @@ qmd query "user authentication"
 Two aliases exist for the semantic/hybrid modes: `vector-search` (→ `vsearch`)
 and `deep-search` (→ `query`).
 
+### Query Syntax
+
+`qmd query` takes either one policy query or a multi-line query document. The full
+grammar and examples are in [docs/SYNTAX.md](docs/SYNTAX.md).
+
+```sh
+qmd query "how does auth work"                       # auto: expands unless the query is CJK or has a strong lexical match
+qmd query --expand "how does auth work"              # force expansion
+qmd query "lex: authentication"                      # skip expansion (BM25 keywords only)
+
+# A query document: you write the lex/vec/hyde lines yourself, plus an optional intent line
+qmd query $'intent: web page load times\nlex: performance\nvec: how to improve performance'
+```
+
+- A query document allows only `lex:`, `vec:`, `hyde:`, and one optional `intent:` line; `intent:` cannot stand alone.
+- `intent:` is background context for ambiguous queries. It steers expansion, reranking, and snippet selection but does not search on its own.
+- `--expand` cannot be combined with `lex:`, and a policy query cannot be mixed with typed lines.
+
 ### Options
 
 ```sh
@@ -1080,7 +1111,8 @@ and `deep-search` (→ `query`).
 --explain          # Include retrieval score traces (query, JSON/CLI output)
 --filter <json>    # Metadata filter (recursive JSON AST; see Metadata Filtering)
 --index <name>     # Use named index
---intent "<text>"  # Legacy CLI alias for rerank context (e.g. "web page load times")
+--intent "<text>"  # Background context for ambiguous queries, same as an `intent:` line
+                   # (steers expansion, reranking, and snippets; e.g. "web page load times")
 --no-rerank        # Skip remote reranking (RRF scores only)
 -C, --candidate-limit <n>  # Max candidates to rerank (default: 40)
 --full-path        # Emit on-disk filesystem paths instead of qmd:// URIs
