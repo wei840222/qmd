@@ -601,9 +601,10 @@ including CLI, Jieba, and AST support. Legacy-index diagnostics and search-quali
 benchmarks remain supported.
 
 Existing local-model databases remain readable through BM25 and document tools.
-QMD never re-embeds or discards old vectors on its own and never silently sends
-their documents to a provider; the only automatic change is the lossless layout
-upgrade described under "Upgrading the vector layout". To use remote vectors, configure the desired remote model and run an explicit
+QMD never re-embeds old vectors on its own or silently sends their documents to
+a provider. The automatic layout upgrade described below can discard vectors
+and chunk metadata in the cases listed there. To use remote vectors, configure
+the desired remote model and run an explicit
 `qmd embed --force` after reviewing the provider and data boundary. This clears
 and rebuilds vectors as a user-requested operation; lexical content is retained.
 
@@ -612,15 +613,21 @@ and rebuilds vectors as a user-requested operation; lexical content is retained.
 Vectors are stored in one index partitioned by collection, so a scoped query scans
 only that collection's vectors. An index written by an older build keeps its vectors
 in a single `vectors_vec` table; the first command that opens it converts it in
-place. The conversion copies every vector that belongs to a document still in the
-index unchanged, sends no request to any provider, never re-embeds, and leaves the
-embedding identity alone. It does not carry over a vector that no document refers
-to any more, and it drops chunk metadata that has no vector so the next
-`qmd embed` recreates it (`qmd update` and `qmd cleanup` remove the same rows). It
-prints its progress, resumes if interrupted, and drops the old table only after a
-verification pass, then runs a `VACUUM` that can take minutes on a large index. Do
-not run an older build against the index while it converts. Without sqlite-vec
-loaded the conversion is deferred and keyword search keeps working.
+place. For a `hash_seq`-keyed legacy table with parsed dimensions, the conversion
+copies, byte for byte, every vector whose chunk metadata belongs to an active
+document. It sends no request to any provider, never re-embeds, and leaves
+`embedding_index_state` alone. Vectors with no chunk metadata or no active
+document are not copied. Chunk metadata with no vector is deleted so the next
+`qmd embed` recreates it; this differs from `qmd update` and `qmd cleanup`, which
+retain a live document's vectorless metadata and leave it pending. A readable
+legacy table that is not keyed by `hash_seq`, or whose dimensions cannot be
+parsed, is dropped without copying its vectors. For a supported table, the
+conversion prints its progress, resumes if interrupted, and drops the old table
+in the transaction that stamps the new schema version, after a verification
+pass that copies rows the walk missed. It then runs a `VACUUM` that can take
+minutes on a large index. Do not run an older build against the index while it
+converts. Without sqlite-vec loaded the conversion is deferred and keyword
+search keeps working.
 
 An older build cannot read the converted index, and going back means a full paid
 `qmd embed --force`. Back up the index before the first command after upgrading:

@@ -217,15 +217,19 @@ lexically readable; moving them to a remote embedding model requires an explicit
 manual remote rebuild.
 
 The one automatic vector change is the layout upgrade (`src/store-migrations.ts`):
-opening a store converts a legacy `vectors_vec` table into the per-collection
-layout in place. It copies, byte for byte, every vector whose chunk metadata
-belongs to an active document, makes no remote request, never re-embeds, and
+opening a store converts a supported legacy `vectors_vec` table into the
+per-collection layout in place. For a `hash_seq`-keyed table with parsed
+dimensions, it copies, byte for byte, every vector whose chunk metadata belongs
+to an active document, makes no remote request, never re-embeds, and
 never touches `embedding_index_state`. It does not carry over what no search can
 reach (a vector with no chunk metadata or no active document), and it deletes
-chunk metadata that has no vector so the next embed recreates it. `qmd update`
-and `qmd cleanup` already remove the same rows. The legacy table is dropped only
-in the transaction that stamps the new schema version, after a verification pass
-that copies any row the walk missed. Do not run an older build against the index
+chunk metadata that has no vector so the next embed recreates it. This deletion
+is specific to the conversion: `qmd update` and `qmd cleanup` retain a live
+document's vectorless chunk metadata and leave it pending. A readable legacy
+table that is not keyed by `hash_seq`, or whose dimensions cannot be parsed,
+is dropped without copying its vectors. For a supported table, the legacy table
+is dropped only in the transaction that stamps the new schema version, after a
+verification pass that copies any row the walk missed. Do not run an older build against the index
 while it converts. Anything beyond this that discards or recomputes a vector
 still needs an explicit command.
 `qmd pull` is retired and must exit nonzero without downloads. Tests and package
