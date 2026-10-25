@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2026.10.25] - 2026-10-25
+
 ### Changed
 
 - Require a read-only check of all three dictionary upstream sources before a
