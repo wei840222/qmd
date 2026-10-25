@@ -171,6 +171,17 @@ effect of tests or documentation work.
 
 ## Releases
 
+Before each release, perform the read-only three-source upstream check in the
+[release skill's dictionary preflight](.agents/skills/release/SKILL.md#dictionary-upstream-preflight):
+compare `@node-rs/jieba`, `APCLab/jieba-tw`, and `sysprog21/zhtw-mcp` with
+`src/search/zh-dict.sources.json`. Report available updates before cutting a tag;
+resolve whether to refresh or retain reviewed pins. Failed lookups remain
+unverified. `pnpm run dict:sync` writes files, and `--update-pins` advances only the
+two Git sources; neither is a read-only version check. Follow the skill's refresh
+steps when updates are in scope, keeping package/lock/source pins, generated
+dictionary, third-party notices, and version-specific tests consistent. Never
+fetch these sources automatically at runtime, build, or install time.
+
 Use `/release <version>` only when requested. Follow the
 [release skill](.agents/skills/release/SKILL.md) for checks, hooks, and cutting a
 release. It renames `[Unreleased]` at release time; keep external PR credits in

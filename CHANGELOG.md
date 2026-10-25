@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Require a read-only check of all three dictionary upstream sources before a
+  release, report available updates, and document the reviewed refresh procedure
+  in the release skill and coding-agent guidance.
 - Refresh the bundled Chinese dictionary from zhtw-mcp and use Jieba 2.0.4.
   Add terms such as `請求標頭` and `虛擬實境`; mathematical terms reclassified
   upstream follow the existing domain selection. Synchronize third-party notices

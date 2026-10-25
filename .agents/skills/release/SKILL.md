@@ -46,6 +46,9 @@ branch and configured remotes instead of copying the script's stale final
    reachable tag, commits/files since that tag, Unreleased, and a style reference;
    confirm the tag is a useful release baseline. Commit only reviewed work in
    scope, preserving unrelated changes. The release script requires a clean tree.
+   Before preparing a version or tag, complete the read-only
+   [dictionary upstream preflight](#dictionary-upstream-preflight). Report any
+   available updates and the decision to include them or retain the current pins.
 
 3. **Write the changelog** — collect user-visible changes under `[Unreleased]`.
    Require actual new entries, not just a heading or an older same-series entry.
@@ -93,6 +96,64 @@ branch and configured remotes instead of copying the script's stale final
    remote/mirror route; never use `--tags`. Check the GitHub publication behavior
    below before pushing a tag. Local CLI installation or systemd deployment is a
    separate action that requires its own authorization.
+
+## Dictionary upstream preflight
+
+Check all three sources before every release. Read current versions, repositories,
+branches, and source paths from `src/search/zh-dict.sources.json`; compare the npm
+pin with `package.json` and `pnpm-lock.yaml` as well.
+
+| Source | Read-only upstream check | Compare with |
+| --- | --- | --- |
+| `@node-rs/jieba` | `pnpm view @node-rs/jieba dist-tags.latest --json` | `nodeRs.version` |
+| `APCLab/jieba-tw` | GitHub commits API for `apclab.repository` and `apclab.branch` | `apclab.commit` |
+| `sysprog21/zhtw-mcp` | GitHub commits API for `zhtwMcp.repository` and `zhtwMcp.branch` | `zhtwMcp.commit` |
+
+For example, the currently configured Git branches can be checked with
+`gh api repos/APCLab/jieba-tw/commits/master --jq .sha` and
+`gh api repos/sysprog21/zhtw-mcp/commits/main --jq .sha`. Adapt these commands if
+the manifest changes; public GitHub HTTP APIs also work without the `gh` CLI.
+Compare the tracked data files at the returned commits, not just repository HEADs:
+a newer commit or npm version can contain identical dictionary bytes.
+
+Report the check date, pinned and upstream versions/commits, data changes, and any
+license changes found. If updates are available, remind the user before cutting
+the release and resolve whether to include them or release with the reviewed pins.
+Follow existing update authorization; an available update alone does not authorize
+changing dependencies or data. A failed lookup is unverified, not up to date.
+Surface that gap before proceeding. Neither `dict:sync` nor `--update-pins` is a
+read-only check; do not run them merely to discover newer versions.
+
+When a dictionary refresh is in scope:
+
+- For Jieba, use `pnpm add --save-exact @node-rs/jieba@<reviewed-version> --ignore-scripts`
+  and inspect dependency/platform changes and upstream licensing.
+  Verify the installed package's `dict.txt`, then update `nodeRs.version`, `sha256`,
+  and `gitBlobSha` in the source manifest. SHA-256 hashes the raw file bytes; Git
+  blob SHA-1 hashes `blob <byte-length>\0` followed by those bytes. Do not reuse old
+  hashes without verifying the new package. Keep native platform packages
+  transitive, and update the explicit version assertions in
+  `test/jieba-smoke.test.ts` without removing its platform coverage.
+- Run `pnpm run dict:sync -- --update-pins` to advance the two Git sources to their
+  configured branch HEADs and regenerate the asset and hashes. This does not
+  upgrade Jieba's npm dependency. Review the actual selected commits and licensing;
+  if either HEAD moved since preflight, review the new snapshot before accepting it.
+  To refresh only an approved subset, edit only its reviewed pins/hashes and run
+  `pnpm run dict:sync` instead of advancing both Git sources.
+- Inspect `src/search/zh-dict.txt` and the source manifest diff, including removals
+  and frequency/tag changes. Preserve the existing technical-domain selector and
+  dictionary merge policy unless a separate behavior change is intended. Align
+  `THIRD_PARTY_NOTICES.md` versions/commits, license text, and copyright attribution
+  with every selected source, and describe the update under `[Unreleased]`.
+- Run `pnpm run dict:sync` again with the final fixed pins and verify byte-identical
+  output. Run `pnpm exec vitest run test/zh-dict-asset.test.ts test/cjk-dictionary.test.ts test/jieba-smoke.test.ts`
+  and `pnpm run test:quality`. If dependencies changed, also check frozen
+  installation, audit, and package smoke. Then continue with the release
+  validation in step 4. Do not open or rebuild the real index to validate a
+  dictionary update.
+
+Keep source fetching in this explicit maintenance workflow; do not add it to
+runtime, build, install, or automatic release hooks.
 
 ## Dependency Policy
 
