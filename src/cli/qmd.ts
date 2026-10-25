@@ -55,6 +55,8 @@ import {
   deactivateDocument,
   getActiveDocumentPaths,
   cleanupOrphanedContent,
+  cleanupOrphanedVectors,
+  copyVectorsToNewCollections,
   countOrphanedVectors,
   previewCleanup,
   runCleanup,
@@ -678,14 +680,6 @@ function sanitizeDiagnosticMessage(message: string): string {
     .join("; ");
 }
 
-/** Hint after `qmd update` when orphaned embedding chunks exceed this share of vectors (#768). */
-const ORPHAN_VECTOR_HINT_RATIO = 0.1;
-
-function formatOrphanedVectorHint(orphaned: number, total: number): string {
-  const pct = total > 0 ? Math.round((orphaned / total) * 100) : 0;
-  return `${orphaned} orphaned embedding chunks (${pct}% of vectors) — run 'qmd cleanup' to reclaim space`;
-}
-
 async function showStatus(): Promise<void> {
   const dbPath = getDbPath();
   const db = getDoctorStore().db;
@@ -1244,19 +1238,32 @@ async function updateCollections(): Promise<void> {
     console.log("");
   }
 
+  // The pending count below only sees content_vectors, so a hash that joined
+  // a collection while already embedded elsewhere would be neither counted
+  // nor searchable there; copying its rows closes that gap without a model.
+  // The copy runs before the cleanup, which deletes the partition rows the
+  // copy reads from, so a document moved between collections keeps its vectors.
+  const copiedVectors = copyVectorsToNewCollections(db).copied;
+  // A changed file rewrites its document's hash in place, which strands the
+  // old hash's rows in the collection's vector partition; the partition
+  // filter cannot see documents.active, so those rows would take k slots
+  // from a scoped search until they are removed.
+  const staleVectors = cleanupOrphanedVectors(db);
+
   // Check if any documents need embedding (show once at end)
   const needsEmbedding = getHashesNeedingEmbedding(db);
   await rebuildCjkLexicalIndex(getDbPath());
-  const vectorTotal = (db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get() as { count: number }).count;
-  const orphanedVectors = countOrphanedVectors(db);
   closeDb();
 
   console.log(`${c.green}✓ All collections updated.${c.reset}`);
+  if (staleVectors > 0) {
+    console.log(`Removed ${staleVectors} stale vector row(s)`);
+  }
+  if (copiedVectors > 0) {
+    console.log(`Copied ${copiedVectors} vector(s) into collections that gained already-embedded documents`);
+  }
   if (needsEmbedding > 0) {
     console.log(`\nRun 'qmd embed' to update embeddings (${needsEmbedding} unique hashes need vectors)`);
-  }
-  if (vectorTotal > 0 && orphanedVectors / vectorTotal >= ORPHAN_VECTOR_HINT_RATIO) {
-    console.log(`\n${formatOrphanedVectorHint(orphanedVectors, vectorTotal)}`);
   }
 }
 
@@ -2483,6 +2490,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
 
   // Clean up orphaned content hashes (content not referenced by any document)
   const orphanedContent = cleanupOrphanedContent(db);
+  const copiedVectors = copyVectorsToNewCollections(db, collectionName).copied;
 
   // Check if vector index needs updating
   const needsEmbedding = getHashesNeedingEmbedding(db);
@@ -2493,6 +2501,9 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   reportMetadataErrors(metadataErrors, metadataErrorFiles);
   if (orphanedContent > 0) {
     console.log(`Cleaned up ${orphanedContent} orphaned content hash(es)`);
+  }
+  if (copiedVectors > 0) {
+    console.log(`Copied ${copiedVectors} vector(s) into collections that gained already-embedded documents`);
   }
 
   if (needsEmbedding > 0 && !suppressEmbedNotice) {
@@ -2529,7 +2540,9 @@ function reportSkippedReads(skippedFiles: { file: string; code: string }[]): voi
   if (skippedFiles.length === 0) return;
   const sizeLimitMb = Math.round(REINDEX_MAX_FILE_SIZE / (1024 * 1024));
   for (const skipped of skippedFiles) {
-    if (skipped.code === "OUTSIDE_COLLECTION") {
+    if (skipped.code === "ROOT_MISSING") {
+      console.warn(`⚠ Collection root not found, index left unchanged: ${skipped.file}`);
+    } else if (skipped.code === "OUTSIDE_COLLECTION") {
       console.warn(`⚠ Skipped file outside collection: ${skipped.file}`);
     } else if (skipped.code === "FILE_TOO_LARGE") {
       console.warn(`⚠ Skipped file over ${sizeLimitMb} MB: ${skipped.file}`);
@@ -2539,7 +2552,8 @@ function reportSkippedReads(skippedFiles: { file: string; code: string }[]): voi
   }
   const escaped = skippedFiles.filter(f => f.code === "OUTSIDE_COLLECTION").length;
   const tooLarge = skippedFiles.filter(f => f.code === "FILE_TOO_LARGE").length;
-  const unreadable = skippedFiles.length - escaped - tooLarge;
+  const rootMissing = skippedFiles.filter(f => f.code === "ROOT_MISSING").length;
+  const unreadable = skippedFiles.length - escaped - tooLarge - rootMissing;
   if (escaped) console.warn(`Skipped ${escaped} file(s) outside the collection root`);
   if (tooLarge) console.warn(`Skipped ${tooLarge} file(s) over ${sizeLimitMb} MB`);
   if (unreadable) console.warn(`Skipped ${unreadable} unreadable file(s)`);
@@ -2655,7 +2669,7 @@ async function vectorIndex(
     model = provider.model;
   }
 
-  // Exclusive process lock — concurrent embeds race on vectors_vec (#825)
+  // Exclusive process lock — concurrent embeds race on vector_rows (#825)
   const embedLock = tryAcquireEmbedLock(embedLockPathForDb(getDbPath()));
   if (!embedLock) {
     console.log(EMBED_LOCK_BUSY_MESSAGE);
@@ -2734,6 +2748,9 @@ async function vectorIndex(
 
     const totalTimeSec = result.durationMs / 1000;
 
+    if (result.chunksCopied > 0) {
+      console.log(`${c.green}✓${c.reset} Copied ${formatCount(result.chunksCopied)} vectors into collections that gained already-embedded documents`);
+    }
     if (result.chunksEmbedded === 0 && result.docsProcessed === 0) {
       console.log(`${c.green}✓ No non-empty documents to embed.${c.reset}`);
     } else {

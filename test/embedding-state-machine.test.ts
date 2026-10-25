@@ -15,6 +15,7 @@ import {
 } from "../src/store.js";
 import type { EmbeddingProvider } from "../src/embedding/provider.js";
 import { remoteEmbeddingIdentity } from "../src/embedding/remote-embedding.js";
+import { VEC_TABLE, activeCollectionsOfHash, allocateCollectionId, upsertPartitionVector } from "../src/vec-layout.js";
 import {
   OpenAIEmbeddingProvider,
   canonicalOpenAIEmbeddingIdentityMaterial,
@@ -67,9 +68,9 @@ function insertCorruptEmbedding(
     INSERT INTO content_vectors(hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
     VALUES (?, 0, 0, ?, ?, 1, ?)
   `).run(hash, model, fingerprint, embeddedAt);
-  const collection = (store.db.prepare(`SELECT collection FROM documents WHERE hash = ? AND active = 1 LIMIT 1`).get(hash) as { collection?: string } | undefined)?.collection ?? "";
-  store.db.prepare(`INSERT INTO vectors_vec(hash_seq, collection, embedding) VALUES (?, ?, ?)`)
-    .run(`${hash}_0`, collection, vector);
+  for (const collection of activeCollectionsOfHash(store.db, hash)) {
+    upsertPartitionVector(store.db, hash, 0, allocateCollectionId(store.db, collection), vector);
+  }
 }
 
 function remoteIdentity(
@@ -231,7 +232,7 @@ describe("embedding identity state machine", () => {
     const store = createStore(join(dir, "index.sqlite"), { embeddingProvider: provider });
     const timestamp = "2026-07-24T00:00:00.000Z";
     try {
-      store.db.exec("CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding BLOB)");
+      store.db.exec(`CREATE TABLE ${VEC_TABLE} (collection_id INTEGER, embedding BLOB)`);
       insertContent(store.db, "lexical-only", "REMOTE_GUARD_MARKER", timestamp);
       insertDocument(store.db, "docs", "guard.md", "Guard", "lexical-only", timestamp, timestamp);
 
@@ -345,7 +346,7 @@ describe("embedding identity state machine", () => {
     expect(store.db.prepare("SELECT COUNT(*) AS count FROM documents").get()).toEqual({ count: 1 });
     expect(store.db.prepare("SELECT COUNT(*) AS count FROM llm_cache").get()).toEqual({ count: 1 });
     expect(store.db.prepare(
-      "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'vectors_vec'",
+      `SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = '${VEC_TABLE}'`,
     ).get()).toEqual({ count: 1 });
     store.close();
   });
@@ -998,7 +999,7 @@ describe("embedding identity state machine", () => {
 
     expect(store.db.prepare(`SELECT COUNT(*) AS n FROM content_vectors`).get()).toEqual({ n: 0 });
     expect(store.db.prepare(`
-      SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vectors_vec'
+      SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '${VEC_TABLE}'
     `).get()).toBeFalsy();
     expect(store.db.prepare(`SELECT 1 FROM embedding_index_state`).get()).toBeFalsy();
     store.close();

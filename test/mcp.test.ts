@@ -17,6 +17,7 @@ import type { CollectionConfig } from "../src/collections.js";
 import { setConfigIndexName } from "../src/collections.js";
 import { syncConfigToDb } from "../src/store.js";
 import { initializeMetadataSchema } from "../src/metadata-store.js";
+import { createVectorMetadataTables } from "../src/vec-layout.js";
 
 // =============================================================================
 // Test Database Setup
@@ -120,6 +121,7 @@ function initTestDatabase(db: Database): void {
 
   // Document metadata tables — searchFTS/searchVec join them for result metadata
   initializeMetadataSchema(db);
+  createVectorMetadataTables(db);
 }
 
 function seedTestData(db: Database): void {

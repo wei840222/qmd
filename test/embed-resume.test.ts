@@ -25,6 +25,7 @@ import {
 import type { EmbeddingProvider } from "../src/embedding/provider.js";
 import { OpenAIEmbeddingProvider } from "../src/embedding/openai.js";
 import { remoteEmbeddingIdentity } from "../src/embedding/remote-embedding.js";
+import { VEC_TABLE, allocateCollectionId, upsertPartitionVector } from "../src/vec-layout.js";
 
 const tempDirs: string[] = [];
 
@@ -76,7 +77,7 @@ describe("embedding partial resume persistence", () => {
 
     });
     expect(store.db.prepare(`
-      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'vectors_vec'
+      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '${VEC_TABLE}'
     `).get()).toMatchObject({ sql: expect.stringContaining("float[3]") });
     insertEmbedding(
       store.db,
@@ -106,7 +107,7 @@ describe("embedding partial resume persistence", () => {
     expect(inspectEmbeddingIndexState(store.db, oldIdentity, now + 3).status).toBe("ready");
     expect(store.db.prepare(`SELECT COUNT(*) AS n FROM content_vectors`).get()).toEqual({ n: 1 });
     expect(store.db.prepare(`
-      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'vectors_vec'
+      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '${VEC_TABLE}'
     `).get()).toMatchObject({ sql: expect.stringContaining("float[3]") });
 
     const nextLease = beginEmbeddingBuild(store.db, nextIdentity, {
@@ -119,7 +120,7 @@ describe("embedding partial resume persistence", () => {
     expect(nextLease.fingerprint).toBe(nextIdentity.fingerprint);
     expect(store.db.prepare(`SELECT COUNT(*) AS n FROM content_vectors`).get()).toEqual({ n: 0 });
     expect(store.db.prepare(`
-      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'vectors_vec'
+      SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '${VEC_TABLE}'
     `).get()).toMatchObject({ sql: expect.stringContaining("float[4]") });
     store.close();
   });
@@ -376,7 +377,7 @@ describe("embedding partial resume persistence", () => {
       new Date().toISOString(),
     )).toThrow("identity is missing");
     expect(store.db.prepare(`SELECT COUNT(*) AS n FROM content_vectors`).get()).toEqual({ n: 0 });
-    expect(store.db.prepare(`SELECT COUNT(*) AS n FROM vectors_vec`).get()).toEqual({ n: 0 });
+    expect(store.db.prepare(`SELECT COUNT(*) AS n FROM ${VEC_TABLE}`).get()).toEqual({ n: 0 });
     store.close();
   });
 
@@ -391,8 +392,7 @@ describe("embedding partial resume persistence", () => {
         INSERT INTO content_vectors(hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
         VALUES (?, 0, 0, ?, ?, 1, ?)
       `).run("orphan-hash", "orphan-model", "abcdef", timestamp);
-      store.db.prepare(`INSERT INTO vectors_vec(hash_seq, collection, embedding) VALUES (?, ?, ?)`)
-        .run("orphan-hash_0", "docs", new Float32Array([1, 0, 0]));
+      upsertPartitionVector(store.db, "orphan-hash", 0, allocateCollectionId(store.db, "docs"), new Float32Array([1, 0, 0]));
     })();
 
     expect(await searchVec(
@@ -456,7 +456,7 @@ describe("embedding partial resume persistence", () => {
     );
     expect(inspectEmbeddingIndexState(store.db, originalIdentity).status).toBe("ready");
     expect(store.db.prepare(`SELECT COUNT(*) AS n FROM content_vectors`).get()).toEqual({ n: 2 });
-    expect(store.db.prepare(`SELECT COUNT(*) AS n FROM vectors_vec`).get()).toEqual({ n: 2 });
+    expect(store.db.prepare(`SELECT COUNT(*) AS n FROM ${VEC_TABLE}`).get()).toEqual({ n: 2 });
     store.close();
   });
 
@@ -518,6 +518,8 @@ describe("embedding partial resume persistence", () => {
         leaseMs: 60_000,
         allowDestructiveRebuild: true,
       });
+      insertContent(store.db, "orphan-hash", "orphan body", now);
+      insertDocument(store.db, "docs", "orphan.md", "Orphan", "orphan-hash", now, now);
       insertEmbedding(
         store.db,
         "orphan-hash",
@@ -531,6 +533,9 @@ describe("embedding partial resume persistence", () => {
         lease,
       );
       completeEmbeddingBuild(store.db, lease);
+      // Deactivated after embedding: a vector row is written only for a hash an
+      // active document holds, and the orphan needs rows to roll back.
+      store.db.prepare(`UPDATE documents SET active = 0 WHERE hash = 'orphan-hash'`).run();
       store.db.exec(`
         CREATE TRIGGER fail_orphan_metadata_delete
         BEFORE DELETE ON content_vectors
@@ -540,7 +545,7 @@ describe("embedding partial resume persistence", () => {
       `);
 
       expect(() => cleanupOrphanedVectors(store.db)).toThrow(/injected metadata delete failure/);
-      expect((store.db.prepare(`SELECT COUNT(*) AS count FROM vectors_vec`).get() as { count: number }).count).toBe(1);
+      expect((store.db.prepare(`SELECT COUNT(*) AS count FROM ${VEC_TABLE}`).get() as { count: number }).count).toBe(1);
       expect((store.db.prepare(`SELECT COUNT(*) AS count FROM content_vectors`).get() as { count: number }).count).toBe(1);
     } finally {
       store.close();
@@ -594,10 +599,44 @@ describe("embedding partial resume persistence", () => {
       )).toThrowError(EmbeddingIdentityStateError);
       expect(() => clearAllEmbeddings(store.db, "kept", clearLease))
         .toThrow(/injected collection delete failure/);
-      expect((store.db.prepare(`SELECT COUNT(*) AS count FROM vectors_vec`).get() as { count: number }).count).toBe(1);
+      expect((store.db.prepare(`SELECT COUNT(*) AS count FROM ${VEC_TABLE}`).get() as { count: number }).count).toBe(1);
       expect((store.db.prepare(`SELECT COUNT(*) AS count FROM content_vectors`).get() as { count: number }).count).toBe(1);
     } finally {
       store.close();
     }
+  });
+
+  test("embedding leaves a chunk that lost its vector alone until it holds the build lease", async () => {
+    const store = await createTempStore();
+    const now = new Date(0).toISOString();
+    insertContent(store.db, "kept-hash", "body", now);
+    insertDocument(store.db, "docs", "kept.md", "Kept", "kept-hash", now, now);
+    // Metadata of another build whose vector is gone. Copying vectors into
+    // collections would queue this chunk by deleting its row, which an
+    // unauthorized run must not do to data it cannot yet vouch for.
+    store.db.prepare(`
+      INSERT INTO content_vectors(hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
+      VALUES ('kept-hash', 0, 0, 'other-model', 'other-fingerprint', 1, ?)
+    `).run(now);
+    store.embeddingProvider = {
+      providerId: "unknown-dimension",
+      model: "unknown-dimension-model",
+      dimension: null,
+      remote: true,
+      canonicalIdentityMaterial: () => "unknown-dimension",
+      formatQuery: (text: string) => text,
+      formatDocument: (text: string) => text,
+      embed: async () => ({ vector: [1, 0, 0], model: "unknown-dimension-model", dimension: 3 }),
+      embedBatch: async (texts: string[]) => texts.map(() => ({ vector: [1, 0, 0], model: "unknown-dimension-model", dimension: 3 })),
+      close: async () => {},
+    };
+    store.authorizeRemoteRequest = () => {};
+
+    await expect(generateEmbeddings(store)).rejects.toThrow();
+
+    expect(store.db.prepare(`SELECT hash, model FROM content_vectors`).all()).toEqual([
+      { hash: "kept-hash", model: "other-model" },
+    ]);
+    store.close();
   });
 });

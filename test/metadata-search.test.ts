@@ -28,6 +28,7 @@ import { METADATA_EXTRACTION_VERSION, type DocumentMetadata } from "../src/metad
 import { remoteEmbeddingIdentity } from "../src/embedding/remote-embedding.js";
 import type { EmbeddingProvider } from "../src/embedding/provider.js";
 import { parseMetadataFilter, type MetadataFilter } from "../src/metadata-filter.js";
+import type { Database, SQLiteValue } from "../src/db.js";
 
 let testDir: string;
 let store: Store;
@@ -347,6 +348,131 @@ describe("searchVec with metadata filter", () => {
       { field: "status", operator: "eq", value: "published" },
     );
     expect(filtered.map(r => r.displayPath)).toEqual(["docs/b.md"]);
+  });
+
+  const eligibleOnly: MetadataFilter = { field: "eligible", operator: "eq", value: true };
+
+  /** An eligible document and an ineligible copy of its content in one collection, one chunk per vector. */
+  async function insertLongDocumentWithExcludedCopy(vectors: number[][], fixture: ReturnType<typeof beginFixture>): Promise<void> {
+    const body = "# Many chunks";
+    const { hash } = await insertDoc("book", "many-chunks.md", body, { eligible: true });
+    await insertDoc("book", "excluded-copy.md", body, { eligible: false });
+    const now = new Date().toISOString();
+    vectors.forEach((vector, seq) => insertEmbedding(
+      store.db, hash, seq, seq * 100, new Float32Array(vector), model, now, vectors.length,
+      fixture.identity.fingerprint, fixture.lease,
+    ));
+  }
+
+  test("a document with many close chunks does not starve another eligible document", async () => {
+    const fixture = beginFixture(3);
+    await insertLongDocumentWithExcludedCopy(Array.from({ length: 20 }, () => [1, 0, 0]), fixture);
+    await insertEmbeddedDoc("book", "second-document.md", "# Second document", [0, 1, 0], { eligible: true }, fixture);
+    completeEmbeddingBuild(store.db, fixture.lease);
+
+    const results = await searchVec(store.db, "q", model, 2, undefined, undefined, queryEmbedding, provider, eligibleOnly);
+    expect(results.map(r => r.displayPath)).toEqual(["book/many-chunks.md", "book/second-document.md"]);
+  });
+
+  test.each([20, 450])("the best chunk of a %i-chunk document survives deduplication", async (chunks) => {
+    const fixture = beginFixture(3);
+    await insertLongDocumentWithExcludedCopy(
+      Array.from({ length: chunks }, (_, seq) => (seq === chunks - 1 ? [1, 0, 0] : [0, 0, 1])),
+      fixture,
+    );
+    await insertEmbeddedDoc("book", "second-document.md", "# Second document", [-1, 0.1, 0], { eligible: true }, fixture);
+    completeEmbeddingBuild(store.db, fixture.lease);
+
+    const results = await searchVec(store.db, "q", model, 2, undefined, undefined, queryEmbedding, provider, eligibleOnly);
+    expect(results.map(r => r.displayPath)).toEqual(["book/many-chunks.md", "book/second-document.md"]);
+    expect(results[0]!.chunkPos).toBe((chunks - 1) * 100);
+  });
+
+  test("a filter admitting more than 20,000 chunks still returns its nearest eligible documents", async () => {
+    const fixture = beginFixture(3);
+    store.db.exec("BEGIN");
+    for (let i = 0; i < 20_001; i++) {
+      await insertEmbeddedDoc("book", `eligible-${i}.md`, `# Eligible ${i}`, [0, 1, 0], { eligible: true }, fixture);
+    }
+    for (let i = 0; i < 200; i++) {
+      await insertEmbeddedDoc("book", `closer-${i}.md`, `# Closer ${i}`, [1, 0, 0], { eligible: false }, fixture);
+    }
+    store.db.exec("COMMIT");
+    completeEmbeddingBuild(store.db, fixture.lease);
+
+    const filtered = await searchVec(
+      store.db, "q", model, 5, "book", undefined, queryEmbedding, provider,
+      { field: "eligible", operator: "eq", value: true },
+    );
+    expect(filtered).toHaveLength(5);
+    expect(filtered.every(r => r.metadata.eligible === true)).toBe(true);
+  }, 120_000);
+
+  test("a filtered vector scan binds no list of eligible rows, so none is held on the heap", async () => {
+    const fixture = beginFixture(3);
+    // One eligible document of 2,000 chunks, and closer ineligible documents.
+    const { hash } = await insertDoc("book", "long-eligible.md", "# Long eligible", { eligible: true });
+    const now = new Date().toISOString();
+    store.db.transaction(() => {
+      for (let seq = 0; seq < 2_000; seq++) {
+        insertEmbedding(
+          store.db, hash, seq, seq, new Float32Array([0, 1, 0]), model, now, 2_000,
+          fixture.identity.fingerprint, fixture.lease,
+        );
+      }
+    })();
+    for (let i = 0; i < 50; i++) {
+      await insertEmbeddedDoc("book", `closer-${i}.md`, `# Closer ${i}`, [1, 0, 0], { eligible: false }, fixture);
+    }
+    completeEmbeddingBuild(store.db, fixture.lease);
+    // Every string bound to a vector scan: a JSON list of eligible rowids would show here.
+    const bound: string[] = [];
+    const recording: Database = {
+      prepare: (sql: string) => {
+        const real = store.db.prepare(sql);
+        if (!sql.includes("MATCH")) return real;
+        return {
+          ...real,
+          run: real.run.bind(real),
+          get: real.get.bind(real),
+          iterate: real.iterate.bind(real),
+          all: (...params: SQLiteValue[]) => {
+            for (const param of params) if (typeof param === "string" && param.startsWith("[")) bound.push(param);
+            return real.all(...params);
+          },
+        };
+      },
+      transaction: (fn: Parameters<Database["transaction"]>[0]) => store.db.transaction(fn),
+      exec: (sql: string) => store.db.exec(sql),
+      loadExtension: (path: string) => store.db.loadExtension(path),
+      close: () => store.db.close(),
+      get inTransaction() { return store.db.inTransaction; },
+      get isTransaction() { return store.db.isTransaction; },
+    } as any;
+
+    for (const scope of ["book", undefined]) {
+      const results = await searchVec(recording, "q", model, 5, scope, undefined, queryEmbedding, provider, eligibleOnly);
+      expect(results.map(r => r.displayPath)).toEqual(["book/long-eligible.md"]);
+    }
+    expect(bound).toEqual([]);
+  });
+
+  test("shared content hash within one collection returns only the matching document path", async () => {
+    const fixture = beginFixture(3);
+    const body = "# Shared body";
+    const { hash } = await insertDoc("notes", "published-copy.md", body, { status: "published" });
+    await insertDoc("notes", "draft-copy.md", body, { status: "draft" });
+    insertEmbedding(
+      store.db, hash, 0, 0, new Float32Array([1, 0, 0]), model, new Date().toISOString(), 1,
+      fixture.identity.fingerprint, fixture.lease,
+    );
+    completeEmbeddingBuild(store.db, fixture.lease);
+
+    const filtered = await searchVec(
+      store.db, "q", model, 10, "notes", undefined, queryEmbedding, provider,
+      { field: "status", operator: "eq", value: "published" },
+    );
+    expect(filtered.map(r => r.displayPath)).toEqual(["notes/published-copy.md"]);
   });
 });
 

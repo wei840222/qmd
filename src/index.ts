@@ -43,6 +43,7 @@ import {
   vacuumDatabase,
   cleanupOrphanedContent,
   cleanupOrphanedVectors,
+  copyVectorsToNewCollections,
   deleteLLMCache,
   deleteInactiveDocuments,
   clearAllEmbeddings,
@@ -263,6 +264,10 @@ export type UpdateResult = {
   unchanged: number;
   removed: number;
   skipped: number;
+  /** Vector rows removed because their (hash, collection) no longer has an active document. */
+  staleVectorsRemoved: number;
+  /** Vector rows copied into the partition of a collection that gained an already-embedded hash. */
+  vectorsCopied: number;
   needsEmbedding: number;
 };
 
@@ -860,6 +865,14 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
       }
 
       await rebuildCjkLexicalIndex(options.dbPath);
+      // A changed file rewrites its document's hash in place and strands the
+      // old hash's partition rows, which take k slots from scoped searches;
+      // a hash that joined a collection while embedded elsewhere stays
+      // unsearchable there until its rows are copied. The copy runs first:
+      // the cleanup deletes the partition rows it copies from, so a document
+      // moved between collections would otherwise need a fresh embed.
+      const vectorsCopied = copyVectorsToNewCollections(db).copied;
+      const staleVectorsRemoved = cleanupOrphanedVectors(db);
 
       return {
         collections: filtered.length,
@@ -868,6 +881,8 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         unchanged: totalUnchanged,
         removed: totalRemoved,
         skipped: totalSkipped,
+        staleVectorsRemoved,
+        vectorsCopied,
         needsEmbedding: internal.getHashesNeedingEmbedding(),
       };
     },

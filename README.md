@@ -601,10 +601,32 @@ including CLI, Jieba, and AST support. Legacy-index diagnostics and search-quali
 benchmarks remain supported.
 
 Existing local-model databases remain readable through BM25 and document tools.
-QMD does not rewrite old vectors or silently send their documents to a provider.
-To use remote vectors, configure the desired remote model and run an explicit
+QMD never re-embeds or discards old vectors on its own and never silently sends
+their documents to a provider; the only automatic change is the lossless layout
+upgrade described under "Upgrading the vector layout". To use remote vectors, configure the desired remote model and run an explicit
 `qmd embed --force` after reviewing the provider and data boundary. This clears
 and rebuilds vectors as a user-requested operation; lexical content is retained.
+
+### Upgrading the vector layout
+
+Vectors are stored in one index partitioned by collection, so a scoped query scans
+only that collection's vectors. An index written by an older build keeps its vectors
+in a single `vectors_vec` table; the first command that opens it converts it in
+place. The conversion copies every stored vector unchanged, sends no request to any
+provider, never re-embeds, and leaves the embedding identity and chunk metadata
+alone. It prints its progress, resumes if interrupted, and drops the old table only
+after the copy is verified, then runs a `VACUUM` that can take minutes on a large
+index. Without sqlite-vec loaded the conversion is deferred and keyword search keeps
+working.
+
+An older build cannot read the converted index, and going back means a full paid
+`qmd embed --force`. Back up the index before the first command after upgrading:
+
+```sh
+cp ~/.cache/qmd/index.sqlite* /path/to/backup/
+```
+
+Restart a running `qmd mcp` server after upgrading.
 
 ### Breaking SDK changes
 
@@ -731,7 +753,7 @@ Both modes reuse results for up to two hours, with at most 2,000 entries and a 6
 
 Corrupt individual entries are recomputed. An unavailable or corrupt cache database emits a warning and falls back to normal computation without deleting the file or blocking indexing. Expiration, eviction, forced rebuilds, failed requests, and crash recovery can require new API calls; this is deduplication, not an exactly-once billing guarantee.
 
-`vectors_vec` can store only one dimension. A dimension or identity change requires a forced rebuild:
+The vector index can store only one dimension. A dimension or identity change requires a forced rebuild:
 
 ```sh
 qmd embed --force
@@ -741,7 +763,7 @@ Remote document chunks use deterministic UTF-8 byte windows. Query embedding is 
 
 #### Embedding identity, recovery, and data boundary
 
-`vectors_vec` holds one vector dimension at a time. An embedding identity includes
+The vector index holds one vector dimension at a time. An embedding identity includes
 the provider, model, dimension, local/remote mode, and prompt/chunking profiles;
 changing it requires `qmd embed --force`. A build lease with an owner ID and
 generation sequence prevents concurrent writers. If an embedding request fails or
@@ -1650,13 +1672,15 @@ Index stored in: `~/.cache/qmd/index.sqlite`
 ### Schema
 
 ```sql
-collections     -- Indexed directories with name and glob patterns
-path_contexts   -- Context descriptions by virtual path (qmd://...)
-documents       -- Markdown content with metadata and docid (6-char hash)
-documents_fts   -- FTS5 full-text index
-content_vectors -- Embedding chunks (hash, seq, pos, 900 tokens each)
-vectors_vec     -- sqlite-vec vector index (hash_seq key)
-llm_cache       -- Cached LLM responses (query expansion, rerank scores)
+collections            -- Indexed directories with name and glob patterns
+path_contexts          -- Context descriptions by virtual path (qmd://...)
+documents              -- Markdown content with metadata and docid (6-char hash)
+documents_fts          -- FTS5 full-text index
+content_vectors        -- Embedding chunks (hash, seq, pos, 900 tokens each)
+vector_collection_ids  -- Integer id per collection name (the vector partition key)
+vector_rows            -- Vector rowid to (hash, seq, collection_id)
+vectors_by_collection  -- sqlite-vec vector index, one row per chunk and collection
+llm_cache              -- Cached LLM responses (query expansion, rerank scores)
 ```
 
 ## Environment Variables

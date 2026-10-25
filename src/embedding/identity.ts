@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
 import type { Database } from "../db.js";
+import {
+  LEGACY_VEC_TABLE,
+  VEC_ROWS_TABLE,
+  VEC_TABLE,
+  createPartitionedVecTable,
+  vecLayout,
+} from "../vec-layout.js";
 
 export type EmbeddingBuildMode = "rebuild" | "resume";
 export type EmbeddingIndexStateStatus = "empty" | "building" | "partial" | "ready" | "incompatible" | "mismatch";
@@ -259,12 +266,7 @@ function embeddingRowsExist(db: Database): boolean {
   const row = db.prepare("SELECT EXISTS(SELECT 1 FROM content_vectors LIMIT 1) AS present").get() as {
     present: number;
   };
-  const vecTable = db.prepare(`
-    SELECT EXISTS(
-      SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vectors_vec'
-    ) AS present
-  `).get() as { present: number };
-  return row.present === 1 || vecTable.present === 1;
+  return row.present === 1 || vecLayout(db).kind !== "none";
 }
 
 export function inspectEmbeddingIndexState(
@@ -308,65 +310,25 @@ function validateLeaseOptions(options: BeginEmbeddingBuildOptions): void {
 
 function clearEmbeddingData(db: Database): void {
   db.prepare("DELETE FROM content_vectors").run();
-  db.exec("DROP TABLE IF EXISTS vectors_vec");
+  db.exec(`DROP TABLE IF EXISTS ${LEGACY_VEC_TABLE}`);
+  db.exec(`DROP TABLE IF EXISTS ${VEC_TABLE}`);
+  const rowMap = db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(VEC_ROWS_TABLE);
+  if (rowMap) db.exec(`DELETE FROM ${VEC_ROWS_TABLE}`);
 }
 
 function ensureEmbeddingVectorTable(db: Database, dimension: number): void {
-  const table = db.prepare(`
-    SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'vectors_vec'
-  `).get() as { sql: string } | undefined;
-  if (table) {
-    const storedDimension = table.sql.match(/float\[(\d+)\]/)?.[1];
-    const hasHashSeq = table.sql.includes("hash_seq");
-    const hasCollection = table.sql.includes("collection");
-    const hasCosine = table.sql.includes("distance_metric=cosine");
-    if (storedDimension === String(dimension)
-      && hasHashSeq
-      && hasCollection
-      && hasCosine) {
-      return;
-    }
-    if (storedDimension === String(dimension) && hasHashSeq && !hasCollection) {
-      // Auto-migrate legacy table without collection column
-      try {
-        db.exec("CREATE TEMP TABLE _qmd_migrate_vecs (hash_seq TEXT, embedding BLOB)");
-        db.exec("INSERT INTO _qmd_migrate_vecs SELECT hash_seq, embedding FROM vectors_vec");
-        db.exec("DROP TABLE vectors_vec");
-        db.exec(`CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, collection TEXT, embedding float[${dimension}] distance_metric=cosine)`);
-        db.exec(`
-          INSERT INTO vectors_vec (hash_seq, collection, embedding)
-          SELECT
-            t.hash_seq,
-            COALESCE((
-              SELECT d.collection
-              FROM content_vectors cv
-              JOIN documents d ON d.hash = cv.hash AND d.active = 1
-              WHERE (cv.hash || '_' || cv.seq) = t.hash_seq
-              LIMIT 1
-            ), ''),
-            t.embedding
-          FROM _qmd_migrate_vecs t
-        `);
-        db.exec("DROP TABLE IF EXISTS _qmd_migrate_vecs");
-        return;
-      } catch {
-        db.exec("DROP TABLE IF EXISTS _qmd_migrate_vecs");
-        db.exec("DROP TABLE IF EXISTS vectors_vec");
-      }
-    } else {
-      throw new EmbeddingIdentityStateError(
-        "IDENTITY_MISMATCH",
-        "Stored vector table schema does not match the active embedding identity.",
-      );
-    }
+  const layout = vecLayout(db);
+  if (layout.kind !== "none") {
+    // A legacy table is converted by the store's own layout migration, which
+    // cannot run inside this transaction; both layouts only need to agree on
+    // the dimension here.
+    if (layout.dimensions === dimension) return;
+    throw new EmbeddingIdentityStateError(
+      "IDENTITY_MISMATCH",
+      "Stored vector table schema does not match the active embedding identity.",
+    );
   }
-  db.exec(`
-    CREATE VIRTUAL TABLE vectors_vec USING vec0(
-      hash_seq TEXT PRIMARY KEY,
-      collection TEXT,
-      embedding float[${dimension}] distance_metric=cosine
-    )
-  `);
+  createPartitionedVecTable(db, dimension);
 }
 
 export function beginEmbeddingBuild(

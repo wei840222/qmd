@@ -1,5 +1,6 @@
 import type { Database } from "../db.js";
 import { canonicalEmbeddingBuildMaterial } from "../store.js";
+import { VEC_ROWS_TABLE, hasVectorIndex } from "../vec-layout.js";
 import {
   endpointFreeIdentityMaterial,
   createEmbeddingIdentity,
@@ -131,18 +132,15 @@ export function authorizeRemoteEmbeddingRequest(
     && storedIdentity.dimension === identity.dimension
     && storedIdentity.remote === identity.remote
     && storedQueryIdentity === requestQueryIdentity;
-  const vectorTable = db.prepare(`
-    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vectors_vec'
-  `).get();
   // Query calls may carry the current endpoint fingerprint. Searchable rows keep
   // the published fingerprint, so either fingerprint proves the same vector space.
   const queryFingerprints = sameVectorSpace && state?.fingerprint && state.fingerprint !== identity.fingerprint
     ? [identity.fingerprint, state.fingerprint]
     : [identity.fingerprint];
-  const hasQueryableRow = vectorTable == null ? false : db.prepare(`
+  const hasQueryableRow = !hasVectorIndex(db) ? false : db.prepare(`
     SELECT 1
     FROM content_vectors cv
-    JOIN vectors_vec vv ON vv.hash_seq = cv.hash || '_' || cv.seq
+    JOIN ${VEC_ROWS_TABLE} vr ON vr.hash = cv.hash AND vr.seq = cv.seq
     WHERE cv.model = ? AND cv.embed_fingerprint IN (${queryFingerprints.map(() => "?").join(", ")})
     LIMIT 1
   `).get(identity.model, ...queryFingerprints) != null;
