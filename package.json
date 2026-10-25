@@ -1,6 +1,6 @@
 {
   "name": "@wei840222/qmd",
-  "version": "2026.10.19",
+  "version": "2026.10.25",
   "description": "Hybrid search for markdown with local BM25 and remote embedding, expansion, and reranking APIs",
   "author": "Wan, Jiun Wei <wei840222@gmail.com>",
   "license": "MIT",
