@@ -1723,7 +1723,8 @@ pnpm dict:sync -- --update-pins
 ```
 
 `dict:sync` records the generated asset's SHA-256 in the source configuration.
-Review the resulting pin and dictionary diff before committing an update.
+Review the resulting pin and dictionary diff, and update
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) to match before committing.
 
 ## Score Normalization & Fusion
 

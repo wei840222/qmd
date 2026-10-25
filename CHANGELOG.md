@@ -4,6 +4,10 @@
 
 ### Changed
 
+- Refresh the bundled Chinese dictionary from zhtw-mcp and use Jieba 2.0.4.
+  Add terms such as `請求標頭` and `虛擬實境`; mathematical terms reclassified
+  upstream follow the existing domain selection. Synchronize third-party notices
+  with the source pins and full copyright attribution.
 - Require Node.js 26 or newer and run CI/publishing on Node 26. Upgrade the
   MCP server SDK, Zod, Vitest, and the Vite override to patched releases; remove
   the obsolete audit exception for a withdrawn advisory.

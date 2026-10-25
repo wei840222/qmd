@@ -85,7 +85,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.0",
-    "@node-rs/jieba": "2.0.3",
+    "@node-rs/jieba": "2.0.4",
     "@typesafe-ai/sdk": "^0.6.0",
     "fast-glob": "3.3.3",
     "lru-cache": "^11.5.3",

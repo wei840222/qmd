@@ -38,6 +38,8 @@ describe("versioned Chinese dictionary", () => {
     expect(capability.cut("CC霜", false)).toEqual(["CC霜"]);
     expect(capability.cut("使用快取記憶體與執行緒佇列", false))
       .toEqual(["使用", "快取記憶體", "與", "執行緒", "佇列"]);
+    expect(capability.cut("檢查請求標頭與觸控板", false))
+      .toEqual(["檢查", "請求標頭", "與", "觸控板"]);
     expect((await analyzeCjk("相依性雜湊佇列")).word).toBe("相依性 雜湊 佇列");
   });
 
