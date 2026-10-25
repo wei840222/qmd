@@ -4,6 +4,13 @@
 
 ### Changed
 
+- `qmd cleanup` repacks sparse vector chunks within each collection partition
+  when fewer than 90% of the chunk reads are needed for its live rows. The
+  repack preserves vector bytes, rowids, chunk metadata, and embedding identity;
+  it makes no provider request. Each chunk moves in its own short transaction,
+  so an interrupted run leaves a consistent table. Cleanup and
+  `qmd cleanup --dry-run` report the chunk layout. Upstream pull request 1025
+  (thanks @brettdavies).
 - The vector index is partitioned by collection. Each embedded chunk is
   stored once per collection that holds it, under an integer collection id,
   so a collection-scoped `qmd query` or `qmd vsearch` scans only that
