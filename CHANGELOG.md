@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Consolidate query syntax into the README and bundled agent reference; remove
+  the duplicate `docs/SYNTAX.md` and update CLI help. Clarify expansion versus
+  model-free retrieval, typed-query validation, intent handling, and MCP payloads.
+
 ## [2026.10.25] - 2026-10-25
 
 ### Changed

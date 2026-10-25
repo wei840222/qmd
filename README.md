@@ -586,21 +586,82 @@ and `deep-search` (→ `query`).
 
 ### Query Syntax
 
-`qmd query` takes either one policy query or a multi-line query document. The full
-grammar and examples are in [docs/SYNTAX.md](docs/SYNTAX.md).
+Use a plain query when you want QMD to choose search variants, or supply typed
+queries when you want to control keyword and semantic retrieval yourself.
 
 ```sh
-qmd query "how does auth work"                       # auto: expands unless the query is CJK or has a strong lexical match
-qmd query --expand "how does auth work"              # force expansion
-qmd query "lex: authentication"                      # skip expansion (BM25 keywords only)
-
-# A query document: you write the lex/vec/hyde lines yourself, plus an optional intent line
-qmd query $'intent: web page load times\nlex: performance\nvec: how to improve performance'
+qmd search '"rate limiter" -sports'                 # model-free keyword search
+qmd query "how does auth work"                     # automatic expansion policy
+qmd query --expand "how does auth work"            # force remote expansion
+qmd query "lex: authentication"                    # skip expansion; other remote stages can still run
 ```
 
-- A query document allows only `lex:`, `vec:`, `hyde:`, and one optional `intent:` line; `intent:` cannot stand alone.
-- `intent:` is background context for ambiguous queries. It steers expansion, reranking, and snippet selection but does not search on its own.
-- `--expand` cannot be combined with `lex:`, and a policy query cannot be mixed with typed lines.
+For plain `qmd query` input, the expansion policy is:
+
+| Input | Policy | Behavior |
+|-------|--------|----------|
+| Unprefixed text | `auto` | A strong keyword match can skip expansion. CJK queries skip expansion when no expansion-capable service is configured; with one configured, they can expand. Context and relative-time wording can prevent the strong-match shortcut. |
+| `expand: text` or `--expand` | `force` | Request expansion even when an automatic shortcut would apply. Fail if the service cannot produce usable variants. |
+| Standalone `lex: text` | `skip` | Skip expansion, while retaining original-query keyword retrieval and vector retrieval when a searchable vector index exists. |
+
+Skipping expansion is not an offline guarantee: vector retrieval can still call
+the embedding API, and reranking is enabled by default. `--no-rerank` disables
+reranking only. Use `qmd search` for model-free CLI search.
+
+**Keyword operators** work in `qmd search` and typed `lex` queries:
+
+| Syntax | Meaning | Example |
+|--------|---------|---------|
+| `word` | Prefix match; positive terms are AND-combined | `perf` matches `performance` |
+| `"phrase"` | Match consecutive tokens in order | `"rate limiter"` |
+| `-word` | Exclude a term | `auth -oauth` |
+| `-"phrase"` | Exclude a phrase | `auth -"test data"` |
+
+Include at least one positive term; a query containing only exclusions returns no
+matches. Separator-containing terms such as `multi-agent` and `src/lib/i18n.ts`
+match adjacent tokens rather than a word prefix. CJK uses character-phrase
+matching instead of ordinary word-prefix matching.
+
+**Typed query documents** bypass automatic expansion. Each non-empty line names
+the retrieval method and the text to search:
+
+| Type | Supply | Retrieval |
+|------|--------|-----------|
+| `lex:` | Keywords, identifiers, or quoted phrases | Local BM25 |
+| `vec:` | A natural-language question or description | Remote embedding and vector search |
+| `hyde:` | A hypothetical answer passage | Remote embedding and vector search |
+
+```bash
+# Bash/Zsh: $'...' turns \n into actual newlines
+qmd query $'lex: rate limiter\nvec: how does the API limit burst traffic'
+qmd query 'hyde: The API uses a token bucket to limit bursts and returns HTTP 429 when the quota is exhausted.'
+
+# Optional intent provides context for reranking
+qmd query $'intent: web page load times\nlex: performance\nvec: how to improve performance'
+qmd query --intent "web page load times" "performance"
+```
+
+Put your strongest search first: it receives 2x weight in structured rank fusion.
+`vec` and `hyde` need remote embedding configuration and a compatible vector index;
+reranking still defaults to enabled. A single `vec:` or `hyde:` line is also a
+typed document; a single `lex:` line uses the plain-query `skip` policy above.
+
+- Every non-empty document line must use `lex:`, `vec:`, `hyde:`, or `intent:`
+  with non-empty text. Blank lines are ignored and surrounding whitespace is
+  trimmed; a final newline is optional.
+- At most one `intent:` line is allowed, in any position, alongside at least one
+  search line. CLI `--intent` overrides inline intent and supplies reranking
+  context; intent is not a search term.
+- Do not mix plain text or `expand:` with typed document lines. `--expand` with a
+  standalone `lex:` policy is an error.
+- Keep each search on one line. Lexical quotes must be balanced; `-term` and
+  `-"phrase"` exclusions belong in lexical queries, not `vec` or `hyde` text.
+
+Use `-c docs -c notes` to scope collections; see [Collection Filtering](#collection-filtering).
+For MCP, send typed lines as a `searches` array rather than a multiline `query`
+string. The [MCP parameter reference](#mcp-tool-parameters) covers the tool schema;
+the bundled [agent query reference](skills/qmd/references/query-syntax.md) covers
+validation, context precedence, and request examples.
 
 ### Options
 
@@ -616,7 +677,7 @@ qmd query $'intent: web page load times\nlex: performance\nvec: how to improve p
 --filter <json>    # Metadata filter (recursive JSON AST; see Metadata Filtering)
 --index <name>     # Use named index
 --intent "<text>"  # Background context for ambiguous queries, same as an `intent:` line
-                   # (steers expansion, reranking, and snippets; e.g. "web page load times")
+                   # (CLI query reranking context; e.g. "web page load times")
 --no-rerank        # Skip remote reranking (RRF scores only)
 -C, --candidate-limit <n>  # Max candidates to rerank (default: 40)
 --full-path        # Emit on-disk filesystem paths instead of qmd:// URIs
@@ -1517,8 +1578,8 @@ const published = await store.search({
 })
 ```
 
-For simple queries, explicit `force` or `skip` overrides `auto`. Under `auto`, CJK
-queries and strong lexical matches skip model expansion; other queries expand.
+For simple queries, explicit `force` or `skip` overrides `auto`. The automatic
+shortcuts and remote requirements are described under [Query Syntax](#query-syntax).
 Supplying `queries` bypasses expansion policy evaluation entirely.
 
 For direct backend access:

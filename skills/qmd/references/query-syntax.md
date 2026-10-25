@@ -1,136 +1,154 @@
 # QMD Query Syntax Reference
 
-QMD accepts plain queries or structured documents of typed sub-queries. The hybrid
-engine fuses results via Reciprocal Rank Fusion (RRF) and reranks them by default.
-Expansion, embedding, and reranking use explicitly configured remote APIs; no
-local inference or automatic model download is available.
+Use this reference to construct CLI queries and MCP requests. The
+[README query guide](../../../README.md#query-syntax) explains the user-facing
+search choices. Remote expansion, embedding, and reranking use configured APIs;
+there is no local inference fallback or model download.
 
-## Grammar
+## Choose the input form
 
-```ebnf
-query          = policy_query | query_document ;
-policy_query   = [ policy_prefix ] text ;
-policy_prefix  = "lex:" | "expand:" ;
-query_document = [ intent_line ] { typed_line } ;
-intent_line    = "intent:" text newline ;
-typed_line     = type ":" text newline ;
-type           = "lex" | "vec" | "hyde" ;
-text           = quoted_phrase | plain_text ;
-quoted_phrase  = '"' { character } '"' ;
-plain_text     = { character } ;
-newline        = "\n" ;
-```
+| Input | CLI `qmd query` | MCP `query` tool |
+|-------|-----------------|------------------|
+| Plain text | Shared expansion policy, then hybrid retrieval | Use the `query` string |
+| Standalone `lex: text` | Plain-query policy: skip expansion | Same policy inside the `query` string |
+| Standalone `expand: text` | Plain-query policy: force expansion | Same policy inside the `query` string |
+| Typed `lex` / `vec` / `hyde` searches | A query document; a single `vec:` or `hyde:` line also qualifies | Use the `searches` array, not a multiline `query` string |
 
-## Query Types
+A single CLI `lex:` line is deliberately routed through the plain-query policy.
+To supply a typed lexical document, use multiple search lines or an `intent:`
+line plus a `lex:` line. For straightforward model-free CLI search, prefer
+`qmd search`.
 
-| Type | Method | Best For | Description |
-|------|--------|----------|-------------|
-| `lex` | BM25 (FTS5) | Exact terms, identifiers, code, titles | Keyword search with prefix, phrase, and negation support |
-| `vec` | Vector | Natural language concepts | Semantic similarity search using remote embeddings and a compatible vector index |
-| `hyde` | Vector | Complex conceptual questions | Embed the hypothetical passage supplied by the caller through the remote embedding provider |
+## Expansion and remote calls
 
-## Default Policy & Expansion Behavior
+Plain queries use `auto` by default:
 
-A query is either a single policy query or a multi-line query document:
-- **`auto` (Default)**: Strong lexical matches can bypass expansion. CJK skips expansion when no expansion-capable service is configured; with one configured, CJK can expand. Relative temporal terms and supplied expansion/rerank context prevent the strong-match shortcut. Other plain queries require remote expansion into typed variants.
-- **`expand:` / `--expand` (`force`)**: Explicitly forces expansion even if bypass heuristics apply.
-- **`lex:` (`skip`)**: Disables expansion. CLI typed `lex:` queries perform lexical retrieval; the MCP plain-query path can still retrieve vectors from an available index. Use explicit typed searches for a strictly lexical MCP request.
+- A strong lexical match can bypass expansion, except when relative-time wording
+  or non-empty expansion/rerank context disables that shortcut.
+- CJK skips expansion when no expansion-capable service is configured. With one
+  configured, CJK can expand.
+- `expand:` or CLI `--expand` selects `force`; standalone `lex:` selects `skip`.
+  For MCP plain queries, set `expansion` to `auto`, `force`, or `skip`. Explicit
+  policies override `auto`; a `lex:` directive conflicts with `force`.
+- Forced expansion fails if no usable variants are produced; it does not
+  silently continue unexpanded.
 
-```bash
-# Automatic policy:
-qmd query "how does authentication work"
+Skipping expansion retains original-query keyword retrieval and, when a
+searchable vector index exists, remote embedding and vector retrieval. It does
+not disable reranking. Thus even CLI `qmd query --no-rerank 'lex: auth'` is not an
+offline guarantee.
 
-# Force expansion:
-qmd query "expand: how does authentication work"
-# or: qmd query --expand "資料庫同步"
+Typed searches bypass expansion policy evaluation. Each `lex` search uses local
+BM25; `vec` and `hyde` use remote embeddings and need a compatible vector index
+for vector retrieval. Reranking defaults to enabled in both input forms. Disable
+it with CLI `--no-rerank` or MCP/SDK `rerank: false`.
 
-# Explicitly lexical, without remote reranking:
-qmd query --no-rerank "lex: authentication"
-```
+CLI `--no-hyde` / SDK `includeHyde: false` controls generated expansion variants;
+it does not remove a typed HyDE passage supplied by the caller.
 
-Skipping expansion does not disable reranking. `qmd search` is the simplest
-model-free CLI path. For MCP, use `searches` containing only `lex` entries and
-`rerank: false`. Plain `query` with `expansion: "skip"` alone is not an offline
-guarantee. Missing required remote settings produce an error, not a local fallback.
+## CLI query documents and validation
 
-## Lexical Search Syntax (`lex:`)
-
-Lex queries support powerful search operators:
-
-| Syntax | Meaning | Example | Notes |
-|--------|---------|---------|-------|
-| `word` | Prefix match | `perf` | Matches "performance", "perform", etc. |
-| `"phrase"` | Exact phrase match | `"rate limiter"` | Terms must appear consecutively in order |
-| `-word` | Exclude term | `-sports` | Documents containing this word are excluded |
-| `-"phrase"` | Exclude phrase | `-"test data"` | Documents containing this phrase are excluded |
-
-### Examples
-
-```
-lex: CAP theorem consistency
-lex: "machine learning" -"deep learning"
-lex: auth -oauth -saml
-```
-
-## Vector Search Syntax (`vec:`)
-
-Natural language questions or descriptive phrases:
-
-```
-vec: how does the rate limiter handle burst traffic
-vec: what is the tradeoff between consistency and availability
-```
-
-## Hypothetical Document Embeddings (`hyde:`)
-
-A 50–100 word hypothetical answer passage representing what the target document likely says:
-
-```
-hyde: The rate limiter uses a sliding window counter algorithm with a 60-second window. When a client exceeds 100 requests per minute, subsequent requests return 429 Too Many Requests.
-```
-
-## Multi-Line Structured Queries
-
-Combine query types when the required remote services are available. The first
-sub-query receives **2x weight** during Reciprocal Rank Fusion. Typed queries
-bypass automatic expansion; `vec`/`hyde` still require remote embedding and a
-compatible index, and reranking remains enabled unless explicitly disabled:
-
-```
-lex: rate limiter algorithm
-vec: how does rate limiting work in the API
-hyde: The API implements rate limiting using a token bucket algorithm...
-```
-
-## Disambiguating with `intent:`
-
-An optional `intent:` line provides background context to disambiguate ambiguous queries. It steers query expansion, reranking, and snippet selection without generating search vectors itself:
-
-- At most one `intent:` line per query document.
-- Must be combined with at least one `lex:`, `vec:`, or `hyde:` line.
-- Can also be passed via the `--intent` CLI flag or MCP `intent` parameter.
-
-```
-intent: web page load times and Core Web Vitals
-lex: performance
-vec: how to improve performance
-```
-
-## Collection Scoping
-
-Scope search to specific collections using `-c` (CLI) or `collections` (MCP/SDK):
+In Bash/Zsh, `$'...'` converts `\n` into real newlines. Other callers must supply
+actual newline characters; a literal backslash followed by `n` is not a line
+separator.
 
 ```bash
-# CLI:
-qmd query -c docs "how does auth work"
+qmd query $'lex: rate limiter\nvec: how does the API limit burst traffic'
+qmd query 'hyde: The API uses a token bucket and rejects excess requests with HTTP 429.'
+qmd query --no-rerank $'lex: authentication\nlex: auth token'
+```
+
+- Each non-empty line must be `lex: text`, `vec: text`, `hyde: text`, or
+  `intent: text`, with non-empty text. Prefixes are case-insensitive; use the
+  canonical lowercase spelling.
+- Blank lines are ignored; leading/trailing whitespace is trimmed. The last line
+  does not require a newline.
+- At least one search line is required. At most one `intent:` line is allowed,
+  in any position; it cannot stand alone. Search types may repeat.
+- Do not mix untyped lines or `expand:` lines into a document. `--expand` is a
+  plain-query policy, not a request to expand caller-supplied typed searches.
+- Each search text must stay on one line. Lexical quotes must be balanced.
+  Semantic `vec`/`hyde` text rejects token-boundary exclusions such as `-term`
+  and `-"phrase"`; ordinary hyphenated words remain valid.
+
+The first supplied search receives 2x weight in structured Reciprocal Rank Fusion;
+other searches receive 1x. This refers to search order, not collection order or
+which search happens to return results first. Put the strongest signal first.
+
+## Search text by type
+
+### Lexical (`lex` or `qmd search`)
+
+| Form | Meaning |
+|------|---------|
+| `perf` | Word-prefix match, such as `performance` |
+| `auth token` | Positive terms combined with AND |
+| `"rate limiter"` | Consecutive tokens in order |
+| `auth -oauth` | Positive match excluding a term |
+| `auth -"test data"` | Positive match excluding a phrase |
+
+A query made only of negative terms returns no matches. Separator-containing
+terms such as `multi-agent`, `2026.4.10`, and `src/lib/i18n.ts` become adjacent-token
+phrases without ordinary word-prefix expansion. CJK terms use character phrases.
+
+### Semantic (`vec`)
+
+Use natural-language questions or descriptions, not lexical operators:
+
+```text
+vec: what tradeoff does the design make between consistency and availability
+```
+
+### Hypothetical passage (`hyde`)
+
+Supply a plausible answer passage in the target document's style. Around 50–100
+words can be useful; this is writing guidance, not a validated length requirement.
+The supplied passage is embedded directly, not generated by the HyDE search.
+
+```text
+hyde: The rate limiter uses a sliding window counter. When a client exceeds its quota, subsequent requests return HTTP 429 until the window advances.
+```
+
+## Intent and context precedence
+
+Intent disambiguates searches; it is not an extra search term or vector.
+
+- CLI `--intent` overrides an inline `intent:` line. For `qmd query`, it supplies
+  `rerankContext`, not `expansionContext`; do not promise it steers expansion.
+- MCP `intent` is a fallback for both `expansionContext` and `rerankContext`.
+  An explicitly supplied context wins independently for its stage.
+- Typed searches do not expand, regardless of intent.
+
+```bash
+qmd query $'intent: web page load times and Core Web Vitals\nlex: performance\nvec: how to reduce page load time'
+qmd query --intent 'web page load times' 'performance'
+```
+
+## Collection scoping
+
+Use repeatable CLI `-c <name>` or the plural MCP `collections` array. Names are
+OR-combined and work from any directory. CLI and MCP searches without explicit
+scoping use collections included in default queries; naming an excluded
+collection includes it for that request. A singular MCP `collection` field is
+not the supported scope parameter.
+
+SDK `store.search()` also accepts `collections`, but does not apply the CLI/MCP
+default-inclusion policy. Pass collection names explicitly when the SDK caller
+needs that scope; omission leaves collection scope unrestricted.
+
+```bash
 qmd query -c docs -c notes $'lex: auth\nvec: authentication flow'
 ```
 
-## MCP Tool Call Payloads
+## MCP tool requests
 
-When calling the `qmd` MCP server's `query` tool, provide a structured `searches` array:
+The `query` tool accepts one plain `query` string or a non-empty `searches` array,
+not both. Typed arrays contain at most 10 searches. Each entry has `type` and
+`query`, and each query text must be non-empty and single-line. Typed `lex`
+entries bypass expansion and vector retrieval; explicitly disable reranking for
+model-free operation.
 
-### Model-Free Lexical Query
+### Model-free lexical request
 
 ```json
 {
@@ -141,23 +159,9 @@ When calling the `qmd` MCP server's `query` tool, provide a structured `searches
 }
 ```
 
-Use either `query` or `searches`, never both. The examples below require the
-remote services used by their retrieval, expansion, and reranking stages.
+### Typed retrieval with intent
 
-### Standard Multi-Modal Query
-
-```json
-{
-  "searches": [
-    { "type": "lex", "query": "CAP theorem" },
-    { "type": "vec", "query": "consistency vs availability tradeoffs in distributed storage" }
-  ],
-  "collections": ["docs"],
-  "limit": 10
-}
-```
-
-### Query with Disambiguating Intent
+This example requires remote embeddings and enabled reranking configuration:
 
 ```json
 {
@@ -165,13 +169,13 @@ remote services used by their retrieval, expansion, and reranking stages.
     { "type": "lex", "query": "performance metrics" },
     { "type": "vec", "query": "page load and network latency optimization" }
   ],
-  "intent": "Front-end web performance and Core Web Vitals optimization",
+  "intent": "Front-end web performance and Core Web Vitals",
   "collections": ["frontend", "notes"],
   "limit": 5
 }
 ```
 
-### Plain Query with Policy Control & Explain Trace
+### Plain query with policy and explain output
 
 ```json
 {
@@ -181,3 +185,8 @@ remote services used by their retrieval, expansion, and reranking stages.
   "collections": ["docs"]
 }
 ```
+
+These payloads describe the MCP tool over stdio or HTTP `/mcp`. The REST aliases
+`POST /query` and `POST /search` instead require a typed `searches` array; they do
+not support the plain-query alternative or the MCP `intent` alias. Use
+`rerankContext` for reranking context on those typed-only routes.

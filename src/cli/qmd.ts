@@ -4214,21 +4214,20 @@ function showHelp(): void {
   console.log("  qmd cleanup [--dry-run]       - Drop inactive docs/orphans, compact FTS, vacuum");
   console.log("");
   console.log("Query syntax (qmd query):");
-  console.log("  QMD queries are either a single policy query or a multi-line");
-  console.log("  document where every line is typed with lex:, vec:, or hyde:. This grammar");
-  console.log("  matches the docs in docs/SYNTAX.md and is enforced in the CLI.");
+  console.log("  QMD queries are either a single policy query or a typed document.");
+  console.log("  Documents contain lex:, vec:, or hyde: searches and optional intent: context.");
+  console.log("  See README.md#query-syntax for usage and skills/qmd/references/query-syntax.md for agent details.");
   console.log("");
   const grammar = [
     `query          = policy_query | query_document ;`,
     `policy_query   = [ "lex:" ] text | explicit_expand ;`,
     `explicit_expand= "expand:" text ;`,
-    `query_document = [ intent_line ] { typed_line } ;`,
-    `intent_line    = "intent:" text newline ;`,
-    `typed_line     = type ":" text newline ;`,
+    `query_document = typed_line { newline typed_line } ;`,
+    `typed_line     = search_line | intent_line ;`,
+    `search_line    = type ":" text ;`,
+    `intent_line    = "intent:" text ;`,
     `type           = "lex" | "vec" | "hyde" ;`,
-    `text           = quoted_phrase | plain_text ;`,
-    `quoted_phrase  = '"' { character } '"' ;`,
-    `plain_text     = { character } ;`,
+    `text           = character { character } ;`,
     `newline        = "\\n" ;`,
   ];
   console.log("  Grammar:");
@@ -4245,12 +4244,15 @@ function showHelp(): void {
   console.log("    qmd query $'hyde: Hypothetical answer text'       # hyde-only document");
   console.log("");
   console.log("  Constraints:");
-  console.log("    - auto skips expansion for CJK or a strong lexical signal; otherwise it expands.");
+  console.log("    - auto can skip expansion for strong lexical matches, or CJK without an expansion service.");
   console.log("    - --expand or expand: selects force; standalone lex: selects skip.");
   console.log("    - --expand combined with lex: is an error; explicit directives beat auto.");
   console.log("    - Standalone policy queries cannot mix with typed lines.");
-  console.log("    - Query documents allow only lex:, vec:, or hyde: prefixes.");
-  console.log("    - Each typed line must be single-line text with balanced quotes.");
+  console.log("    - Query documents require a search line and at most one intent: line, in any position.");
+  console.log("    - Empty lines are ignored; text must be non-empty; a final newline is optional.");
+  console.log("    - Search text must be single-line; lexical quotes must be balanced.");
+  console.log("    - Use lexical queries for -term or -\"phrase\" exclusions, not vec:/hyde:.");
+  console.log("    - Skipping expansion does not disable embedding or reranking; use qmd search for model-free CLI search.");
   console.log("");
   console.log("AI agents & integrations:");
   console.log("  - Run `qmd mcp` to expose the MCP server (stdio) to agents/IDEs.");

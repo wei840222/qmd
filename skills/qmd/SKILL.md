@@ -91,7 +91,9 @@ Structured query fields:
 Use only the fields that help the request. A plain `qmd query "..."` follows the
 expansion policy; it may call remote expansion, embedding, and reranking services.
 Typed `vec:` and `hyde:` queries require remote embeddings; typed `lex:` does
-not. Reranking is enabled by default even for a lexical structured query.
+not. A standalone CLI `lex:` line is a plain-query expansion policy and may still
+retrieve vectors; use a multiline document for typed lexical retrieval.
+Reranking is enabled by default even for a lexical structured query.
 
 For a single rare token or a verbatim phrase, prefer `qmd search`. To inspect
 structured ranking, use `--explain`; for model-free structured lexical search,
@@ -99,7 +101,7 @@ also disable reranking:
 
 ```bash
 qmd query --format json --explain $'intent: ...\nlex: ...\nvec: ...'  # inspect ranking
-qmd query --no-rerank 'lex: authentication'                       # lexical only
+qmd query --no-rerank $'lex: authentication\nlex: auth token'     # typed lexical only
 ```
 
 If a required remote provider is missing or fails, QMD reports an error rather
@@ -345,7 +347,8 @@ qmd query $'intent: Find the customer proximity concept, not generic customer de
 qmd search "six-week cadence WhatsApp merchant relationships Shawn Ryan" -c sources -n 10
 ```
 
-For the complete EBNF grammar, search operators, and JSON payload specifications, see [Query Syntax Reference](references/query-syntax.md).
+For query forms, validation rules, search operators, and MCP payloads, see
+[Query Syntax Reference](references/query-syntax.md).
 
 ## Setup and maintenance
 
