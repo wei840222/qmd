@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Refresh the vendor TypeSafe skill from its tracked upstream with Skills CLI.
 - Organize README around human architecture/usage and AGENTS around coding
   workflows/invariants. Align them and example configuration with writable-only
   vector upgrades, offline backups/restore, read-only MCP and systemd operation,
