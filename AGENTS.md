@@ -1,242 +1,173 @@
-# QMD - Query Markup Documents
+# QMD Coding Agent Guide
 
-Use Node.js (>=24.21.0) and pnpm (`pnpm` not `npm` or `bun`, `pnpm install` not `npm install`).
+Use this file when changing QMD. The README explains the architecture and usage
+for human readers; keep implementation instructions and safeguards here.
 
-## Commands
+## Working conventions
 
-```sh
-qmd collection add . --name <n>   # Create/index collection
-qmd collection list               # List all collections with details
-qmd collection remove <name>      # Remove a collection by name
-qmd collection rename <old> <new> # Rename a collection
-qmd collection metadata [name...] # Discover metadata keys, types, and value counts (--match, --filter, --key-limit, --value-limit)
-qmd init                          # Create a project-local .qmd index
-qmd ls [collection[/path]]        # List collections or files in a collection
-qmd context add [path] "text"     # Add context for path (defaults to current dir)
-qmd context list                  # List all contexts
-qmd context check                 # Check for collections/paths missing context
-qmd context rm <path>             # Remove context
-qmd get <file>[:from[:count]]     # Get by path or docid (#abc123); optional line range
-qmd multi-get <pattern>           # Get multiple docs by glob or comma-separated list
-qmd status                        # Show index status and collections
-qmd doctor                        # Diagnose config, index, model, and device issues
-qmd update                        # Re-index collections; configured update hooks run first
-qmd trust [list|revoke]           # Approve a checked-in .qmd config's hooks/paths/models
-qmd embed                         # Generate vectors through the configured remote embedding API
-qmd cleanup [--dry-run]           # Drop inactive docs/orphans, compact FTS, vacuum
-qmd skills list|get|path          # List and retrieve bundled runtime skills
-qmd skill show|install            # Show or install the QMD skill (writes ./.agents/skills/qmd)
-qmd query <query>                 # Search with query expansion + reranking (recommended)
-qmd search <query>                # Full-text keyword search (BM25, no LLM)
-qmd vsearch <query>               # Vector similarity search (no reranking)
-qmd bench <fixture.json>          # Run search-quality benchmarks
-qmd mcp                           # Start MCP server (stdio transport)
-qmd mcp --http [--port N]         # Start MCP server (HTTP, default port 8181)
-qmd mcp --http --daemon           # Start as background daemon
-qmd mcp stop                      # Stop background MCP daemon
-```
+- Use Node.js >=24.21.0 and pnpm. Do not substitute npm or Bun commands.
+- Inspect the current tree and nearby tests before editing. Match existing code
+  and fixture conventions; keep changes within the requested scope.
+- Add user-facing changes under `## [Unreleased]` in `CHANGELOG.md` as you work.
+- Keep README explanations organized around architecture, setup, and use. Keep
+  this guide organized around where to change code, how to verify it, and the
+  constraints that must survive a change. `example-index.yml` is a copyable
+  configuration example: leave remote models opt-in and never add real keys.
+- Use the README for CLI flags and collection/context tutorials rather than
+  duplicating that command reference here.
 
-## Collection Management
+## Source map
 
-```sh
-# List all collections
-qmd collection list
+| Area | Files |
+|------|-------|
+| CLI commands and diagnostics | `src/cli/qmd.ts` |
+| Public SDK and config reconciliation | `src/index.ts` |
+| Store, indexing, retrieval, rerank caching, embedding builds, cleanup | `src/store.ts` |
+| Node SQLite connections and transactions | `src/db.ts` |
+| Vector tables, collection ids, row mappings | `src/vec-layout.ts` |
+| Versioned schema/layout conversion | `src/store-migrations.ts` |
+| Hybrid routing and fallback | `src/hybrid.ts` |
+| Expansion/chat/dedicated rerank requests | `src/remote-llm.ts` |
+| Embedding identity, leases, providers | `src/embedding/` |
+| CJK indexing and synchronized mutations | `src/search/cjk-index.ts` |
+| YAML collection/model config | `src/collections.ts` |
+| Metadata filters and discovery | `src/metadata-filter.ts`, `src/metadata-store.ts` |
+| Maintenance API and MCP transports | `src/maintenance.ts`, `src/mcp/server.ts` |
+| Tests and retrieval fixtures | `test/` |
 
-# Create a collection with explicit name
-qmd collection add ~/Documents/notes --name mynotes --mask '**/*.md'
-
-# Remove a collection
-qmd collection remove mynotes
-
-# Rename a collection
-qmd collection rename mynotes my-notes
-
-# Show collection details, including the top metadata keys
-qmd collection show mynotes
-
-# Discover metadata keys and values to filter on
-qmd collection metadata mynotes
-qmd collection metadata mynotes --match '{"field":"key","operator":"eq","value":"topics"}'
-qmd collection metadata mynotes --match '{"field":"value","operator":"eq","value":"docs-team"}'
-qmd collection metadata mynotes --match '{"field":"key","operator":"eq","value":"topics"}' --filter '{"field":"status","operator":"eq","value":"published"}'
-qmd collection metadata mynotes --key-limit 50 --key-offset 50   # next page of keys
-
-# Set or clear the pre-update hook (runs before re-indexing on `qmd update`)
-qmd collection update-cmd mynotes 'git pull --ff-only'
-qmd collection update-cmd mynotes            # clear
-
-# Include or exclude from default (unscoped) queries
-qmd collection exclude mynotes
-qmd collection include mynotes
-
-# List all files in a collection
-qmd ls mynotes
-
-# List files with a path prefix
-qmd ls journals/2025
-qmd ls qmd://journals/2025
-```
-
-## Context Management
+## Development and verification
 
 ```sh
-# Add context to current directory (auto-detects collection)
-qmd context add "Description of these files"
-
-# Add context to a specific path
-qmd context add /subfolder "Description for subfolder"
-
-# Add global context to all collections (system message)
-qmd context add / "Always include this context"
-
-# Add context using virtual paths
-qmd context add qmd://journals/ "Context for entire journals collection"
-qmd context add qmd://journals/2024 "Journal entries from 2024"
-
-# List all contexts
-qmd context list
-
-# Check for collections or paths without context
-qmd context check
-
-# Remove context
-qmd context rm qmd://journals/2024
-qmd context rm /  # Remove global context
-```
-
-## Document IDs (docid)
-
-Each document has a unique short ID (docid) - the first 6 characters of its content hash.
-Docids are shown in search results as `#abc123` and can be used with `get` and `multi-get`:
-
-```sh
-# Search returns docid in results
-qmd search "query" --json
-# Output: [{"docid": "#abc123", "score": 0.85, "file": "docs/readme.md", ...}]
-
-# Get document by docid
-qmd get "#abc123"
-qmd get abc123              # Leading # is optional
-
-# Docids also work in multi-get comma-separated lists
-qmd multi-get "#abc123, #def456"
-```
-
-## Options
-
-```sh
-# Search & retrieval
--c, --collection <name>  # Restrict search to collection(s) (repeatable)
--n <num>                 # Number of results
---all                    # Return all matches
---min-score <num>        # Minimum score threshold
---full                   # Show full document content
---intent <text>          # Describe what you're after to sharpen ranking (query)
---no-rerank              # Skip LLM reranking (faster, lower quality)
---full-path              # Show on-disk paths instead of qmd:// URIs
-
-# Get / multi-get
--l <num>                 # Maximum lines per file
---max-bytes <num>        # Skip files larger than this (default 64KB)
---no-line-numbers        # Disable line numbers (on by default for get/multi-get)
-
-# Output format (search, query, multi-get)
---format <kind>          # cli (default) | json | csv | md | xml | files
-                         # legacy --json/--csv/--md/--xml/--files still work as aliases
-```
-
-## Development
-
-```sh
-pnpm qmd <command>       # Run from source (or: npx tsx src/cli/qmd.ts <command>)
-npm link                 # Install globally as 'qmd'
-```
-
-## Tests & Benchmarks
-
-All tests live in `test/`. Run everything:
-
-```sh
+pnpm install --frozen-lockfile
+pnpm run build
+pnpm qmd --help
+# Example focused test; choose the file affected by your change
+pnpm exec vitest run --reporter=verbose test/collections-config.test.ts
+pnpm run lint
+pnpm exec tsc -p tsconfig.json --noEmit
 pnpm test
-npx vitest run --reporter=verbose test/
 ```
 
-Run CJK evaluation & benchmarks:
+Choose focused tests for the change, then run the checks appropriate to shipping
+it. `pnpm test` runs the build-config typecheck, Vitest, and package smoke; it
+**does not** replace the separate full-project `tsconfig.json` check above.
 
-```sh
-pnpm run test:quality   # Run CJK search retrieval quality tests (test/eval-cjk.test.ts)
-pnpm run measure:cjk    # Measure CJK rebuild latency, DB payload size, and recall/MRR
-```
+| Change | Additional verification |
+|--------|-------------------------|
+| Retrieval, CJK, ranking | `pnpm run test:quality`; retain retrieval-quality regressions |
+| CJK size/latency | `pnpm run measure:cjk` |
+| Remote runtime | `pnpm run test:remote` with mocks or loopback HTTP |
+| Packaging/native grammars | `pnpm run test:package` |
+| Docs/example config | Parse YAML and changed shell/JSON examples; check claims against source |
 
-## Architecture
+Builds stamp the source commit in `dist/cli/build-info.json`; check
+`qmd --version` for the commit as well as the package version. A linked global
+CLI runs from its resolved checkout. Do not update a live install as a side
+effect of tests or documentation work.
 
-- SQLite FTS5 for full-text search (BM25)
-- sqlite-vec for vector similarity search
-- Remote embedding APIs (OpenAI-compatible and Voyage), expansion/reranking endpoints, and TypeSafe Jev; no local inference or model downloads
-- Reranking order (`src/hybrid.ts`): a configured `models.rerank_api_*` endpoint is used first. TypeSafe Jev reranks only when none is configured, or as a fallback when that API fails (never after cancellation). Jev still classifies intent for query expansion either way.
-- Rerank API: a `rerank_api_url` ending in `/rerank` posts `{model, query, documents}` and reads Cohere-style `results[].{index, relevance_score}`; one ending in `/chat/completions` scores with an LLM. Voyage's own `/v1/rerank` answers with `data`, not `results`, so reach it through a Cohere-shaped gateway or proxy.
-- `RemoteLLM` has no circuit breaker: a failed expansion or rerank request rejects, and the next request tries the endpoint again, so a recovered backend works on a long-running client such as `qmd mcp --http`. When Jev is the rerank fallback, `Hybrid` skips a failed rerank API for a cooldown (60 seconds by default, `rerankCooldownMs` on `Hybrid`) so an outage does not make every query wait for the request timeout; without Jev there is nothing to fall back to, so every request tries the API.
-- Rerank scores are cached under the model that produced them (the result's `model`), and results map back to chunks by `index`, not filename. When a fallback answers while other chunks came from the preferred model's cache, every chunk is rescored in one call so a ranking never mixes two models' scores.
-- Vectors live in one vec0 table partitioned by collection id (`vectors_by_collection`), one row per chunk and collection. `vector_rows` maps each rowid to `(hash, seq, collection_id)` and `vector_collection_ids` maps names to ids. `src/vec-layout.ts` is the only place that spells these table names; `src/store-migrations.ts` owns the versioned `PRAGMA user_version` steps, including the one-time conversion from the legacy `vectors_vec` table. `qmd embed` and `qmd update` copy an already-embedded chunk into a collection that gains it instead of embedding it again; The copy only adds rows from bytes already stored, so it needs no lease and deletes nothing: a chunk with no vector anywhere keeps its metadata, is counted as pending, and `qmd embed` recreates just that chunk.
-- Reciprocal Rank Fusion (RRF) for combining results
-- Smart chunking: 900 tokens/chunk with 15% overlap, prefers markdown headings as boundaries
-- AST-aware chunking: use `--chunk-strategy auto` to chunk code files (.ts/.js/.py/.go/.rs) at function/class/import boundaries via tree-sitter. Default is `regex` (existing behavior). Markdown and unknown file types always use regex chunking.
+## Runtime contract
 
-## Important: Do NOT run automatically
+- Keep BM25, CJK, AST, document reads, collections/contexts, and maintenance usable
+  without models. Embedding, expansion, and reranking use explicitly configured
+  remote APIs. Never add local inference, model downloads, automatic remote
+  requests, or silent embedding-provider fallback.
+- `qmd pull` is retired: it must exit nonzero without downloads. Do not restore
+  retired local-model classes, training/conversion tools, Python ML locks, or
+  GPU/Bun container workflows. Preserve legacy-index recognition/rejection tests.
+- Keep chunking identities compatible. Default strategy is `regex`; `auto` uses
+  tree-sitter for supported code files, while Markdown/unknown types use regex.
+- Preserve metadata-filter semantics, bound SQL parameters, CJK publication and
+  synchronized document/collection mutations when changing retrieval or storage.
 
-- Never run `qmd collection add`, `qmd embed`, or `qmd update` automatically
-- Never modify the SQLite database directly
-- Write out example commands for the user to run manually
-- Index is stored at `~/.cache/qmd/index.sqlite`
-- The first command that opens an index older than the per-collection vector layout converts it in place, and an older build cannot read the result. Tell the user to back up `~/.cache/qmd/index.sqlite*` first; never open the real index to try it
+## Index safety
 
-## Building
+- Tests use temporary databases. Never open `~/.cache/qmd/index.sqlite` to test a
+  change, migration, or documentation example. Never edit SQLite data directly.
+- Do not run `qmd collection add`, `qmd embed`, or `qmd update` automatically;
+  provide manual examples unless the user explicitly authorizes the operation.
+- The first **writable** store open can migrate an older vector layout. MCP,
+  read-only SDK stores, and `qmd status` do not run that migration. `qmd doctor`
+  can open writable when it parses a config. `qmd cleanup --dry-run` also opens
+  writable before previewing: it skips cleanup actions, not initialization.
+- A real-index upgrade requires explicit user authorization. Stop all holders,
+  copy the main database and existing WAL/SHM while quiescent, and verify the
+  backup before official initialization (for example `qmd ls`). Do not use
+  embed/update as an upgrade step. Verify retained vector bytes, documents, and
+  embedding identity before restarting clients.
+- Rollback must move aside every converted component and restore the exact
+  backup set. Never mix an old main file with new WAL/SHM. Without a pre-upgrade
+  backup, an older layout requires a full paid embedding rebuild.
 
-- `pnpm run build` compiles TypeScript to `dist/` via `tsc -p tsconfig.build.json`
+## Vector and embedding invariants
 
-## Releasing
+- Keep table names in `src/vec-layout.ts`. `vectors_by_collection` is partitioned
+  by integer collection id; `vector_rows` maps rowids to `(hash, seq, collection_id)`;
+  `vector_collection_ids` maps names to ids.
+- Preserve identity/fingerprint, generation, owner, and expiry checks for embedding
+  writes, repair/prune, reset, and publication. Use existing lease/ready fixtures
+  when writing vector tests; prefer real SQLite connections and statement spies
+  for transaction failures.
+- Copying stored vectors into a gained collection only adds rows, needs no build
+  lease, and deletes nothing. A live chunk with no vector keeps its metadata and
+  stays pending; the next embed recreates only that chunk, not the whole document.
+- Repack moves existing bytes under the same rowid and partition in one IMMEDIATE
+  transaction per chunk. Re-read under the write lock and preserve metadata,
+  identity, lease state, rollback, and rowid-reuse behavior. Repack needs no build
+  lease and must not turn into a model request, rebuild, or metadata deletion.
+  Cleanup triggers it below 90% useful-chunk occupancy when an older sparse chunk
+  can move. `previewCleanup` only projects counts/layouts.
+- Preserve upstream layout conversion semantics; do not call it lossless. For a
+  readable `hash_seq`-keyed legacy table with parsed dimensions, it copies bytes
+  only where chunk metadata belongs to an active document. It makes no model
+  request, never re-embeds, and does not change `embedding_index_state` itself.
+  Vectors without metadata/active documents are not copied; vectorless metadata
+  is deleted during conversion, unlike normal cleanup of a live chunk. An
+  unsupported readable legacy format is dropped without copying. The final
+  straggler copy, metadata cleanup, schema stamp, and table drop share a transaction;
+  do not allow an old build to write concurrently. Without sqlite-vec, conversion
+  is deferred and lexical reads remain available.
 
-Use `/release <version>` to cut a release. Full changelog standards,
-release workflow, and git hook setup are documented in the
-[release skill](.agents/skills/release/SKILL.md).
+## Remote configuration and routing
 
-Key points:
-- Add changelog entries under `## [Unreleased]` **as you make changes**
-- The release script renames `[Unreleased]` → `[X.Y.Z] - date` at release time
-- Credit external PRs with `#NNN (thanks @username)`
-- GitHub releases roll up the full minor series (e.g. 1.2.0 through 1.2.3)
+- Use existing `models.embed_*`, `generate_*`, `rerank_*`, and `jev_*` fields.
+  URL precedence is `*_url` > `*_base_url` > `*_api_url`; choose one alias.
+  Embedding takes a base URL and appends `/embeddings`. Expansion/rerank accept
+  bases or full `/chat/completions` / `/rerank` endpoints. A rerank HTTP 404 retries
+  a chat payload at the same URL; it does not discover a sibling endpoint.
+- Embeddings use `models.embed_api_key` before the provider environment key:
+  OpenAI uses `OPENAI_API_KEY`; Voyage uses `VOYAGE_API_KEY`, then `OPENAI_API_KEY`
+  only for custom proxies. Expansion/rerank use only `generate_api_key` /
+  `rerank_api_key`, without `OPENAI_API_KEY` fallback. Jev supports `jev_*` and
+  `TYPESAFE_*`. YAML does not interpolate environment placeholders. Do not expose
+  credentials in checked-in files, SQLite, diagnostics, logs, or errors.
+- A rerank URL **and** model enable API reranking. It takes priority over Jev;
+  Jev reranks only when absent or failed, never after cancellation. Jev supplies
+  expansion intent hints and does not replace the configured generator.
+- Dedicated rerank responses must contain `results[].{index,relevance_score}`;
+  Voyage-shaped `data` needs translation by a gateway. Chat URLs score with an LLM.
+- `RemoteLLM` request failure must not disable later requests. `Hybrid` applies a
+  60-second rerank API cooldown only when Jev can serve as fallback; without Jev,
+  each explicit request retries the API.
+- Cache scores under the producing model and map them back by `index`, not file.
+  If fallback answers alongside preferred-model cached chunks, rescore all chunks
+  with one model so a ranking never mixes model scores.
 
-## Remote-only runtime
+## MCP and deployment
 
-This review build is `2026.10.18-remote.0`. Keep BM25, CJK, AST, reads, collections,
-contexts, and maintenance usable without models. Configure remote operations
-through existing `models.embed_*`, `generate_*`, `rerank_*`, and `jev_*` fields.
-Never add automatic remote requests, local inference fallback, model downloads,
-or automatic deletion or recomputation of vectors. Old local databases remain
-lexically readable; moving them to a remote embedding model requires an explicit
-manual remote rebuild.
+- Existing indexes are opened read-only by stdio/HTTP MCP. Reconcile manual
+  collection/context YAML edits through a writable CLI open before restarting;
+  MCP does not sync those settings. Restart after code/model/config changes.
+- Model-free MCP checks use `query` arguments
+  `{"searches":[{"type":"lex","query":"..."}],"rerank":false}`.
+  Typed `lex` skips expansion/vector retrieval but does not itself turn off the
+  default reranker. `/health` checks liveness, not model or retrieval health.
+- systemd owns a foreground MCP process: do not add `--daemon`. Restart the actual
+  user unit; `qmd mcp stop` only handles QMD-managed daemons. Keep deployment and
+  real-index actions within the user's authorization.
 
-The one automatic vector change is the layout upgrade (`src/store-migrations.ts`):
-opening a store converts a supported legacy `vectors_vec` table into the
-per-collection layout in place. For a `hash_seq`-keyed table with parsed
-dimensions, it copies, byte for byte, every vector whose chunk metadata belongs
-to an active document, makes no remote request, never re-embeds, and
-never touches `embedding_index_state`. It does not carry over what no search can
-reach (a vector with no chunk metadata or no active document), and it deletes
-chunk metadata that has no vector so the next embed recreates it. This deletion
-is specific to the conversion: `qmd update` and `qmd cleanup` retain a live
-document's vectorless chunk metadata and leave it pending. A readable legacy
-table that is not keyed by `hash_seq`, or whose dimensions cannot be parsed,
-is dropped without copying its vectors. For a supported table, the legacy table
-is dropped only in the transaction that stamps the new schema version, after a
-verification pass that copies any row the walk missed. Do not run an older build against the index
-while it converts. Anything beyond this that discards or recomputes a vector
-still needs an explicit command.
-`qmd pull` is retired and must exit nonzero without downloads. Tests and package
-smoke use mocks or loopback HTTP, with no paid API or local-model setup.
+## Releases
 
-Model-training datasets, fine-tuning/conversion tools, Python ML dependency locks,
-and the retired GPU/Bun container smoke workflow are no longer maintained here.
-Use `pnpm run test:remote` and `pnpm run test:package` for runtime and installation
-checks. Keep legacy local index recognition, rejection regressions, BM25/CJK/AST,
-and retrieval-quality benchmarks; local identity labels do not enable inference.
+Use `/release <version>` only when requested. Follow the
+[release skill](.agents/skills/release/SKILL.md) for checks, hooks, and cutting a
+release. It renames `[Unreleased]` at release time; keep external PR credits in
+changelog entries. GitHub releases roll up the full minor series.

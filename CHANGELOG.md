@@ -4,6 +4,10 @@
 
 ### Changed
 
+- Organize README around human architecture/usage and AGENTS around coding
+  workflows/invariants. Align them and example configuration with writable-only
+  vector upgrades, offline backups/restore, read-only MCP and systemd operation,
+  partition cleanup, and per-operation remote credentials and endpoint formats.
 - Complete the upstream main merge while retaining the remote-only Node runtime
   and the existing full-project type checks. Query-expansion mocks and document
   assertions now use upstream's typed forms.
@@ -19,7 +23,7 @@
   so a collection-scoped `qmd query` or `qmd vsearch` scans only that
   collection's vectors instead of pre-filtering the whole index, and a small
   collection is never crowded out of the results by a large one. The first
-  command after upgrading converts the index in place and prints its
+  writable store open after upgrading converts the index in place and prints its
   progress; the conversion resumes from where it stopped if interrupted, two
   commands started at once share it, and a VACUUM at the end reclaims the
   space of the old table. `qmd collection rename` no longer touches vectors,
@@ -29,11 +33,11 @@
   into a collection that gains it instead of embedding it again. A
   metadata-filtered vector search returns the nearest documents the filter
   admits however many chunks it admits, and a vector search fills its limit
-  even when one long document holds all of the nearest chunks. Downgrading
+  even when one long document holds all of the nearest chunks. Without a pre-upgrade backup, downgrading
   to an older qmd afterwards needs `qmd embed -f`, and a `qmd mcp` server
   started before the upgrade must be restarted. #983 (thanks @brettdavies)
 - **Vector layout conversion is automatic, and the one exception to "no
-  automatic vector conversion".** Opening an index that still has the legacy
+  automatic vector conversion".** A writable open of an index that still has the legacy
   `vectors_vec` table moves its vectors into the per-collection layout. The
   conversion sends no request to any remote API and never re-embeds; it copies
   vectors byte for byte when their chunk metadata belongs to an active document,
@@ -48,10 +52,11 @@
   against the index during conversion. Without sqlite-vec loaded the
   conversion is deferred and lexical search keeps working. Back up
   `~/.cache/qmd/index.sqlite*` first, since an older build cannot read the
-  converted index and going back costs a full paid `qmd embed --force`.
+  converted index. Roll back by restoring the complete offline backup; without
+  it, going back costs a full paid `qmd embed --force`.
 - Update the bundled QMD skill and query/MCP references for remote-only models, offline lexical requests, explicit vector rebuilds, and current MCP parameter names; remove retired local-model setup and unsupported latency/batch guarantees.
 - Remove retired fine-tuning datasets, training/conversion tools, and GPU/Bun container smoke assets. Replace the GGUF configuration example with explicit remote APIs and retain legacy-index diagnostics and search-quality benchmarks.
-- **Remote-only runtime (unpublished review build `2026.10.18-remote.0`)**: Remove local GGUF inference and the `node-llama-cpp` dependency. CLI, MCP, and SDK keep local SQLite/BM25, CJK, AST, collections, reads, and maintenance; embedding, query expansion, and reranking use explicitly configured remote APIs. `qmd pull` now reports retirement and exits unsuccessfully without downloading anything. Existing local-model databases remain available for lexical reads; remote vector use requires an explicit manual rebuild rather than automatic vector conversion or deletion. Package and model regression checks use mocks or loopback HTTP only.
+- **Remote-only runtime (unpublished review build `2026.10.18-remote.0`)**: Remove local GGUF inference and the `node-llama-cpp` dependency. CLI, MCP, and SDK keep local SQLite/BM25, CJK, AST, collections, reads, and maintenance; embedding, query expansion, and reranking use explicitly configured remote APIs. `qmd pull` now reports retirement and exits unsuccessfully without downloading anything. Existing local-model databases remain available for lexical reads; remote vector use requires an explicit manual rebuild; the documented layout-only conversion on writable open is the exception to automatic vector changes. Package and model regression checks use mocks or loopback HTTP only.
 - **Breaking SDK change:** Retire `LlamaCpp`, local provider owners, default-Llama singleton/session helpers, model pull/GGUF/GPU/tokenizer APIs, and `internal.localLlm`. Use `createStore()` with explicit remote models, or `searchLex()` / explicit model-free query options. Missing expansion or reranking configuration fails clearly rather than silently downgrading retrieval.
 
 - Dependency upgrades and runtime engine modernization: Updated Node.js engine target to `>=24.21.0` (LTS Krypton) and packageManager to `pnpm@12.6.0`. Upgraded dependencies and toolchain including `zod` to `4.6.5`, `@modelcontextprotocol/server` to `2.1.0`, `picomatch` to `4.0.7`, `yaml` to `2.9.1`, `tsx` to `4.23.15`, `oxlint` to `1.85.0`, `vitest` to `4.1.11` (patching security advisory GHSA-82fw-gwwq-j7x9), and refreshed patch/minor dependency overrides.

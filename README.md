@@ -1,8 +1,70 @@
 # QMD - Query Markup Documents
 
-A search engine for everything you need to remember. Index your markdown notes, meeting transcripts, documentation, and knowledge bases. Search with keywords or natural language. Ideal for your agentic flows.
+QMD indexes Markdown notes, meeting transcripts, documentation, and source files.
+Search and retrieve them from the terminal, an MCP client, or an application.
 
-QMD keeps documents, SQLite, BM25, CJK analysis, and AST chunking local. Vector embeddings, query expansion, and reranking use explicitly configured remote APIs; this build contains no local model inference or model downloads.
+Documents and keyword/CJK search stay local in SQLite. Semantic search, query
+expansion, and reranking use optional remote APIs; QMD does not download or run
+local inference models.
+
+Start with [Quick Start](#quick-start), [Architecture](#architecture),
+[Configuration](#configuration), or [MCP Server](#mcp-server).
+For an existing installation, read [Upgrading](#upgrading) before opening an old
+index with a new build. Changes are recorded in the [changelog](CHANGELOG.md).
+
+## Quick Start
+
+Install QMD, add a folder, and search it with keywords. This path needs no model
+configuration or API key.
+
+```sh
+pnpm add --global @wei840222/qmd
+qmd collection add ~/notes --name notes
+qmd context add qmd://notes "Personal notes and ideas"
+qmd search "project timeline" -c notes
+```
+
+Search results include a file path and a short document ID. Retrieve the document
+or a section of it:
+
+```sh
+qmd get "notes/meeting.md"
+qmd get "#abc123"
+qmd get "notes/meeting.md:50:40"
+```
+
+For semantic or hybrid search, first configure your [remote model APIs](#remote-embedding--models-configuration-explicit-opt-in),
+then explicitly build embeddings:
+
+```sh
+qmd embed
+qmd vsearch "how to deploy" -c notes
+qmd query "quarterly planning process" -c notes
+```
+
+`vsearch` sends the query to the configured embedding provider. `query` can also
+use remote expansion and reranking. Use [typed lexical queries](#mcp-server)
+with reranking disabled when an MCP client needs model-free search.
+
+## Architecture
+
+QMD separates the local index from optional model services:
+
+| Part | Responsibility |
+|------|----------------|
+| Local index | SQLite stores document content, collection/path metadata, BM25/CJK indexes, and vectors. |
+| Remote models | Explicit embedding operations send document chunks to the configured provider. Model-backed searches can send query text and candidate text for expansion, embedding, or reranking. |
+| Interfaces | The CLI and SDK manage the index and retrieve documents. MCP exposes retrieval tools and opens existing indexes read-only. |
+
+Choose a search mode according to the information you have:
+
+| Command | How it searches | Model API needed |
+|---------|-----------------|------------------|
+| `qmd search` | Keywords through BM25, with local CJK analysis | No |
+| `qmd vsearch` | Similarity against stored document vectors | Remote query embedding |
+| `qmd query` | Keyword and vector retrieval, rank fusion, optional expansion/reranking | Remote embeddings and any enabled expansion/reranking providers |
+
+The hybrid pipeline combines those stages:
 
 ```mermaid
 flowchart LR
@@ -24,555 +86,17 @@ flowchart LR
   RR --> OUT[Final ranked results]
 ```
 
-Typed expansions are routed exclusively: `lex` → BM25/FTS, `vec` and `hyde` → vector search. The original query is sent to both backends, then fused with RRF and reranked. When Jev is configured it adds intent hints to expansion; a configured `rerank_api_*` endpoint reranks first, and Jev reranks only when none is configured or the API fails.
-
-You can read more about QMD's progress in the [CHANGELOG](CHANGELOG.md).
-
-## Quick Start (Remote Models)
-
-```sh
-# Install globally
-npm install -g @wei840222/qmd
-# or
-pnpm add -g @wei840222/qmd
-
-# Or run directly
-npx @wei840222/qmd ...
-
-# Create collections for your notes, docs, and meeting transcripts
-qmd collection add ~/notes --name notes
-qmd collection add ~/Documents/meetings --name meetings
-qmd collection add ~/work/docs --name docs
-
-# Add context to help with search results, each piece of context will be returned when matching sub documents are returned. This works as a tree. This is the key feature of QMD as it allows LLMs to make much better contextual choices when selecting documents. Don't sleep on it!
-qmd context add qmd://notes "Personal notes and ideas"
-qmd context add qmd://meetings "Meeting transcripts and notes"
-qmd context add qmd://docs "Work documentation"
-
-# Configure remote model APIs as shown below, then explicitly generate vectors
-qmd embed
-
-# Search across everything
-qmd search "project timeline"           # Fast keyword search
-qmd vsearch "how to deploy"             # Semantic search
-qmd query "quarterly planning process"  # Hybrid + reranking (best quality)
-
-# Get a specific document
-qmd get "meetings/2024-01-15.md"
-
-# Get a document by docid (shown in search results)
-qmd get "#abc123"
-
-# Get multiple documents by glob pattern
-qmd multi-get "journals/2025-05*.md"
-
-# Search within a specific collection
-qmd search "API" -c notes
-
-# Export all matches for an agent
-qmd search "API" --all --files --min-score 0.3
-```
-
-### Using with AI Agents
-
-QMD's `--json` and `--files` output formats are designed for agentic workflows:
-
-```sh
-# Get structured results for an LLM
-qmd search "authentication" --json -n 10
-
-# List all relevant files above a threshold
-qmd query "error handling" --all --files --min-score 0.4
-
-# Retrieve full document content
-qmd get "docs/api-reference.md" --full
-```
-
-QMD also ships a runtime skill that tells an agent how to use it:
-
-```sh
-qmd skills list              # List the bundled skills (name and description)
-qmd skills get qmd           # Print the QMD skill; add --full to include its references
-qmd skills path              # Print the directory the bundled skills live in
-qmd skill show               # Print the QMD skill
-qmd skill install            # Install it into ./.agents/skills/qmd
-qmd skill install --global   # ...or into ~/.agents/skills/qmd
-                             # --yes also creates the .claude/skills/qmd symlink
-                             # -f, --force replaces an existing install or symlink
-```
-
-### MCP Server
-
-Although the tool works perfectly fine when you just tell your agent to use it on the command line, it also exposes an MCP (Model Context Protocol) server for tighter integration.
-
-**Tools exposed:**
-- `query` — Search with typed sub-queries (`lex`/`vec`/`hyde`), combined via RRF + reranking
-- `get` — Retrieve a document by path or docid (with fuzzy matching suggestions)
-- `multi_get` — Batch retrieve by glob pattern, comma-separated list, or docids
-- `status` — Index health and collection info, including each collection's top metadata keys
-- `metadata` — Discover metadata keys, types, and value counts to filter on
-
-#### Stdio Transport (Default)
-
-Add QMD to your MCP client configuration (e.g. Cursor, Claude Desktop, Zed, or other MCP-compatible clients):
-
-```json
-{
-  "mcpServers": {
-    "qmd": {
-      "command": "qmd",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-#### HTTP Transport
-
-By default, QMD's MCP server uses stdio (launched as a subprocess by each client). For a shared, long-lived server that avoids repeated model loading, use the HTTP transport:
-
-```sh
-# Foreground (Ctrl-C to stop)
-qmd mcp --http                    # localhost:8181
-qmd mcp --http --port 8080        # custom port
-qmd mcp --http --host 0.0.0.0     # bind all interfaces (e.g. container probes)
-
-# Background daemon
-qmd mcp --http --daemon           # start, writes PID to ~/.cache/qmd/mcp.pid
-qmd mcp stop                      # stop via PID file
-qmd status                        # shows "MCP: running (PID ...)" when active
-```
-
-The server binds to `localhost` by default. Pass `--host` (or set the `QMD_HOST`
-environment variable) to override — `--host 0.0.0.0` is useful when the server
-runs in a container and a liveness probe connects from a non-loopback address.
-
-The HTTP server exposes two endpoints:
-- `POST /mcp` — MCP Streamable HTTP (JSON responses, stateless)
-- `POST /query` (alias `/search`) — structured search without the MCP protocol. Accepts the same optional `filter` object as the `query` tool (invalid filters return `400`); see [Metadata Filtering](#metadata-filtering)
-- `POST /metadata` — metadata discovery without the MCP protocol. Same body as the `metadata` tool (invalid filters return `400`); see [Metadata Discovery](#metadata-discovery)
-- `GET /health` — liveness check with uptime
-
-
-##### Origin and Host validation
-
-Every request is screened before routing: a request carrying an `Origin` header
-that does not name a loopback address is rejected with `403`, as is a `Host`
-header naming something other than the address the server is bound to. This is
-what stops a web page you visit from reading your index through DNS rebinding —
-loopback binding alone does not, since the browser makes the request from your
-own machine.
-
-Requests without an `Origin` header — curl, MCP clients, editors — are
-unaffected, which covers every normal local client.
-
-| Variable | Effect |
-|----------|--------|
-| `QMD_ALLOWED_ORIGINS` | Comma-separated origins to accept in addition to loopback, e.g. `https://notes.internal`. Set to `*` to disable the check entirely. |
-| `QMD_ALLOWED_HOSTS` | Comma-separated `Host` values to accept in addition to loopback and the bind address. |
-
-`--host 0.0.0.0` cannot know which `Host` values are legitimate, so it skips the
-host check and warns at startup. Set `QMD_ALLOWED_HOSTS` to re-enable it, and
-remember the endpoints are unauthenticated — put your own auth in front of a
-server that is reachable off-host.
-
-MCP uses remote API clients for model operations. It does not load models into local RAM or VRAM.
-
-Point any MCP client at `http://localhost:8181/mcp` to connect.
-
-#### MCP Tool Parameters
-
-| Tool | Parameter | Type | Notes |
-|------|-----------|------|-------|
-| `query` | `query` | string | Plain query evaluated by the shared expansion policy. Mutually exclusive with `searches`; exactly one is required. |
-| `query` | `searches` | array | Typed sub-queries (`lex`/`vec`/`hyde`), 1–10. Mutually exclusive with `query`; exactly one is required. First gets 2x weight. |
-| `query` | `expansion` | string | Plain-query policy: `auto` (default), `force`, or `skip`. Ignored when `searches` is used. |
-| `query` | `collections` | string[] | Filter by collection names (OR). **Array only** — singular `collection` is silently ignored. |
-| `query` | `filter` | object | Metadata filter (recursive `operator`-discriminated JSON AST; see [Metadata Filtering](#metadata-filtering)) |
-| `query` | `expansionContext` | string | Additional context used only to generate `lex` / `vec` / `hyde` query expansions. |
-| `query` | `rerankContext` | string | Additional context used only for reranking and snippet/chunk selection. |
-| `query` | `intent` | string | Disambiguation context (alias for expansionContext & rerankContext; does not search on its own) |
-| `query` | `limit` | number | Max results (default 10) |
-| `query` | `minScore` | number | Minimum relevance 0–1 (default 0) |
-| `query` | `candidateLimit` | number | Max candidates to rerank (default 40) |
-| `query` | `rerank` | boolean | Run LLM reranking (default **true**); set false for RRF-only |
-| `query` | `explain` | boolean | Include retrieval traces and the expansion decision or typed-query error (default **false**) |
-| `get` | `file` | string | Path, docid (`#abc123`), or `path:from:count` (e.g. `#abc123:120:40`) |
-| `get` | `fromLine` | number | Start line (1-indexed); overrides the `:from` suffix |
-| `get` | `maxLines` | number | Limit returned lines |
-| `get` | `lineNumbers` | boolean | Prefix lines with numbers (default **true**) |
-| `multi_get` | `pattern` | string | Glob pattern or comma-separated list |
-| `multi_get` | `maxBytes` | number | Skip files larger than N (default 10240) |
-| `multi_get` | `maxLines` | number | Limit lines per file |
-| `multi_get` | `lineNumbers` | boolean | Prefix lines with numbers (default **true**) |
-| `metadata` | `collections` | string[] | Restrict discovery to collection names (default: the collections `query` searches) |
-| `metadata` | `match` | object | Report only metadata entries matching this condition (same AST as `filter`, with `field` naming the entry's `key` or `value`) |
-| `metadata` | `filter` | object | Count only documents matching this filter (same AST as `query`) |
-| `metadata` | `keyLimit` | number | Keys reported (default 50). `totalKeys` and `remainingKeys` describe the rest |
-| `metadata` | `keyOffset` | number | Keys skipped before the window, in report order (default 0) |
-| `metadata` | `valueLimit` | number | Values reported per key and type (default 10). `remainingValues` reports the rest |
-| `metadata` | `valueOffset` | number | Values skipped per key and type before the window, in `sort` order (default 0) |
-| `metadata` | `sort` | string | `count` (default) or `value` |
-| `metadata` | `minCount` | number | Hide values held by fewer documents (default 1) |
-
-Unknown parameters are silently ignored (not rejected) — double-check names if
-results seem unscoped. The HTTP `/query` and `/search` endpoints return
-`qmd://collection/path` URIs in the `file` field, matching the CLI and MCP output.
-
-### SDK / Library Usage
-
-Use QMD as a library in your own Node.js applications.
-
-#### Installation
-
-```sh
-npm install @wei840222/qmd
-```
-
-#### Quick Start
-
-```typescript
-import { createStore } from '@wei840222/qmd'
-
-const store = await createStore({
-  dbPath: './my-index.sqlite',
-  config: {
-    collections: {
-      docs: { path: '/path/to/docs', pattern: '**/*.md' },
-    },
-  },
-})
-
-const results = await store.searchLex("authentication flow")
-console.log(results.map(r => `${r.title} (${Math.round(r.score * 100)}%)`))
-
-await store.close()
-```
-
-#### Store Creation
-
-`createStore()` accepts three modes:
-
-```typescript
-import { createStore } from '@wei840222/qmd'
-
-// 1. Inline config — no files needed besides the DB
-const store = await createStore({
-  dbPath: './index.sqlite',
-  config: {
-    collections: {
-      docs: { path: '/path/to/docs', pattern: '**/*.md' },
-      notes: { path: '/path/to/notes' },
-    },
-  },
-})
-
-// 2. YAML config file — collections defined in a file
-const store2 = await createStore({
-  dbPath: './index.sqlite',
-  configPath: './qmd.yml',
-})
-
-// 3. DB-only — reopen a previously configured store
-const store3 = await createStore({ dbPath: './index.sqlite' })
-```
-
-#### Search
-
-The unified `search()` method handles both simple queries and pre-expanded structured queries:
-
-```typescript
-// Simple query — evaluated by the shared auto policy, then retrieved and reranked
-const results = await store.search({ query: "authentication flow" })
-
-// With options
-const results2 = await store.search({
-  query: "rate limiting",
-  expansionContext: "API throttling and abuse prevention",
-  rerankContext: "API throttling and abuse prevention",
-  collection: "docs",
-  limit: 5,
-  minScore: 0.3,
-  explain: true,
-  expansion: "auto", // "auto" | "force" | "skip"
-})
-
-// Pre-expanded queries — bypass the policy and control each sub-query
-const results3 = await store.search({
-  queries: [
-    { type: 'lex', query: '"connection pool" timeout -redis' },
-    { type: 'vec', query: 'why do database connections time out under load' },
-  ],
-  collections: ["docs", "notes"],
-})
-
-// Skip reranking for faster results
-const fast = await store.search({ query: "auth", rerank: false })
-
-// Metadata filter — every returned result satisfies it (also available on
-// searchLex() and searchVector()); results expose indexed metadata via
-// r.metadata. See "Metadata Filtering" for the full grammar.
-const published = await store.search({
-  query: "authentication flow",
-  filter: {
-    operator: "and",
-    operands: [
-      { field: "topics", operator: "all", value: ["typescript"] },
-      { field: "status", operator: "ne", value: "draft" },
-    ],
-  },
-})
-```
-
-For simple queries, explicit `force` or `skip` overrides `auto`. Under `auto`, CJK
-queries and strong lexical matches skip model expansion; other queries expand.
-Supplying `queries` bypasses expansion policy evaluation entirely.
-
-For direct backend access:
-
-```typescript
-// BM25 keyword search (fast, no LLM)
-const lexResults = await store.searchLex("auth middleware", { limit: 10 })
-
-// Vector similarity search (embedding model, no reranking)
-const vecResults = await store.searchVector("how users log in", { limit: 10 })
-
-// Manual query expansion for full control
-const expanded = await store.expandQuery("auth flow", { expansionContext: "user login" })
-const results4 = await store.search({ queries: expanded })
-```
-
-#### Retrieval
-
-```typescript
-// Get a document by path or docid
-const doc = await store.get("docs/readme.md")
-const byId = await store.get("#abc123")
-
-if (!("error" in doc)) {
-  console.log(doc.title, doc.displayPath, doc.context)
-}
-
-// Get document body with line range
-const body = await store.getDocumentBody("docs/readme.md", {
-  fromLine: 50,
-  maxLines: 100,
-})
-
-// Batch retrieve by glob or comma-separated list
-const { docs, errors } = await store.multiGet("docs/**/*.md", {
-  maxBytes: 20480,
-})
-```
-
-#### Collections
-
-```typescript
-// Add a collection
-await store.addCollection("myapp", {
-  path: "/src/myapp",
-  pattern: "**/*.ts",
-  ignore: ["node_modules/**", "*.test.ts"],
-})
-
-// List collections with document stats
-const collections = await store.listCollections()
-// => [{ name, pwd, glob_pattern, doc_count, active_count, last_modified, includeByDefault }]
-
-// Get names of collections included in queries by default
-const defaults = await store.getDefaultCollectionNames()
-
-// Remove / rename
-await store.removeCollection("myapp")
-await store.renameCollection("old-name", "new-name")
-```
-
-#### Context
-
-Context adds descriptive metadata that improves search relevance and is returned alongside results:
-
-```typescript
-// Add context for a path within a collection
-await store.addContext("docs", "/api", "REST API reference documentation")
-
-// Set global context (applies to all collections)
-await store.setGlobalContext("Internal engineering documentation")
-
-// List all contexts
-const contexts = await store.listContexts()
-// => [{ collection, path, context }]
-
-// Remove context
-await store.removeContext("docs", "/api")
-await store.setGlobalContext(undefined)  // clear global
-```
-
-#### Indexing
-
-```typescript
-// Re-index collections by scanning the filesystem
-const result = await store.update({
-  collections: ["docs"],  // optional — defaults to all
-  onProgress: ({ collection, file, current, total }) => {
-    console.log(`[${collection}] ${current}/${total} ${file}`)
-  },
-})
-// => { collections, indexed, updated, unchanged, removed, needsEmbedding }
-
-// Generate vector embeddings
-const embedResult = await store.embed({
-  force: false,           // true to re-embed everything
-  chunkStrategy: "auto",  // "regex" (default) or "auto" (AST for code files)
-  onProgress: ({ current, total, collection }) => {
-    console.log(`Embedding ${current}/${total}`)
-  },
-})
-```
-
-#### Types
-
-Key types exported for SDK consumers:
-
-```typescript
-import type {
-  QMDStore,            // The store interface
-  SearchOptions,       // Options for search()
-  LexSearchOptions,    // Options for searchLex()
-  VectorSearchOptions, // Options for searchVector()
-  HybridQueryResult,   // Search result with score, snippet, context
-  SearchResult,        // Result from searchLex/searchVector
-  ExpandedQuery,       // Typed sub-query { type: 'lex'|'vec'|'hyde', query }
-  DocumentResult,      // Document metadata + body
-  DocumentNotFound,    // Error with similarFiles suggestions
-  MultiGetResult,      // Batch retrieval result
-  UpdateProgress,      // Progress callback info for update()
-  UpdateResult,        // Aggregated update result
-  EmbedProgress,       // Progress callback info for embed()
-  EmbedResult,         // Embedding result
-  StoreOptions,        // createStore() options
-  CollectionConfig,    // Inline config shape
-  IndexStatus,         // From getStatus()
-  IndexHealthInfo,     // From getIndexHealth()
-} from '@wei840222/qmd'
-```
-
-Utility exports:
-
-```typescript
-import {
-  extractSnippet,              // Extract a relevant snippet from text
-  addLineNumbers,              // Add line numbers to text
-  DEFAULT_MULTI_GET_MAX_BYTES, // Default max file size for multiGet (64KB)
-  Maintenance,                 // Database maintenance operations
-} from '@wei840222/qmd'
-```
-
-#### Lifecycle
-
-```typescript
-// Close the store — releases remote clients and the DB connection
-await store.close()
-```
-
-The SDK requires explicit `dbPath` — no defaults are assumed. This makes it safe to embed in any application without side effects.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         QMD Hybrid Search Pipeline                          │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-                              ┌─────────────────┐
-                              │   User Query    │
-                              └────────┬────────┘
-                                       │
-                              ┌────────▼────────┐
-                              │ Expansion Policy│
-                              │ auto|force|skip │
-                              └────────┬────────┘
-                                       │
-                         ┌─────────────┴─────────────┐
-                         ▼                           ▼
-                ┌─────────────────┐        ┌─────────────────┐
-                │ Original Query  │        │ Typed Expansions│
-                │      (×2)       │        │ lex / vec / HyDE│
-                │                 │        │ Jev-guided (opt)│
-                └────────┬────────┘        └────────┬────────┘
-                         │                           │
-                 ┌───────┴───────┐           ┌───────┴───────┐
-                 ▼               ▼           ▼               ▼
-             ┌───────┐       ┌────────┐   ┌───────┐       ┌────────┐
-             │ BM25  │       │ Vector │   │  lex  │       │vec/HyDE│
-             │(FTS5) │       │ Search │   └───┬───┘       └───┬────┘
-             └───┬───┘       └───┬────┘       ▼               ▼
-                 │               │         ┌───────┐       ┌────────┐
-                 │               │         │ BM25  │       │ Vector │
-                 │               │         │(FTS5) │       │ Search │
-                 └───────┬───────┘         └───┬───┘       └───┬────┘
-                         └─────────────┬───────┴───────────────┘
-                                       │
-                                       ▼
-                          ┌───────────────────────┐
-                          │   RRF Fusion + Bonus  │
-                          │ Original paths ×2     │
-                          │  Top-rank bonus: +0.05│
-                          │     Top 40 Kept       │
-                          └───────────┬───────────┘
-                                      │
-                                      ▼
-                          ┌───────────────────────┐
-                          │   Remote Re-ranking   │
-                          │ rerank_api_* first    │
-                          │ Jev: none or failed   │
-                          └───────────┬───────────┘
-                                      │
-                                      ▼
-                          ┌───────────────────────┐
-                          │  Position-Aware Blend │
-                          │  Top 1-3:  75% RRF    │
-                          │  Top 4-10: 60% RRF    │
-                          │  Top 11+:  40% RRF    │
-                          └───────────────────────┘
-```
-
-`Jev-guided` expansion applies when Jev is configured: it classifies the query intent and its hints steer the typed variants. Reranking uses a configured `rerank_api_*` endpoint first; TypeSafe Jev reranks only when none is configured, or as a fallback when that API fails.
-
-## Score Normalization & Fusion
-
-### Search Backends
-
-| Backend | Raw Score | Conversion | Range |
-|---------|-----------|------------|-------|
-| **FTS (BM25)** | SQLite FTS5 BM25 | `Math.abs(score)` | 0 to ~25+ |
-| **Vector** | Cosine distance | `1 / (1 + distance)` | 0.0 to 1.0 |
-| **Reranker** | Provider relevance score (rerank API, LLM, or Jev probability) | Used as-is within 0-1, otherwise sigmoid | 0.0 to 1.0 |
-
-### Fusion Strategy
-
-The `query` command uses **Reciprocal Rank Fusion (RRF)** with position-aware blending:
-
-1. **Query Expansion Policy**: `auto` uses the configured remote generator subject to the shared expansion policy; `force` runs the configured generator; `skip` uses only the original query. Original FTS and vector retrieval paths have ×2 RRF weight in every mode. When expansion runs, QMD adds zero or more typed LLM variants at ×1: `lex` variants use FTS, while `vec` and `hyde` variants use vector search. If Jev is configured it classifies the query intent first, and its hints (strategy and whether to add HyDE) guide those variants.
-2. **Parallel Retrieval**: The original query searches both indexes; `lex` variants search FTS, while `vec` and `hyde` variants search the vector index
-3. **RRF Fusion**: Combine all result lists using `score = Σ(1/(k+rank+1))` where k=60
-4. **Top-Rank Bonus**: Documents ranking #1 in any list get +0.05, #2-3 get +0.02
-5. **Top-K Selection**: Take top 40 candidates for reranking
-6. **Re-ranking**: A configured `rerank_api_*` endpoint scores each candidate chunk; Jev scores them when no rerank API is configured or that API fails. Scores are cached under the model that produced them
-7. **Position-Aware Blending**:
-   - RRF rank 1-3: 75% retrieval, 25% reranker (preserves exact matches)
-   - RRF rank 4-10: 60% retrieval, 40% reranker
-   - RRF rank 11+: 40% retrieval, 60% reranker (trust reranker more)
-
-**Why this approach**: Pure RRF can dilute exact matches when expanded queries don't match. The top-rank bonus preserves documents that score #1 for the original query. Position-aware blending prevents the reranker from destroying high-confidence retrieval results.
-
-### Score Interpretation
-
-| Score | Meaning |
-|-------|---------|
-| 0.8 - 1.0 | Highly relevant |
-| 0.5 - 0.8 | Moderately relevant |
-| 0.2 - 0.5 | Somewhat relevant |
-| 0.0 - 0.2 | Low relevance |
+Typed `lex` searches use BM25; `vec` and `hyde` use the vector index. Hybrid
+results are combined with reciprocal rank fusion before optional reranking.
+When configured, Jev supplies intent hints to the remote generator. A configured
+rerank API is preferred; Jev can rerank when that API is absent or fails.
+
+Vectors are partitioned by collection, so scoped searches scan that collection's
+vectors. Adding an embedded document to another collection reuses its stored
+vectors; a missing chunk is embedded again on its own. Explicit cleanup compacts
+sparse vector chunks without contacting a model. See [Index Maintenance](#index-maintenance)
+for commands and [Score Normalization & Fusion](#score-normalization--fusion)
+for ranking details.
 
 ## Requirements
 
@@ -584,21 +108,14 @@ The `query` command uses **Reciprocal Rank Fusion (RRF)** with position-aware bl
   brew install sqlite
   ```
 
-### Remote-only review build
+### Remote-only runtime
 
-`2026.10.18-remote.0` is an unpublished review build. There is no bundled or
-automatically downloaded inference model and no GPU runtime to configure.
+QMD runs on Node.js with explicitly configured remote model APIs. There is no
+bundled or automatically downloaded inference model and no GPU runtime to configure.
 BM25 (`qmd search`), document reads, collection/context management, and maintenance
 work without model configuration. Semantic operations require remote model APIs.
 `qmd pull` is retired: it prints migration guidance and exits nonzero without
 network access or downloads.
-
-Model-training datasets, fine-tuning and model-conversion tools, and the retired
-GPU/Bun container smoke workflow have been removed from this repository. Use
-`pnpm run test:remote` for mock and loopback HTTP regressions and
-`pnpm run test:package` for installation checks against the actual tarball,
-including CLI, Jieba, and AST support. Legacy-index diagnostics and search-quality
-benchmarks remain supported.
 
 Existing local-model databases remain readable through BM25 and document tools.
 QMD never re-embeds old vectors on its own or silently sends their documents to
@@ -608,260 +125,10 @@ the desired remote model and run an explicit
 `qmd embed --force` after reviewing the provider and data boundary. This clears
 and rebuilds vectors as a user-requested operation; lexical content is retained.
 
-### Upgrading the vector layout
-
-Vectors are stored in one index partitioned by collection, so a scoped query scans
-only that collection's vectors. An index written by an older build keeps its vectors
-in a single `vectors_vec` table; the first command that opens it converts it in
-place. For a `hash_seq`-keyed legacy table with parsed dimensions, the conversion
-copies, byte for byte, every vector whose chunk metadata belongs to an active
-document. It sends no request to any provider, never re-embeds, and leaves
-`embedding_index_state` alone. Vectors with no chunk metadata or no active
-document are not copied. Chunk metadata with no vector is deleted so the next
-`qmd embed` recreates it; this differs from `qmd update` and `qmd cleanup`, which
-retain a live document's vectorless metadata and leave it pending. A readable
-legacy table that is not keyed by `hash_seq`, or whose dimensions cannot be
-parsed, is dropped without copying its vectors. For a supported table, the
-conversion prints its progress, resumes if interrupted, and drops the old table
-in the transaction that stamps the new schema version, after a verification
-pass that copies rows the walk missed. It then runs a `VACUUM` that can take
-minutes on a large index. Do not run an older build against the index while it
-converts. Without sqlite-vec loaded the conversion is deferred and keyword
-search keeps working.
-
-An older build cannot read the converted index, and going back means a full paid
-`qmd embed --force`. Back up the index before the first command after upgrading:
-
-```sh
-cp ~/.cache/qmd/index.sqlite* /path/to/backup/
-```
-
-Restart a running `qmd mcp` server after upgrading.
-
-### Breaking SDK changes
-
-The supported package entry remains `createStore()` with the existing remote
-`config.models` fields. Local-model execution through `embed`, vector search,
-expansion, and reranking is retired: missing remote settings now fail explicitly.
-Model-free callers should use `searchLex()` or explicit lexical queries with
-`rerank: false` and expansion skipped; model-backed queries never silently skip
-required expansion or reranking.
-
-Code importing implementation modules must migrate away from `LlamaCpp`,
-`LlamaCppConfig`, `LocalEmbeddingProvider`, `LocalEmbeddingProviderOwner`,
-`withLLMSession`, the default-Llama singleton helpers, `pullModels`, GGUF/cache
-inspection, GPU helpers, and local tokenization APIs. They are removed, as is
-`store.internal.localLlm`. Shared model types and pure formatting helpers remain
-separate from inference; scoped sessions require an explicit remote owner.
-Existing local identity labels remain diagnostic data, not executable providers.
-
-### Remote Embedding & Models Configuration (Explicit Opt-in)
-
-Configure remote embeddings and remote LLM models in `index.yml` under the unified `models:` section. Configuration alone sends no requests; embedding builds and model-backed searches are explicit operations.
-
-```yaml
-models:
-  # Remote embeddings: set both embed_api_url (or embed_url / embed_base_url) and embed_api_model.
-  # Provider is auto-detected from the model name / URL (voyage* → voyageai, otherwise openai-compatible).
-  # Optional override: embed_provider: voyageai | openai
-  embed_api_url: https://api.openai.com/v1
-  embed_api_model: text-embedding-3-small           # or text-embedding-3-large / voyage-4 / ...
-  embed_dimension: 1536                             # Optional; required for unknown custom OpenAI models
-
-  # Optional: Remote LLM Query Expansion (aliases: generate_url, generate_base_url, generate_api_url)
-  generate_api_url: https://generativelanguage.googleapis.com/v1beta/openai/v1    # Base URL (appends /chat/completions) or full endpoint
-  generate_api_model: gemini-3.5-flash-lite         # or gpt-4o-mini
-
-  # Optional: Remote Reranking (aliases: rerank_url, rerank_base_url, rerank_api_url)
-  rerank_api_url: https://generativelanguage.googleapis.com/v1beta/openai/v1/chat/completions # /v1/rerank (Cohere-style `results`) or /v1/chat/completions (LLM scoring)
-  rerank_api_model: gemini-3.5-flash-lite           # or gpt-4o-mini
-
-  # Optional: TypeSafe Jev. Guides query expansion; reranks only when no rerank_api_* is configured, or as a fallback.
-  # jev_api_key: <key>                              # or TYPESAFE_API_KEY
-  # jev_base_url: https://jev.example.com           # or TYPESAFE_BASE_URL
-  # jev_api_model: jev-1.13                         # or TYPESAFE_DEFAULT_MODEL
-
-# Optional: Custom User Dictionary for CJK segmentation
-dictionary: ~/.config/qmd/dictionary.txt
-```
-
-#### OpenAI-compatible embeddings
-
-```yaml
-models:
-  embed_api_url: https://api.openai.com/v1
-  embed_api_model: text-embedding-3-small   # or text-embedding-3-large
-  # embed_dimension: 1536                   # optional for known models; required for unknown custom models
-```
-
-```sh
-export OPENAI_API_KEY="..."   # required for api.openai.com; optional for self-hosted / keyless proxies
-qmd embed
-```
-
-#### Voyage AI embeddings
-
-Voyage is a first-class provider (`voyageai`). Model names starting with `voyage` (or an explicit `embed_provider: voyageai`) select it. Known models resolve default dimensions automatically (`voyage-4` / `voyage-4-large` / `voyage-3` → 1024, `voyage-3-lite` / `voyage-3.5-lite` → 512, etc.). Voyage requests use native `output_dimension` and `input_type` (`query` vs `document`); they do not send OpenAI `encoding_format`.
-
-Official Voyage endpoint:
-
-```yaml
-models:
-  embed_api_url: https://api.voyageai.com/v1   # optional when embed_provider: voyageai (default base URL)
-  embed_api_model: voyage-4                    # or voyage-4-large, voyage-3, voyage-code-3, ...
-  # embed_provider: voyageai                   # optional; inferred from voyage* model names
-  # embed_dimension: 1024                      # optional override / Matryoshka truncation when supported
-```
-
-```sh
-export VOYAGE_API_KEY="..."   # required for https://api.voyageai.com/v1
-qmd embed
-```
-
-OpenAI-compatible proxy hosting Voyage (Bifrost, LiteLLM, etc.):
-
-```yaml
-models:
-  embed_api_url: https://your-proxy.example/v1
-  embed_api_model: voyage-4
-  # embed_provider: voyageai   # set if the model name alone is not enough to infer Voyage
-```
-
-```sh
-# Prefer VOYAGE_API_KEY. OPENAI_API_KEY is accepted only for non-official Voyage base URLs
-# (custom proxies). Official api.voyageai.com never falls back to OPENAI_API_KEY.
-export VOYAGE_API_KEY="..."
-# export OPENAI_API_KEY="..."  # proxy-only fallback when VOYAGE_API_KEY is unset
-qmd embed
-```
-
-> **Smart URL Resolution & Aliases:** All remote endpoint URLs support `_url`, `_base_url`, and `_api_url` aliases (e.g. `generate_url`, `generate_base_url`, `generate_api_url`). When given a Base URL (e.g. `https://api.example.com/v1`), QMD automatically appends `/chat/completions` for LLM generate and `/rerank` for reranking. If a full endpoint URL is provided, it is used directly. For reranking, QMD supports both dedicated Cross-Encoder endpoints (`/v1/rerank`) and general LLM endpoints (`/v1/chat/completions`).
-
-> **CLI, SDK & MCP Integration:** Remote LLM query expansion and LLM Chat Reranking are automatically wired into CLI (`qmd query`), SDK (`createStore`), and MCP. Query expansion automatically enforces query language & script consistency (e.g., Traditional Chinese queries generate Traditional Chinese `lex`, `vec`, and `hyde` variations). LLM Chat Reranking features prompt-tail Recency Enforcement and strict JSON sanitization to ensure safe execution with any remote LLM backend.
-
-`qmd init` writes index and collection defaults only; it does not prompt for or generate model configuration. To use a remote endpoint, edit `index.yml` manually and set credentials when required.
-
-> **API Key Note:** Remote embeddings require both an embedding endpoint (`embed_url`, `embed_base_url`, or `embed_api_url`) and `embed_api_model` (unless `embed_provider: voyageai` supplies the Voyage default model/URL). Official OpenAI needs `OPENAI_API_KEY`; official Voyage needs `VOYAGE_API_KEY`. Custom OpenAI-compatible proxies may omit a key when the upstream is keyless. For Voyage-shaped traffic through a custom proxy only, `OPENAI_API_KEY` may fill in when `VOYAGE_API_KEY` is unset — never for `https://api.voyageai.com/v1`. QMD never writes keys to SQLite, diagnostics, logs, or error messages.
-
-Configure `embed_url`, `embed_base_url`, or `embed_api_url` together with `embed_api_model` to enable remote embeddings. OpenAI-compatible providers receive `POST /embeddings`; Voyage AI uses its native embeddings payload (`input_type`, optional `output_dimension`). Changing the endpoint, provider, or model changes the remote embedding identity and requires a vector rebuild.
-
-Remote document embeddings use a bounded memory cache by default, shared by stores using the same loaded QMD module instance. To share results across processes, plugin reloads, and process restarts, add an optional cache directory to the existing `models` configuration:
-
-```yaml
-models:
-  embed_api_url: https://api.openai.com/v1
-  embed_api_model: text-embedding-3-small
-  embed_cache_dir: ~/.cache/qmd/embeddings
-  # Linux tmpfs alternative: /dev/shm/qmd-embeddings
-```
-
-The SDK accepts the same field in `createStore({ config: { collections: ..., models: ... } })`; callers such as plugins must forward it into QMD's config. Paths support `~`. Relative paths resolve from the YAML directory, except project-local `.qmd/index.yml`, where they resolve from the project root; inline SDK paths resolve from the working directory. Project-local cache paths outside the project follow the existing `qmd trust` policy. Omitting the field keeps memory-only caching; a blank value is invalid.
-
-With a directory configured, OpenAI-compatible and Voyage providers use `document-embeddings-v1.sqlite` as the authoritative document cache. Processes pointing to the same local directory share atomic writes and a crash-released SQLite lock, including separate OpenClaw plugin generations. Cache-miss batches in one directory are serialized; use separate directories for unrelated workloads if independent throughput matters. A normal disk retains the cache across restarts; tmpfs works too, but its contents disappear on reboot and consume RAM. QMD creates the directory as needed and does not mount tmpfs.
-
-Both modes reuse results for up to two hours, with at most 2,000 entries and a 64 MiB payload budget (SQLite files and journals add overhead). Reuse requires matching provider configuration, credentials, build identity, and exact formatted input. Memory mode also separates different fetch transports; disk mode deliberately shares across transports and processes using that configured directory. Only vectors and hashed keys are persisted, never input text or raw API keys. Each store retains its own authorization, build lease, and index. Forced rebuilds bypass reuse and refresh the shared vectors. Query embeddings keep their separate cache, and read-only SDK stores do not open the disk document cache.
-
-Corrupt individual entries are recomputed. An unavailable or corrupt cache database emits a warning and falls back to normal computation without deleting the file or blocking indexing. Expiration, eviction, forced rebuilds, failed requests, and crash recovery can require new API calls; this is deduplication, not an exactly-once billing guarantee.
-
-The vector index can store only one dimension. A dimension or identity change requires a forced rebuild:
-
-```sh
-qmd embed --force
-```
-
-Remote document chunks use deterministic UTF-8 byte windows. Query embedding is allowed only when the same identity is `ready` and compatible vectors exist; a vector or hybrid query then sends the formatted query text to the configured remote provider. After a vector reset deletes the old vectors, there is no vector rollback; lexical search remains available while rebuilding.
-
-#### Embedding identity, recovery, and data boundary
-
-The vector index holds one vector dimension at a time. An embedding identity includes
-the provider, model, dimension, local/remote mode, and prompt/chunking profiles;
-changing it requires `qmd embed --force`. A build lease with an owner ID and
-generation sequence prevents concurrent writers. If an embedding request fails or
-the lease expires, the index enters `Partial`; rerunning `qmd embed` with the same
-identity resumes committed work and requests only missing, vector-only,
-metadata-only, or layout-incomplete chunks. Vector search reads only `ready`
-vectors with a compatible fingerprint.
-
-Remote document chunks and formatted query text are sent to the configured remote
-embedding provider. Remote embedding failures **never fall back to a local
-embedding provider**, because vectors from a different identity are incompatible.
-API keys are read only from process environment variables and are never stored in
-SQLite, diagnostics, logs, or errors. Errors redact response bodies, request
-payloads, credentials, and sensitive URLs; identity and lease state are
-revalidated inside SQLite write locks before vectors are cleared or published.
-
-Remote LLM routing is independent per operation: expansion and reranking may each
-use separately configured remote endpoints. Remote failures do not fall back to local inference;
-dedicated `/v1/rerank` endpoints that return HTTP 404 fall back to structured Chat
-Completions reranking. This fallback does not apply to remote embeddings.
-
-`qmd status` and `qmd doctor` report provider/model/dimension, short fingerprint,
-key presence as a boolean, pending/inconsistent chunks, CJK channel readiness, and
-actionable repair commands. Diagnostics are read-only: they do not create schemas,
-modify SQLite databases, load local models, or issue remote HTTP requests.
-
-### CJK Lexical Search, Expansion, and Dictionary Maintenance
-
-CJK lexical search combines independent character, word, and bigram channels by
-rank. If Jieba or the published word/bigram index is unavailable, stale, or
-incompatible, QMD omits both analyzed channels and falls back to character-only
-search instead of failing the query or issuing an empty FTS match. `qmd status`
-reports the reason and remediation.
-
-Each lexical channel ranks candidates independently before channel-aware weighted
-RRF combines them; raw channel scores are never summed. The original query runs
-through every available lexical and vector path at ×2 weight. Typed expansion
-variants are ×1: `lex` variants use the character, word, and bigram channels,
-while `vec` and `hyde` variants use vector search. Use `--explain` to inspect
-channel contributions and tie-breakers.
-
-Query expansion uses one shared `auto | force | skip` policy across CLI, SDK, and
-MCP. Precedence is: explicit skip or `lex:` skips expansion; explicit force,
-`expand:`, or `--expand` forces it; under `auto`, eligible queries expand when a remote LLM (`generate_api_url`) is configured; strong lexical
-signals skip expansion, and remaining queries expand. Expanded queries automatically maintain language consistency with the user query.
-
-#### CJK index publication and recovery
-
-Published character, word, and bigram indexes are updated atomically with a
-synchronous document mutation. Rebuilds populate shadow tables from a stable read
-snapshot; mutations after that snapshot are recorded in a journal and replayed
-before an atomic publication. The analyzer fingerprint includes normalization
-rules, Jieba capability, built-in and optional user dictionary hashes, and token
-stream parameters. A changed fingerprint triggers a rebuild rather than allowing
-semantically incompatible analyzed indexes to remain active.
-
-If a builder lease expires, cleanup restores `Ready`, `Empty`, or `Dirty` based on
-the published index and dirty markers. `qmd status` and `qmd doctor` identify the
-current cause and remediation. If Jieba is unavailable during a build, analyzed
-channels are marked unavailable and search continues through the character channel.
-
-QMD ships `zh-dict`, a single Jieba dictionary containing both Traditional and
-Simplified Chinese entries. It deterministically combines the upstream
-`@node-rs/jieba` dictionary, APCLab's `jieba-tw` dictionary, and selected
-technical terminology from zhtw-mcp. A configured user dictionary is loaded
-after `zh-dict`, so user entries retain the highest priority.
-
-The runtime, build, and package installation never download dictionary sources.
-Maintainers can regenerate the checked-in asset from the fixed source pins and
-content hashes in `src/search/zh-dict.sources.json`:
-
-```sh
-# Verify every pinned source and regenerate src/search/zh-dict.txt
-pnpm dict:sync
-
-# Intentionally advance the configured upstream branch pins, then regenerate
-pnpm dict:sync -- --update-pins
-```
-
-`dict:sync` records the generated asset's SHA-256 in the source configuration.
-Review the resulting pin and dictionary diff before committing an update.
-
 ## Installation
 
 ```sh
-npm install -g @wei840222/qmd
-# or
-pnpm add -g @wei840222/qmd
+pnpm add --global @wei840222/qmd
 ```
 
 ### Development
@@ -869,113 +136,24 @@ pnpm add -g @wei840222/qmd
 ```sh
 git clone https://github.com/wei840222/qmd
 cd qmd
-pnpm install
-npm link
+pnpm install --frozen-lockfile
+pnpm run build
+pnpm qmd --version
+pnpm qmd --help
 ```
 
-## Usage
+For contributor workflows, source locations, and validation commands, see
+[`AGENTS.md`](AGENTS.md).
 
-### Collection Management
+## Configuration
 
-```sh
-# Create a collection from current directory
-qmd collection add . --name myproject
-
-# Create a collection with explicit path and custom glob mask
-qmd collection add ~/Documents/notes --name notes --mask "**/*.md"
-
-# Comma-separated masks are a union (brace form `{a,b}` also works)
-qmd collection add ~/notes --name notes --mask "sources/**/*.md,CO - *.md"
-
-# List all collections
-qmd collection list
-
-# Remove a collection
-qmd collection remove myproject
-
-# Rename a collection
-qmd collection rename myproject my-project
-
-# List files in a collection
-qmd ls notes
-qmd ls notes/subfolder
-
-# Show collection details (path, glob mask, include status, context count, top metadata keys)
-qmd collection show notes
-
-# Discover metadata keys, types, and value counts (see Metadata Discovery)
-qmd collection metadata notes
-qmd collection metadata notes --match '{"field":"key","operator":"eq","value":"topics"}'
-qmd collection metadata notes --match '{"field":"value","operator":"eq","value":"docs-team"}'
-
-# Include or exclude a collection from default (unscoped) queries
-qmd collection include notes
-qmd collection exclude notes
-
-# Run a command before every `qmd update` (e.g. git pull); empty arg clears it
-qmd collection update-cmd notes 'git pull --rebase'
-qmd collection update-cmd notes
-```
-
-### Generate Vector Embeddings
-
-```sh
-# Embed all indexed documents (900 tokens/chunk, 15% overlap)
-qmd embed
-
-# Force re-embed everything
-qmd embed -f
-
-# Enable AST-aware chunking for code files (TS, JS, Python, Go, Rust)
-qmd embed --chunk-strategy auto
-
-# Also works with query for consistent chunk selection
-qmd query "auth flow" --chunk-strategy auto
-
-# Memory control for large corpora / constrained systems
-qmd embed --max-docs-per-batch 50   # cap docs per embedding batch
-qmd embed --max-batch-mb 64         # cap batch size in MB
-```
-
-**AST-aware chunking** (`--chunk-strategy auto`) uses tree-sitter to chunk code
-files at function, class, and import boundaries instead of arbitrary text
-positions. This produces higher-quality chunks and better search results for
-codebases. Markdown and other file types always use regex-based chunking
-regardless of strategy.
-
-The default is `regex` (existing behavior). Use `--chunk-strategy auto` to
-opt in. Run `qmd status` to verify which grammars are available.
-
-> **Note:** Tree-sitter grammars are optional dependencies. If they are not
-> installed, `--chunk-strategy auto` falls back to regex-only chunking
-> automatically.
-
-### Context Management
-
-Context adds descriptive metadata to collections and paths, helping search understand your content.
-
-```sh
-# Add context to a collection (using qmd:// virtual paths)
-qmd context add qmd://notes "Personal notes and ideas"
-qmd context add qmd://docs/api "API documentation"
-
-# Add context from within a collection directory
-cd ~/notes && qmd context add "Personal notes and ideas"
-cd ~/notes/work && qmd context add "Work-related notes"
-
-# Add global context (applies to all collections)
-qmd context add / "Knowledge base for my projects"
-
-# List all contexts
-qmd context list
-
-# Remove context
-qmd context rm qmd://notes/old
-```
+Collections, contexts, and optional model settings live in `index.yml`.
+Start with [`example-index.yml`](example-index.yml); its model section is
+commented out so keyword search works without enabling remote requests.
 
 ### Configuring `index.yml`
 
-The `collection` and `context` commands above all read and write a single YAML
+The `collection` and `context` commands read and write a single YAML
 config file — you can also edit it directly. Everything QMD knows about your
 collections (paths, masks, exclusions, per-collection update hooks, contexts, and
 optional model overrides) lives here. A fully-commented starter template ships as
@@ -1102,6 +280,284 @@ should allow them unattended. Your own `~/.config/qmd/*.yml` — including
 anything `qmd collection update-cmd` or `qmd collection add` writes — is
 never gated.
 
+### Remote Embedding & Models Configuration (Explicit Opt-in)
+
+Configure remote embeddings and remote LLM models in `index.yml` under the unified `models:` section. Configuration alone sends no requests; embedding builds and model-backed searches are explicit operations.
+
+```yaml
+models:
+  # Remote embeddings: set both embed_api_url (or embed_url / embed_base_url) and embed_api_model.
+  # Provider is auto-detected from the model name / URL (voyage* → voyageai, otherwise openai-compatible).
+  # Optional override: embed_provider: voyageai | openai
+  embed_api_url: https://api.openai.com/v1
+  embed_api_model: text-embedding-3-small           # or text-embedding-3-large / voyage-4 / ...
+  embed_dimension: 1536                             # Optional; required for unknown custom OpenAI models
+
+  # Optional: Remote LLM Query Expansion (aliases: generate_url, generate_base_url, generate_api_url)
+  generate_api_url: https://your-model-gateway.example/v1/chat/completions
+  generate_api_model: your-expansion-model
+  # generate_api_key: <key>  # required if this endpoint authenticates requests
+
+  # Optional: Remote Reranking (aliases: rerank_url, rerank_base_url, rerank_api_url)
+  rerank_api_url: https://your-reranker.example/v1/rerank  # Cohere-shaped `results`
+  rerank_api_model: your-reranker
+  # rerank_api_key: <key>    # required if this endpoint authenticates requests
+  # For LLM scoring, use a /v1/chat/completions endpoint instead.
+
+  # Optional: TypeSafe Jev. Guides query expansion; reranks only when no rerank_api_* is configured, or as a fallback.
+  # jev_api_key: <key>                              # or TYPESAFE_API_KEY
+  # jev_base_url: https://jev.example.com           # or TYPESAFE_BASE_URL
+  # jev_api_model: jev-1.13                         # or TYPESAFE_DEFAULT_MODEL
+
+# Optional: Custom User Dictionary for CJK segmentation
+dictionary: ~/.config/qmd/dictionary.txt
+```
+
+#### OpenAI-compatible embeddings
+
+```yaml
+models:
+  embed_api_url: https://api.openai.com/v1
+  embed_api_model: text-embedding-3-small   # or text-embedding-3-large
+  # embed_dimension: 1536                   # optional for known models; required for unknown custom models
+```
+
+```sh
+export OPENAI_API_KEY="..."   # or models.embed_api_key in a private config
+qmd embed
+```
+
+#### Voyage AI embeddings
+
+Voyage is a first-class provider (`voyageai`). Model names starting with `voyage` (or an explicit `embed_provider: voyageai`) select it. Known models resolve default dimensions automatically (`voyage-4` / `voyage-4-large` / `voyage-3` → 1024, `voyage-3-lite` / `voyage-3.5-lite` → 512, etc.). Voyage requests use native `output_dimension` and `input_type` (`query` vs `document`); they do not send OpenAI `encoding_format`.
+
+Official Voyage endpoint:
+
+```yaml
+models:
+  embed_api_url: https://api.voyageai.com/v1   # optional when embed_provider: voyageai (default base URL)
+  embed_api_model: voyage-4                    # or voyage-4-large, voyage-3, voyage-code-3, ...
+  # embed_provider: voyageai                   # optional; inferred from voyage* model names
+  # embed_dimension: 1024                      # optional override / Matryoshka truncation when supported
+```
+
+```sh
+export VOYAGE_API_KEY="..."   # or models.embed_api_key in a private config
+qmd embed
+```
+
+OpenAI-compatible proxy hosting Voyage (Bifrost, LiteLLM, etc.):
+
+```yaml
+models:
+  embed_api_url: https://your-proxy.example/v1
+  embed_api_model: voyage-4
+  # embed_provider: voyageai   # set if the model name alone is not enough to infer Voyage
+```
+
+```sh
+# Prefer VOYAGE_API_KEY. OPENAI_API_KEY is accepted only for non-official Voyage base URLs
+# (custom proxies). Official api.voyageai.com never falls back to OPENAI_API_KEY.
+export VOYAGE_API_KEY="..."
+# export OPENAI_API_KEY="..."  # proxy-only fallback when VOYAGE_API_KEY is unset
+qmd embed
+```
+
+**URL fields:** choose one alias per operation: `*_url` takes precedence over
+`*_base_url`, then `*_api_url`. Embedding URLs are base URLs: the provider appends
+`/embeddings`. Expansion and reranking also accept complete endpoints ending in
+`/chat/completions` or `/rerank`; a base URL gets `/chat/completions` for expansion
+or `/rerank` for reranking. Configure the full `/chat/completions` URL explicitly
+for chat scoring; QMD does not discover a sibling chat endpoint automatically.
+Dedicated rerank endpoints must return `results[].{index,relevance_score}`.
+[Voyage's rerank API](https://docs.voyageai.com/reference/reranker-api) returns
+`data`, which needs a gateway that translates it to this shape.
+
+**Credentials:** OpenAI-compatible embeddings use `models.embed_api_key`, then
+`OPENAI_API_KEY`. Voyage uses `models.embed_api_key`, then `VOYAGE_API_KEY`, with
+`OPENAI_API_KEY` accepted only for custom Voyage proxies. Expansion and reranking
+use their own `models.generate_api_key` and `models.rerank_api_key`; they do not
+inherit `OPENAI_API_KEY`. An unset key omits the Authorization header, for keyless
+gateways. YAML does not interpolate `${ENV_VAR}` placeholders. Keep actual keys
+out of checked-in files; use the supported embedding/Jev environment variables
+or an explicitly managed private config.
+
+> **CLI, SDK & MCP Integration:** Remote LLM query expansion and LLM Chat Reranking are automatically wired into CLI (`qmd query`), SDK (`createStore`), and MCP. Query expansion automatically enforces query language & script consistency (e.g., Traditional Chinese queries generate Traditional Chinese `lex`, `vec`, and `hyde` variations). LLM Chat Reranking features prompt-tail Recency Enforcement and strict JSON sanitization to ensure safe execution with any remote LLM backend.
+
+`qmd init` writes index and collection defaults only; it does not prompt for or generate model configuration. To use a remote endpoint, edit `index.yml` manually and set credentials when required.
+
+> **API Key Note:** Remote embeddings require both an embedding endpoint (`embed_url`, `embed_base_url`, or `embed_api_url`) and `embed_api_model` (unless `embed_provider: voyageai` supplies the Voyage default model/URL). Official OpenAI needs `models.embed_api_key` or `OPENAI_API_KEY`; official Voyage needs `models.embed_api_key` or `VOYAGE_API_KEY`. Custom OpenAI-compatible proxies may omit a key when the upstream is keyless. For Voyage-shaped traffic through a custom proxy only, `OPENAI_API_KEY` may fill in when `VOYAGE_API_KEY` is unset — never for `https://api.voyageai.com/v1`. QMD never writes keys to SQLite, diagnostics, logs, or error messages.
+
+Configure `embed_url`, `embed_base_url`, or `embed_api_url` together with `embed_api_model` to enable remote embeddings. OpenAI-compatible providers receive `POST /embeddings`; Voyage AI uses its native embeddings payload (`input_type`, optional `output_dimension`). Changing the endpoint, provider, or model changes the remote embedding identity and requires a vector rebuild.
+
+Remote document embeddings use a bounded memory cache by default, shared by stores using the same loaded QMD module instance. To share results across processes, plugin reloads, and process restarts, add an optional cache directory to the existing `models` configuration:
+
+```yaml
+models:
+  embed_api_url: https://api.openai.com/v1
+  embed_api_model: text-embedding-3-small
+  embed_cache_dir: ~/.cache/qmd/embeddings
+  # Linux tmpfs alternative: /dev/shm/qmd-embeddings
+```
+
+The SDK accepts the same field in `createStore({ config: { collections: ..., models: ... } })`; callers such as plugins must forward it into QMD's config. Paths support `~`. Relative paths resolve from the YAML directory, except project-local `.qmd/index.yml`, where they resolve from the project root; inline SDK paths resolve from the working directory. Project-local cache paths outside the project follow the existing `qmd trust` policy. Omitting the field keeps memory-only caching; a blank value is invalid.
+
+With a directory configured, OpenAI-compatible and Voyage providers use `document-embeddings-v1.sqlite` as the authoritative document cache. Processes pointing to the same local directory share atomic writes and a crash-released SQLite lock, including separate OpenClaw plugin generations. Cache-miss batches in one directory are serialized; use separate directories for unrelated workloads if independent throughput matters. A normal disk retains the cache across restarts; tmpfs works too, but its contents disappear on reboot and consume RAM. QMD creates the directory as needed and does not mount tmpfs.
+
+Both modes reuse results for up to two hours, with at most 2,000 entries and a 64 MiB payload budget (SQLite files and journals add overhead). Reuse requires matching provider configuration, credentials, build identity, and exact formatted input. Memory mode also separates different fetch transports; disk mode deliberately shares across transports and processes using that configured directory. Only vectors and hashed keys are persisted, never input text or raw API keys. Each store retains its own authorization, build lease, and index. Forced rebuilds bypass reuse and refresh the shared vectors. Query embeddings keep their separate cache, and read-only SDK stores do not open the disk document cache.
+
+Corrupt individual entries are recomputed. An unavailable or corrupt cache database emits a warning and falls back to normal computation without deleting the file or blocking indexing. Expiration, eviction, forced rebuilds, failed requests, and crash recovery can require new API calls; this is deduplication, not an exactly-once billing guarantee.
+
+The vector index can store only one dimension. A dimension or identity change requires a forced rebuild:
+
+```sh
+qmd embed --force
+```
+
+Remote document chunks use deterministic UTF-8 byte windows. Query embedding is allowed only when the same identity is `ready` and compatible vectors exist; a vector or hybrid query then sends the formatted query text to the configured remote provider. After a vector reset deletes the old vectors, there is no vector rollback; lexical search remains available while rebuilding.
+
+#### Embedding identity, recovery, and data boundary
+
+The vector index holds one vector dimension at a time. An embedding identity includes
+the provider, model, dimension, local/remote mode, and prompt/chunking profiles;
+changing it requires `qmd embed --force`. A build lease with an owner ID and
+generation sequence prevents concurrent writers. If an embedding request fails or
+the lease expires, the index enters `Partial`; rerunning `qmd embed` with the same
+identity resumes committed work and requests only missing, vector-only,
+metadata-only, or layout-incomplete chunks. Vector search reads only `ready`
+vectors with a compatible fingerprint.
+
+Remote document chunks and formatted query text are sent to the configured remote
+embedding provider. Remote embedding failures **never fall back to a local
+embedding provider**, because vectors from a different identity are incompatible.
+API keys follow the per-operation config/environment rules above and are never
+stored in SQLite, diagnostics, logs, or errors. Errors redact response bodies, request
+payloads, credentials, and sensitive URLs; identity and lease state are
+revalidated inside SQLite write locks before vectors are cleared or published.
+
+Remote LLM routing is independent per operation: expansion and reranking may each
+use separately configured remote endpoints. Remote failures do not fall back to local inference;
+a dedicated rerank URL returning HTTP 404 retries with a chat-scoring payload at
+the same URL. It does not rewrite the URL to `/chat/completions`; configure that
+endpoint explicitly when the backend expects chat scoring. This behavior does
+not apply to remote embeddings.
+
+`qmd status` and `qmd doctor` report provider/model/dimension, short fingerprint,
+key presence as a boolean, pending/inconsistent chunks, CJK channel readiness, and
+actionable repair commands without loading local models or issuing remote HTTP
+requests. `qmd status` reads the existing index without migration. `qmd doctor`
+reconciles a valid YAML config into an existing database and can initialize its
+schema, including vector layout conversion; follow the upgrade backup procedure
+before running it on an older index.
+
+Expansion and reranking need their own URL/model settings. Jev supplies intent
+hints, not a replacement generator. A failed API request does not permanently
+disable that endpoint; later requests can retry. When Jev is available as the
+rerank fallback, QMD waits 60 seconds by default before trying a failed rerank API
+again. Cancellation does not start a fallback request.
+
+## Usage
+
+### Collection Management
+
+```sh
+# Create a collection from current directory
+qmd collection add . --name myproject
+
+# Create a collection with explicit path and custom glob mask
+qmd collection add ~/Documents/notes --name notes --mask "**/*.md"
+
+# Comma-separated masks are a union (brace form `{a,b}` also works)
+qmd collection add ~/notes --name notes --mask "sources/**/*.md,CO - *.md"
+
+# List all collections
+qmd collection list
+
+# Remove a collection
+qmd collection remove myproject
+
+# Rename a collection
+qmd collection rename myproject my-project
+
+# List files in a collection
+qmd ls notes
+qmd ls notes/subfolder
+
+# Show collection details (path, glob mask, include status, context count, top metadata keys)
+qmd collection show notes
+
+# Discover metadata keys, types, and value counts (see Metadata Discovery)
+qmd collection metadata notes
+qmd collection metadata notes --match '{"field":"key","operator":"eq","value":"topics"}'
+qmd collection metadata notes --match '{"field":"value","operator":"eq","value":"docs-team"}'
+
+# Include or exclude a collection from default (unscoped) queries
+qmd collection include notes
+qmd collection exclude notes
+
+# Run a command before every `qmd update` (e.g. git pull); empty arg clears it
+qmd collection update-cmd notes 'git pull --rebase'
+qmd collection update-cmd notes
+```
+
+### Generate Vector Embeddings
+
+```sh
+# Embed all indexed documents (900 tokens/chunk, 15% overlap)
+qmd embed
+
+# Force re-embed everything
+qmd embed -f
+
+# Enable AST-aware chunking for code files (TS, JS, Python, Go, Rust)
+qmd embed --chunk-strategy auto
+
+# Also works with query for consistent chunk selection
+qmd query "auth flow" --chunk-strategy auto
+
+# Memory control for large corpora / constrained systems
+qmd embed --max-docs-per-batch 50   # cap docs per embedding batch
+qmd embed --max-batch-mb 64         # cap batch size in MB
+```
+
+**AST-aware chunking** (`--chunk-strategy auto`) uses tree-sitter to chunk code
+files at function, class, and import boundaries instead of arbitrary text
+positions. This produces higher-quality chunks and better search results for
+codebases. Markdown and other file types always use regex-based chunking
+regardless of strategy.
+
+The default is `regex` (existing behavior). Use `--chunk-strategy auto` to
+opt in. Run `qmd status` to verify which grammars are available.
+
+> **Note:** Tree-sitter grammars are optional dependencies. If they are not
+> installed, `--chunk-strategy auto` falls back to regex-only chunking
+> automatically.
+
+### Context Management
+
+Context adds descriptive metadata to collections and paths, helping search understand your content.
+
+```sh
+# Add context to a collection (using qmd:// virtual paths)
+qmd context add qmd://notes "Personal notes and ideas"
+qmd context add qmd://docs/api "API documentation"
+
+# Add context from within a collection directory
+cd ~/notes && qmd context add "Personal notes and ideas"
+cd ~/notes/work && qmd context add "Work-related notes"
+
+# Add global context (applies to all collections)
+qmd context add / "Knowledge base for my projects"
+
+# List all contexts
+qmd context list
+
+# Remove context
+qmd context rm qmd://notes/old
+```
+
+
+
 ### Search Commands
 
 ```
@@ -1148,7 +604,7 @@ qmd query $'intent: web page load times\nlex: performance\nvec: how to improve p
 
 ### Options
 
-```sh
+```text
 # Search options
 -n <num>           # Number of results (default: 5, or 20 for --files/--json)
 -c, --collection   # Restrict search to a specific collection
@@ -1379,7 +835,7 @@ topics  string[]  260 of 312 documents  811 distinct
 
 Two windows page the key and value lists. Each windowed list ends with the exact remainder and the flags that reach it:
 
-```sh
+```text
 --key-limit <n>      # Keys reported, in coverage order (default 50)
 --key-offset <n>     # Keys skipped before the window
 --all-keys           # Remove the key window
@@ -1568,7 +1024,7 @@ qmd status
 # (e.g. `git pull`), it runs first — set one with `qmd collection update-cmd`.
 qmd update
 
-# Diagnose the install (runtime, sqlite-vec, embedding fingerprints, remote configuration)
+# Diagnose the install; can reconcile config and migrate an older index
 qmd doctor
 
 # Initialize a project-local index in the current directory
@@ -1602,9 +1058,26 @@ qmd multi-get "docs/*.md" --max-bytes 20480
 # Output multi-get as JSON for agent processing
 qmd multi-get "docs/*.md" --json
 
-# Drop caches and orphans; repack the vector table when it has holes
+# Preview cleanup actions; writable initialization can still migrate an old index
+qmd cleanup --dry-run
+
+# Drop caches and orphans; repack sparse vector chunks within each partition
 qmd cleanup
 ```
+
+`--dry-run` skips cleanup deletion, repacking, FTS optimization, and vacuum;
+it does not make the CLI's store initialization read-only. Use the upgrade
+backup procedure before any writable open of an older index.
+
+Cleanup repacks when the table's useful-chunk occupancy is below 90% and an
+older sparse chunk can move. Each chunk moves in its own transaction; rowids,
+partitions, vector bytes, chunk metadata, and embedding identity are preserved
+by the repack itself. Normal orphan cleanup still removes rows no active
+document needs. Live chunks with missing vectors stay pending for an explicit
+`qmd embed`; cleanup does not call a model or re-embed them.
+
+SDK callers can use `Maintenance.vectorLayout()`, `preview()`, `repackVectors()`,
+and `run()` for the same layout and maintenance operations.
 
 ### Benchmarking
 
@@ -1627,7 +1100,7 @@ qmd bench src/bench/fixtures/example.json --json
 
 > The example fixture (`src/bench/fixtures/example.json`) and its test corpus
 > (`test/eval-docs/`) exist only in a git checkout — they are **not** part of the
-> published npm package. If you installed via `npm`/`npx`, write your own fixture
+> published npm package. If you installed the package, write your own fixture
 > (see below) against a collection you have already indexed:
 >
 > ```sh
@@ -1675,6 +1148,614 @@ grouping — it does not change search behavior.
 > completion and reports all zeros with no warning. Verify setup with
 > `qmd ls <collection>` first.
 
+## Upgrading
+
+### Upgrading the vector layout
+
+Vectors are stored in one index partitioned by collection, so a scoped query scans
+only that collection's vectors. An index written by an older build keeps its vectors
+in a single `vectors_vec` table; the first writable store open converts it in
+place. Read-only SDK/MCP stores and `qmd status` do not run this conversion.
+`qmd doctor` can open an existing index writable when its config is parsed, and
+`qmd cleanup --dry-run` opens a writable store before previewing cleanup; both
+can therefore trigger initialization and migration. Back up before using either
+on an older index.
+For a `hash_seq`-keyed legacy table with parsed dimensions, the conversion
+copies, byte for byte, every vector whose chunk metadata belongs to an active
+document. It sends no request to any provider, never re-embeds, and leaves
+`embedding_index_state` alone. Vectors with no chunk metadata or no active
+document are not copied. Chunk metadata with no vector is deleted so the next
+`qmd embed` recreates it; this differs from `qmd update` and `qmd cleanup`, which
+retain a live document's vectorless metadata and leave it pending. A readable
+legacy table that is not keyed by `hash_seq`, or whose dimensions cannot be
+parsed, is dropped without copying its vectors. For a supported table, the
+conversion prints its progress, resumes if interrupted, and drops the old table
+in the transaction that stamps the new schema version, after a verification
+pass that copies rows the walk missed. It then runs a `VACUUM` that can take
+minutes on a large index. Do not run an older build against the index while it
+converts. Without sqlite-vec loaded the conversion is deferred and keyword
+search keeps working.
+
+Before the first writable open, stop all CLI writers and MCP clients that hold
+the index. For a systemd user service, stop its unit first. Keep those processes
+stopped while copying the main database and any WAL/SHM sidecars; copying a live
+WAL database file by file is not a consistent backup.
+
+```sh
+# Use your actual unit name, if managed by systemd
+systemctl --user stop qmd-mcp-http.service
+
+qmd_backup_dir="$HOME/.local/state/qmd/backups/$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$qmd_backup_dir"
+chmod 700 "$qmd_backup_dir"
+cp -p "$HOME"/.cache/qmd/index.sqlite* "$qmd_backup_dir/"
+chmod 600 "$qmd_backup_dir"/index.sqlite*
+```
+
+Adjust paths and index selection for named or project-local indexes. Verify the
+backup before continuing. Update the installed code, check `qmd --version`, then
+run `qmd ls` against that same index to trigger initialization without embedding
+or update hooks. Restart MCP after the conversion finishes.
+
+An older build cannot read the converted layout. To roll back, stop all index
+holders, move aside **all** converted database components, and restore the complete
+pre-upgrade backup before starting the older build. Never pair an old main file
+with a new WAL/SHM. Without a pre-upgrade backup, returning to the old vector
+layout requires a full paid `qmd embed --force`.
+
+### Breaking SDK changes
+
+The supported package entry remains `createStore()` with the existing remote
+`config.models` fields. Local-model execution through `embed`, vector search,
+expansion, and reranking is retired: missing remote settings now fail explicitly.
+Model-free callers should use `searchLex()` or explicit lexical queries with
+`rerank: false` and expansion skipped; model-backed queries never silently skip
+required expansion or reranking.
+
+Code importing implementation modules must migrate away from `LlamaCpp`,
+`LlamaCppConfig`, `LocalEmbeddingProvider`, `LocalEmbeddingProviderOwner`,
+`withLLMSession`, the default-Llama singleton helpers, `pullModels`, GGUF/cache
+inspection, GPU helpers, and local tokenization APIs. They are removed, as is
+`store.internal.localLlm`. Shared model types and pure formatting helpers remain
+separate from inference; scoped sessions require an explicit remote owner.
+Existing local identity labels remain diagnostic data, not executable providers.
+
+## MCP Server
+
+Although the tool works perfectly fine when you just tell your agent to use it on the command line, it also exposes an MCP (Model Context Protocol) server for tighter integration.
+
+**Tools exposed:**
+- `query` — Search with typed sub-queries (`lex`/`vec`/`hyde`), combined via RRF + reranking
+- `get` — Retrieve a document by path or docid (with fuzzy matching suggestions)
+- `multi_get` — Batch retrieve by glob pattern, comma-separated list, or docids
+- `status` — Index health and collection info, including each collection's top metadata keys
+- `metadata` — Discover metadata keys, types, and value counts to filter on
+
+### Stdio Transport (Default)
+
+Add QMD to your MCP client configuration (e.g. Cursor, Claude Desktop, Zed, or other MCP-compatible clients):
+
+```json
+{
+  "mcpServers": {
+    "qmd": {
+      "command": "qmd",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### HTTP Transport
+
+By default, QMD's MCP server uses stdio (launched as a subprocess by each client). For a shared, long-lived server used by multiple clients, use the HTTP transport:
+
+```sh
+# Foreground (Ctrl-C to stop)
+qmd mcp --http                    # localhost:8181
+qmd mcp --http --port 8080        # custom port
+qmd mcp --http --host 0.0.0.0     # bind all interfaces (e.g. container probes)
+
+# Background daemon
+qmd mcp --http --daemon           # start, writes PID to ~/.cache/qmd/mcp.pid
+qmd mcp stop                      # stop via PID file
+qmd status                        # shows "MCP: running (PID ...)" when active
+```
+
+The server binds to `localhost` by default. Pass `--host` (or set the `QMD_HOST`
+environment variable) to override — `--host 0.0.0.0` is useful when the server
+runs in a container and a liveness probe connects from a non-loopback address.
+
+The HTTP server exposes these endpoints:
+- `POST /mcp` — MCP Streamable HTTP (JSON responses, stateless)
+- `POST /query` (alias `/search`) — structured search without the MCP protocol. Accepts the same optional `filter` object as the `query` tool (invalid filters return `400`); see [Metadata Filtering](#metadata-filtering)
+- `POST /metadata` — metadata discovery without the MCP protocol. Same body as the `metadata` tool (invalid filters return `400`); see [Metadata Discovery](#metadata-discovery)
+- `GET /health` — liveness check with uptime
+
+
+#### Origin and Host validation
+
+Every request is screened before routing: a request carrying an `Origin` header
+that does not name a loopback address is rejected with `403`, as is a `Host`
+header naming something other than the address the server is bound to. This is
+what stops a web page you visit from reading your index through DNS rebinding —
+loopback binding alone does not, since the browser makes the request from your
+own machine.
+
+Requests without an `Origin` header — curl, MCP clients, editors — are
+unaffected, which covers every normal local client.
+
+| Variable | Effect |
+|----------|--------|
+| `QMD_ALLOWED_ORIGINS` | Comma-separated origins to accept in addition to loopback, e.g. `https://notes.internal`. Set to `*` to disable the check entirely. |
+| `QMD_ALLOWED_HOSTS` | Comma-separated `Host` values to accept in addition to loopback and the bind address. |
+
+`--host 0.0.0.0` cannot know which `Host` values are legitimate, so it skips the
+host check and warns at startup. Set `QMD_ALLOWED_HOSTS` to re-enable it, and
+remember the endpoints are unauthenticated — put your own auth in front of a
+server that is reachable off-host.
+
+MCP uses remote API clients for model operations. It does not load models into local RAM or VRAM.
+
+Point any MCP client at `http://localhost:8181/mcp` to connect.
+
+MCP opens the index read-only: starting it does not migrate an older vector
+layout or rebuild embeddings. Complete the [layout upgrade](#upgrading-the-vector-layout)
+with a writable CLI command before starting MCP on an older index. Restart the
+server after changing its installed code, model settings, or collection config.
+After editing collection/context YAML manually, first run `qmd ls` to reconcile
+those settings into SQLite; read-only MCP does not synchronize the config itself.
+Path/pattern changes still require an explicit `qmd update` to re-index files.
+
+For a model-free smoke test, call the `query` tool with these arguments:
+
+```json
+{"searches":[{"type":"lex","query":"project"}],"rerank":false,"limit":1}
+```
+
+Typed `lex` skips expansion and vector search; `rerank: false` also disables
+reranking, which otherwise defaults to true. `/health` checks process liveness,
+not retrieval or remote-model availability.
+
+#### Running with systemd (Linux)
+
+An existing user service, for example `qmd-mcp-http.service`, should run
+`qmd mcp --http --host 127.0.0.1 --port 8181` in the foreground, without
+`--daemon`. Set its `ExecStart` to the absolute CLI path returned by
+`command -v qmd`, and make Node.js available in the service's `PATH`.
+The service manager owns restarts; `qmd mcp stop` only manages QMD's own daemon.
+
+```sh
+# After installing or editing your user unit
+systemctl --user daemon-reload
+systemctl --user enable --now qmd-mcp-http.service
+systemctl --user status qmd-mcp-http.service
+curl --fail http://127.0.0.1:8181/health
+```
+
+When updating a linked CLI, stop the service, follow the [backup procedure](#upgrading-the-vector-layout),
+update and build the checkout that `qmd` resolves to, and check
+`qmd --version` for its commit. Run `qmd ls` once to complete any writable
+layout upgrade, then use `systemctl --user start qmd-mcp-http.service`.
+For an already upgraded index, use `systemctl --user restart qmd-mcp-http.service`
+after code or config changes.
+
+### MCP Tool Parameters
+
+| Tool | Parameter | Type | Notes |
+|------|-----------|------|-------|
+| `query` | `query` | string | Plain query evaluated by the shared expansion policy. Mutually exclusive with `searches`; exactly one is required. |
+| `query` | `searches` | array | Typed sub-queries (`lex`/`vec`/`hyde`), 1–10. Mutually exclusive with `query`; exactly one is required. First gets 2x weight. |
+| `query` | `expansion` | string | Plain-query policy: `auto` (default), `force`, or `skip`. Ignored when `searches` is used. |
+| `query` | `collections` | string[] | Filter by collection names (OR). **Array only** — singular `collection` is silently ignored. |
+| `query` | `filter` | object | Metadata filter (recursive `operator`-discriminated JSON AST; see [Metadata Filtering](#metadata-filtering)) |
+| `query` | `expansionContext` | string | Additional context used only to generate `lex` / `vec` / `hyde` query expansions. |
+| `query` | `rerankContext` | string | Additional context used only for reranking and snippet/chunk selection. |
+| `query` | `intent` | string | Disambiguation context (alias for expansionContext & rerankContext; does not search on its own) |
+| `query` | `limit` | number | Max results (default 10) |
+| `query` | `minScore` | number | Minimum relevance 0–1 (default 0) |
+| `query` | `candidateLimit` | number | Max candidates to rerank (default 40) |
+| `query` | `rerank` | boolean | Run LLM reranking (default **true**); set false for RRF-only |
+| `query` | `explain` | boolean | Include retrieval traces and the expansion decision or typed-query error (default **false**) |
+| `get` | `file` | string | Path, docid (`#abc123`), or `path:from:count` (e.g. `#abc123:120:40`) |
+| `get` | `fromLine` | number | Start line (1-indexed); overrides the `:from` suffix |
+| `get` | `maxLines` | number | Limit returned lines |
+| `get` | `lineNumbers` | boolean | Prefix lines with numbers (default **true**) |
+| `multi_get` | `pattern` | string | Glob pattern or comma-separated list |
+| `multi_get` | `maxBytes` | number | Skip files larger than N (default 10240) |
+| `multi_get` | `maxLines` | number | Limit lines per file |
+| `multi_get` | `lineNumbers` | boolean | Prefix lines with numbers (default **true**) |
+| `metadata` | `collections` | string[] | Restrict discovery to collection names (default: the collections `query` searches) |
+| `metadata` | `match` | object | Report only metadata entries matching this condition (same AST as `filter`, with `field` naming the entry's `key` or `value`) |
+| `metadata` | `filter` | object | Count only documents matching this filter (same AST as `query`) |
+| `metadata` | `keyLimit` | number | Keys reported (default 50). `totalKeys` and `remainingKeys` describe the rest |
+| `metadata` | `keyOffset` | number | Keys skipped before the window, in report order (default 0) |
+| `metadata` | `valueLimit` | number | Values reported per key and type (default 10). `remainingValues` reports the rest |
+| `metadata` | `valueOffset` | number | Values skipped per key and type before the window, in `sort` order (default 0) |
+| `metadata` | `sort` | string | `count` (default) or `value` |
+| `metadata` | `minCount` | number | Hide values held by fewer documents (default 1) |
+
+Unknown parameters are silently ignored (not rejected) — double-check names if
+results seem unscoped. The HTTP `/query` and `/search` endpoints return
+`qmd://collection/path` URIs in the `file` field, matching the CLI and MCP output.
+
+## Using with AI Agents
+
+QMD's `--json` and `--files` output formats are designed for agentic workflows:
+
+```sh
+# Get structured results for an LLM
+qmd search "authentication" --json -n 10
+
+# List all relevant files above a threshold
+qmd query "error handling" --all --files --min-score 0.4
+
+# Retrieve full document content
+qmd get "docs/api-reference.md" --full
+```
+
+QMD also ships a runtime skill that tells an agent how to use it:
+
+```sh
+qmd skills list              # List the bundled skills (name and description)
+qmd skills get qmd           # Print the QMD skill; add --full to include its references
+qmd skills path              # Print the directory the bundled skills live in
+qmd skill show               # Print the QMD skill
+qmd skill install            # Install it into ./.agents/skills/qmd
+qmd skill install --global   # ...or into ~/.agents/skills/qmd
+                             # --yes also creates the .claude/skills/qmd symlink
+                             # -f, --force replaces an existing install or symlink
+```
+
+## SDK / Library Usage
+
+Use QMD as a library in your own Node.js applications.
+
+### SDK Installation
+
+```sh
+pnpm add @wei840222/qmd
+```
+
+### SDK Quick Start
+
+```typescript
+import { createStore } from '@wei840222/qmd'
+
+const store = await createStore({
+  dbPath: './my-index.sqlite',
+  config: {
+    collections: {
+      docs: { path: '/path/to/docs', pattern: '**/*.md' },
+    },
+  },
+})
+
+const results = await store.searchLex("authentication flow")
+console.log(results.map(r => `${r.title} (${Math.round(r.score * 100)}%)`))
+
+await store.close()
+```
+
+### Store Creation
+
+`createStore()` accepts three modes:
+
+```typescript
+import { createStore } from '@wei840222/qmd'
+
+// 1. Inline config — no files needed besides the DB
+const store = await createStore({
+  dbPath: './index.sqlite',
+  config: {
+    collections: {
+      docs: { path: '/path/to/docs', pattern: '**/*.md' },
+      notes: { path: '/path/to/notes' },
+    },
+  },
+})
+
+// 2. YAML config file — collections defined in a file
+const store2 = await createStore({
+  dbPath: './index.sqlite',
+  configPath: './qmd.yml',
+})
+
+// 3. DB-only — reopen a previously configured store
+const store3 = await createStore({ dbPath: './index.sqlite' })
+```
+
+### Search
+
+The unified `search()` method handles both simple queries and pre-expanded structured queries:
+
+```typescript
+// Simple query — evaluated by the shared auto policy, then retrieved and reranked
+const results = await store.search({ query: "authentication flow" })
+
+// With options
+const results2 = await store.search({
+  query: "rate limiting",
+  expansionContext: "API throttling and abuse prevention",
+  rerankContext: "API throttling and abuse prevention",
+  collection: "docs",
+  limit: 5,
+  minScore: 0.3,
+  explain: true,
+  expansion: "auto", // "auto" | "force" | "skip"
+})
+
+// Pre-expanded queries — bypass the policy and control each sub-query
+const results3 = await store.search({
+  queries: [
+    { type: 'lex', query: '"connection pool" timeout -redis' },
+    { type: 'vec', query: 'why do database connections time out under load' },
+  ],
+  collections: ["docs", "notes"],
+})
+
+// Skip reranking for faster results
+const fast = await store.search({ query: "auth", rerank: false })
+
+// Metadata filter — every returned result satisfies it (also available on
+// searchLex() and searchVector()); results expose indexed metadata via
+// r.metadata. See "Metadata Filtering" for the full grammar.
+const published = await store.search({
+  query: "authentication flow",
+  filter: {
+    operator: "and",
+    operands: [
+      { field: "topics", operator: "all", value: ["typescript"] },
+      { field: "status", operator: "ne", value: "draft" },
+    ],
+  },
+})
+```
+
+For simple queries, explicit `force` or `skip` overrides `auto`. Under `auto`, CJK
+queries and strong lexical matches skip model expansion; other queries expand.
+Supplying `queries` bypasses expansion policy evaluation entirely.
+
+For direct backend access:
+
+```typescript
+// BM25 keyword search (fast, no LLM)
+const lexResults = await store.searchLex("auth middleware", { limit: 10 })
+
+// Vector similarity search (embedding model, no reranking)
+const vecResults = await store.searchVector("how users log in", { limit: 10 })
+
+// Manual query expansion for full control
+const expanded = await store.expandQuery("auth flow", { expansionContext: "user login" })
+const results4 = await store.search({ queries: expanded })
+```
+
+### Retrieval
+
+```typescript
+// Get a document by path or docid
+const doc = await store.get("docs/readme.md")
+const byId = await store.get("#abc123")
+
+if (!("error" in doc)) {
+  console.log(doc.title, doc.displayPath, doc.context)
+}
+
+// Get document body with line range
+const body = await store.getDocumentBody("docs/readme.md", {
+  fromLine: 50,
+  maxLines: 100,
+})
+
+// Batch retrieve by glob or comma-separated list
+const { docs, errors } = await store.multiGet("docs/**/*.md", {
+  maxBytes: 20480,
+})
+```
+
+### Collections
+
+```typescript
+// Add a collection
+await store.addCollection("myapp", {
+  path: "/src/myapp",
+  pattern: "**/*.ts",
+  ignore: ["node_modules/**", "*.test.ts"],
+})
+
+// List collections with document stats
+const collections = await store.listCollections()
+// => [{ name, pwd, glob_pattern, doc_count, active_count, last_modified, includeByDefault }]
+
+// Get names of collections included in queries by default
+const defaults = await store.getDefaultCollectionNames()
+
+// Remove / rename
+await store.removeCollection("myapp")
+await store.renameCollection("old-name", "new-name")
+```
+
+### Context
+
+Context adds descriptive metadata that improves search relevance and is returned alongside results:
+
+```typescript
+// Add context for a path within a collection
+await store.addContext("docs", "/api", "REST API reference documentation")
+
+// Set global context (applies to all collections)
+await store.setGlobalContext("Internal engineering documentation")
+
+// List all contexts
+const contexts = await store.listContexts()
+// => [{ collection, path, context }]
+
+// Remove context
+await store.removeContext("docs", "/api")
+await store.setGlobalContext(undefined)  // clear global
+```
+
+### Indexing
+
+```typescript
+// Re-index collections by scanning the filesystem
+const result = await store.update({
+  collections: ["docs"],  // optional — defaults to all
+  onProgress: ({ collection, file, current, total }) => {
+    console.log(`[${collection}] ${current}/${total} ${file}`)
+  },
+})
+// => { collections, indexed, updated, unchanged, removed, needsEmbedding }
+
+// Generate vector embeddings
+const embedResult = await store.embed({
+  force: false,           // true to re-embed everything
+  chunkStrategy: "auto",  // "regex" (default) or "auto" (AST for code files)
+  onProgress: ({ current, total, collection }) => {
+    console.log(`Embedding ${current}/${total}`)
+  },
+})
+```
+
+### Types
+
+Key types exported for SDK consumers:
+
+```typescript
+import type {
+  QMDStore,            // The store interface
+  SearchOptions,       // Options for search()
+  LexSearchOptions,    // Options for searchLex()
+  VectorSearchOptions, // Options for searchVector()
+  HybridQueryResult,   // Search result with score, snippet, context
+  SearchResult,        // Result from searchLex/searchVector
+  ExpandedQuery,       // Typed sub-query { type: 'lex'|'vec'|'hyde', query }
+  DocumentResult,      // Document metadata + body
+  DocumentNotFound,    // Error with similarFiles suggestions
+  MultiGetResult,      // Batch retrieval result
+  UpdateProgress,      // Progress callback info for update()
+  UpdateResult,        // Aggregated update result
+  EmbedProgress,       // Progress callback info for embed()
+  EmbedResult,         // Embedding result
+  StoreOptions,        // createStore() options
+  CollectionConfig,    // Inline config shape
+  IndexStatus,         // From getStatus()
+  IndexHealthInfo,     // From getIndexHealth()
+} from '@wei840222/qmd'
+```
+
+Utility exports:
+
+```typescript
+import {
+  extractSnippet,              // Extract a relevant snippet from text
+  addLineNumbers,              // Add line numbers to text
+  DEFAULT_MULTI_GET_MAX_BYTES, // Default max file size for multiGet (64KB)
+  Maintenance,                 // Database maintenance operations
+} from '@wei840222/qmd'
+```
+
+### Lifecycle
+
+```typescript
+// Close the store — releases remote clients and the DB connection
+await store.close()
+```
+
+The SDK requires explicit `dbPath` — no defaults are assumed. This makes it safe to embed in any application without side effects.
+
+## CJK Lexical Search, Expansion, and Dictionary Maintenance
+
+CJK lexical search combines independent character, word, and bigram channels by
+rank. If Jieba or the published word/bigram index is unavailable, stale, or
+incompatible, QMD omits both analyzed channels and falls back to character-only
+search instead of failing the query or issuing an empty FTS match. `qmd status`
+reports the reason and remediation.
+
+Each lexical channel ranks candidates independently before channel-aware weighted
+RRF combines them; raw channel scores are never summed. The original query runs
+through every available lexical and vector path at ×2 weight. Typed expansion
+variants are ×1: `lex` variants use the character, word, and bigram channels,
+while `vec` and `hyde` variants use vector search. Use `--explain` to inspect
+channel contributions and tie-breakers.
+
+Query expansion uses one shared `auto | force | skip` policy across CLI, SDK, and
+MCP. Precedence is: explicit skip or `lex:` skips expansion; explicit force,
+`expand:`, or `--expand` forces it; under `auto`, eligible queries expand when a remote LLM (`generate_api_url`) is configured; strong lexical
+signals skip expansion, and remaining queries expand. Expanded queries automatically maintain language consistency with the user query.
+
+### CJK index publication and recovery
+
+Published character, word, and bigram indexes are updated atomically with a
+synchronous document mutation. Rebuilds populate shadow tables from a stable read
+snapshot; mutations after that snapshot are recorded in a journal and replayed
+before an atomic publication. The analyzer fingerprint includes normalization
+rules, Jieba capability, built-in and optional user dictionary hashes, and token
+stream parameters. A changed fingerprint triggers a rebuild rather than allowing
+semantically incompatible analyzed indexes to remain active.
+
+If a builder lease expires, cleanup restores `Ready`, `Empty`, or `Dirty` based on
+the published index and dirty markers. `qmd status` and `qmd doctor` identify the
+current cause and remediation. If Jieba is unavailable during a build, analyzed
+channels are marked unavailable and search continues through the character channel.
+
+QMD ships `zh-dict`, a single Jieba dictionary containing both Traditional and
+Simplified Chinese entries. It deterministically combines the upstream
+`@node-rs/jieba` dictionary, APCLab's `jieba-tw` dictionary, and selected
+technical terminology from zhtw-mcp. A configured user dictionary is loaded
+after `zh-dict`, so user entries retain the highest priority.
+
+The runtime, build, and package installation never download dictionary sources.
+Maintainers can regenerate the checked-in asset from the fixed source pins and
+content hashes in `src/search/zh-dict.sources.json`:
+
+```sh
+# Verify every pinned source and regenerate src/search/zh-dict.txt
+pnpm dict:sync
+
+# Intentionally advance the configured upstream branch pins, then regenerate
+pnpm dict:sync -- --update-pins
+```
+
+`dict:sync` records the generated asset's SHA-256 in the source configuration.
+Review the resulting pin and dictionary diff before committing an update.
+
+## Score Normalization & Fusion
+
+### Search Backends
+
+| Backend | Raw Score | Conversion | Range |
+|---------|-----------|------------|-------|
+| **FTS (BM25)** | SQLite FTS5 BM25 | `Math.abs(score)` | 0 to ~25+ |
+| **Vector** | Cosine distance | `1 / (1 + distance)` | 0.0 to 1.0 |
+| **Reranker** | Provider relevance score (rerank API, LLM, or Jev probability) | Used as-is within 0-1, otherwise sigmoid | 0.0 to 1.0 |
+
+### Fusion Strategy
+
+The `query` command uses **Reciprocal Rank Fusion (RRF)** with position-aware blending:
+
+1. **Query Expansion Policy**: `auto` uses the configured remote generator subject to the shared expansion policy; `force` runs the configured generator; `skip` uses only the original query. Original FTS and vector retrieval paths have ×2 RRF weight in every mode. When expansion runs, QMD adds zero or more typed LLM variants at ×1: `lex` variants use FTS, while `vec` and `hyde` variants use vector search. If Jev is configured it classifies the query intent first, and its hints (strategy and whether to add HyDE) guide those variants.
+2. **Parallel Retrieval**: The original query searches both indexes; `lex` variants search FTS, while `vec` and `hyde` variants search the vector index
+3. **RRF Fusion**: Combine all result lists using `score = Σ(1/(k+rank+1))` where k=60
+4. **Top-Rank Bonus**: Documents ranking #1 in any list get +0.05, #2-3 get +0.02
+5. **Top-K Selection**: Take top 40 candidates for reranking
+6. **Re-ranking**: A configured `rerank_api_*` endpoint scores each candidate chunk; Jev scores them when no rerank API is configured or that API fails. Scores are cached under the model that produced them
+7. **Position-Aware Blending**:
+   - RRF rank 1-3: 75% retrieval, 25% reranker (preserves exact matches)
+   - RRF rank 4-10: 60% retrieval, 40% reranker
+   - RRF rank 11+: 40% retrieval, 60% reranker (trust reranker more)
+
+**Why this approach**: Pure RRF can dilute exact matches when expanded queries don't match. The top-rank bonus preserves documents that score #1 for the original query. Position-aware blending prevents the reranker from destroying high-confidence retrieval results.
+
+### Score Interpretation
+
+| Score | Meaning |
+|-------|---------|
+| 0.8 - 1.0 | Highly relevant |
+| 0.5 - 0.8 | Moderately relevant |
+| 0.2 - 0.5 | Somewhat relevant |
+| 0.0 - 0.2 | Low relevance |
+
 ## Data Storage
 
 Index stored in: `~/.cache/qmd/index.sqlite`
@@ -1682,11 +1763,13 @@ Index stored in: `~/.cache/qmd/index.sqlite`
 ### Schema
 
 ```sql
-collections            -- Indexed directories with name and glob patterns
-path_contexts          -- Context descriptions by virtual path (qmd://...)
-documents              -- Markdown content with metadata and docid (6-char hash)
+store_collections      -- Collection paths, patterns, defaults, and contexts
+store_config           -- Global context, canonical settings, and migration state
+content                -- Content-addressed document bodies
+documents              -- Collection/path/title/hash identities and active flags
 documents_fts          -- FTS5 full-text index
-content_vectors        -- Embedding chunks (hash, seq, pos, 900 tokens each)
+content_vectors        -- Chunk metadata (hash, seq, pos, model, fingerprint)
+embedding_index_state  -- Published identity, generation, and build lease
 vector_collection_ids  -- Integer id per collection name (the vector partition key)
 vector_rows            -- Vector rowid to (hash, seq, collection_id)
 vectors_by_collection  -- sqlite-vec vector index, one row per chunk and collection
@@ -1700,6 +1783,8 @@ llm_cache              -- Cached LLM responses (query expansion, rerank scores)
 | `XDG_CACHE_HOME` | `~/.cache` | Cache directory location |
 | `XDG_CONFIG_HOME` | `~/.config` | Config directory location (where `index.yml` lives) |
 | `QMD_CONFIG_DIR` | unset | Override the config directory outright (takes precedence over `XDG_CONFIG_HOME`) |
+| `OPENAI_API_KEY` | unset | Embedding key fallback after `models.embed_api_key`; also accepted for custom Voyage proxies when `VOYAGE_API_KEY` is absent. Does not configure expansion/rerank keys. |
+| `VOYAGE_API_KEY` | unset | Voyage embedding key fallback after `models.embed_api_key`. |
 | `TYPESAFE_API_KEY` | unset | TypeSafe Jev API key; enables Jev when `models.jev_api_key` is not set |
 | `TYPESAFE_BASE_URL` | TypeSafe client default | TypeSafe Jev endpoint; overridden by `models.jev_base_url` |
 | `TYPESAFE_DEFAULT_MODEL` | `jev-1.13` | TypeSafe Jev model; overridden by `models.jev_api_model` |
@@ -1817,28 +1902,6 @@ Original query (×2)                 Zero or more typed variants (×1)
                                            ▼
                                   Final Results
 ```
-
-## Model Configuration
-
-Use `models.embed_api_url`, `embed_api_model`, and `embed_dimension` for
-OpenAI-compatible embeddings, or the dedicated Voyage settings above. Configure
-`generate_api_*` for expansion and `rerank_api_*` for reranking. TypeSafe Jev
-remains available through `models.jev_*` and its documented environment variables.
-When `rerank_api_*` is configured it reranks first and Jev is only a fallback if
-that API fails; without it, Jev reranks. Jev still guides query expansion either way.
-A `rerank_api_url` ending in `/rerank` posts `{model, query, documents}` and reads
-Cohere-style `results[].{index, relevance_score}`; one ending in `/chat/completions`
-scores with an LLM. Voyage's own `/v1/rerank` answers with `data` instead of `results`,
-so reach it through a Cohere-shaped gateway or proxy. A failed expansion or rerank request
-does not disable the endpoint: the next request tries it again. When Jev is the rerank fallback,
-a failed rerank API is skipped for a cooldown (60 seconds by default) so an outage does not make
-every query wait for the request timeout, then tried again.
-Credentials belong in the process environment or an explicitly managed config;
-do not commit them. There are no local-model defaults for new configurations.
-
-Query expansion and reranking can be disabled independently. Use `qmd search`
-for model-free lexical retrieval. SDK and MCP clients can use explicit lexical
-searches with `rerank: false` and expansion skipped.
 
 ## License
 

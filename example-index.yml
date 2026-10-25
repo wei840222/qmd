@@ -1,11 +1,13 @@
 # QMD Collections Configuration
 # Location: ~/.config/qmd/index.yml
 #
-# This file is the single source of truth for your collections. Every
-# `qmd collection ...` and `qmd context ...` command reads and writes it, and
-# you can also edit it directly — changes take effect on the next command.
-# (Editing does NOT re-index; run `qmd update` after changing a path, pattern,
-# or ignore list.)
+# CLI collection/context commands manage this file; you can also edit it.
+# New CLI processes read the changes. Restart a long-running MCP server after
+# collection or model changes. Reconcile manual collection/context edits with
+# `qmd ls` first; read-only MCP does not synchronize YAML into SQLite.
+# Editing does not re-index; run `qmd update` explicitly after changing paths,
+# patterns, or ignore lists. A missing collection root is skipped, not treated
+# as deletion of every indexed document.
 #
 # Copy this file to ~/.config/qmd/index.yml and customize it.
 
@@ -22,17 +24,39 @@ global_context: "If you see a relevant [[WikiWord]], you can search for that Wik
 # ─── Remote model APIs (optional for lexical search and document reads) ──────
 # Model-backed operations require explicitly configured remote APIs.
 # Local inference and model downloads are retired; qmd init does not add models.
-# Keep credentials in the environment, for example OPENAI_API_KEY.
-# See "Remote Embedding & Models Configuration" in the README for all providers
-# and the explicit rebuild procedure for existing vectors.
+# Credentials are per operation: embeddings accept OPENAI_API_KEY (OpenAI) or
+# VOYAGE_API_KEY (Voyage); Jev accepts TYPESAFE_API_KEY. Expansion and rerank do
+# NOT inherit OPENAI_API_KEY: authenticated endpoints need their own *_api_key.
+# Store real keys only in environment variables supported by that provider or
+# an explicitly managed private config, never this checked-in example.
+# YAML does not expand ${ENV_VAR} strings. Use one URL alias per operation.
+# See the README for provider details and explicit embedding identity rebuilds.
 # models:
 #   embed_api_url: "https://api.openai.com/v1"
 #   embed_api_model: "text-embedding-3-small"
 #   embed_dimension: 1536
-#   generate_api_url: "https://your-model-gateway.example/v1"
+#   # embed_provider: openai             # inferred; use voyageai for Voyage
+#   # embed_api_key: "<private-config-only>"  # overrides the embedding env key
+#   # embed_cache_dir: ~/.cache/qmd/embeddings  # optional shared document cache
+#   generate_api_url: "https://your-model-gateway.example/v1/chat/completions"
 #   generate_api_model: "your-expansion-model"
-#   rerank_api_url: "https://your-reranker.example/v1"
+#   # generate_api_key: "<private-config-only>"  # omit only for a keyless gateway
+#   rerank_api_url: "https://your-reranker.example/v1/rerank"
 #   rerank_api_model: "your-reranker"
+#   # rerank_api_key: "<private-config-only>"    # omit only for a keyless gateway
+#   # /rerank must return results[].{index,relevance_score} (Cohere shape).
+#   # For chat scoring, use /v1/chat/completions instead; no URL discovery.
+#   # jev_api_key: "<private-config-only>"      # or TYPESAFE_API_KEY
+#   # jev_base_url: "https://your-jev-gateway.example"  # or TYPESAFE_BASE_URL
+#   # jev_api_model: "jev-1.13"                # or TYPESAFE_DEFAULT_MODEL
+#
+# Vector layout conversion on a writable store open is separate from changing
+# embedding identity: it copies existing bytes without a model request, but
+# can discard unsupported/unreachable rows. Stop index holders and back up the
+# database plus WAL/SHM before upgrading. Read-only MCP startup does not migrate.
+# A model/provider/dimension change requires an explicit `qmd embed --force`.
+# Doctor and cleanup --dry-run can initialize/migrate an older index too.
+# --dry-run skips cleanup actions, not writable store initialization.
 
 # ─── Collections ─────────────────────────────────────────────────────────────
 collections:
@@ -98,7 +122,7 @@ collections:
     pattern: "**/*.md"
     ignore:
       - "Sessions/**"
-    update: "git stash && git pull --rebase --ff-only && git stash pop"
+    update: "git pull --ff-only"
     includeByDefault: true    # true is the default; shown here for clarity
     context:
       "/": "Thematic collections of important concepts and discussions"
