@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Complete the upstream main merge while retaining the remote-only Node runtime
+  and the existing full-project type checks. Query-expansion mocks and document
+  assertions now use upstream's typed forms.
 - `qmd cleanup` repacks sparse vector chunks within each collection partition
   when fewer than 90% of the chunk reads are needed for its live rows. The
   repack preserves vector bytes, rowids, chunk metadata, and embedding identity;

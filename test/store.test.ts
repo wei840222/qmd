@@ -1912,8 +1912,8 @@ describe("Query expansion cache (#818)", () => {
     const embedModel = "dedupe-embed-model";
     publishSearchableFixture(store, embedModel);
     store.llm = { embedModelName: embedModel } as any;
-    const searchVecSpy = vi.fn(async (_query: string) => [] as SearchResult[]);
-    store.searchVec = searchVecSpy as any;
+    const searchVecSpy = vi.fn<Store["searchVec"]>(async () => []);
+    store.searchVec = searchVecSpy;
     try {
       const cached = [
         ...Array.from({ length: 12 }, () => ({ type: "hyde", query: "g" })),
@@ -1937,8 +1937,8 @@ describe("Query expansion cache (#818)", () => {
     const embedModel = "dedupe-embed-model";
     publishSearchableFixture(store, embedModel);
     store.llm = { embedModelName: embedModel } as any;
-    const searchVecSpy = vi.fn(async (_query: string) => [] as SearchResult[]);
-    store.searchVec = searchVecSpy as any;
+    const searchVecSpy = vi.fn<Store["searchVec"]>(async () => []);
+    store.searchVec = searchVecSpy;
     try {
       // Rows written before the cache stored `query` carry the line as `text`.
       const cached = [
@@ -1965,8 +1965,8 @@ describe("Query expansion cache (#818)", () => {
       embedBatch: async (texts: string[]) => texts.map(() => ({ embedding: [1, 2, 3], model: embedModel })),
     } as any;
     store.searchVec = vi.fn(async () => [] as SearchResult[]) as any;
-    const searchFTSSpy = vi.fn((_query: string) => [] as SearchResult[]);
-    store.searchFTS = searchFTSSpy as any;
+    const searchFTSSpy = vi.fn<Store["searchFTS"]>(() => []);
+    store.searchFTS = searchFTSSpy;
     try {
       const cached = [
         { type: "lex", query: "k" }, { type: "lex", query: "k" }, { type: "lex", query: "k" },
@@ -2927,7 +2927,7 @@ describe("Document Retrieval", () => {
         const { docs, errors } = store.findDocuments(`#${doc.docid}`);
         expect(errors).toHaveLength(0);
         expect(docs).toHaveLength(1);
-        expect((docs[0]!.doc as any).docid).toBe((doc as any).docid);
+        expect(docs[0]).toMatchObject({ doc: { docid: doc.docid } });
       }
 
       await cleanupTestDb(store);
