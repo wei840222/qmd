@@ -15,6 +15,7 @@ import {
 } from "../src/store.js";
 import type { EmbeddingProvider } from "../src/embedding/provider.js";
 import { remoteEmbeddingIdentity } from "../src/embedding/remote-embedding.js";
+import { VEC_TABLE, activeCollectionsOfHash, allocateCollectionId, upsertPartitionVector } from "../src/vec-layout.js";
 import {
   OpenAIEmbeddingProvider,
   canonicalOpenAIEmbeddingIdentityMaterial,
@@ -67,9 +68,9 @@ function insertCorruptEmbedding(
     INSERT INTO content_vectors(hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
     VALUES (?, 0, 0, ?, ?, 1, ?)
   `).run(hash, model, fingerprint, embeddedAt);
-  const collection = (store.db.prepare(`SELECT collection FROM documents WHERE hash = ? AND active = 1 LIMIT 1`).get(hash) as { collection?: string } | undefined)?.collection ?? "";
-  store.db.prepare(`INSERT INTO vectors_vec(hash_seq, collection, embedding) VALUES (?, ?, ?)`)
-    .run(`${hash}_0`, collection, vector);
+  for (const collection of activeCollectionsOfHash(store.db, hash)) {
+    upsertPartitionVector(store.db, hash, 0, allocateCollectionId(store.db, collection), vector);
+  }
 }
 
 function remoteIdentity(
@@ -231,7 +232,7 @@ describe("embedding identity state machine", () => {
     const store = createStore(join(dir, "index.sqlite"), { embeddingProvider: provider });
     const timestamp = "2026-07-24T00:00:00.000Z";
     try {
-      store.db.exec("CREATE TABLE vectors_vec (hash_seq TEXT PRIMARY KEY, embedding BLOB)");
+      store.db.exec(`CREATE TABLE ${VEC_TABLE} (collection_id INTEGER, embedding BLOB)`);
       insertContent(store.db, "lexical-only", "REMOTE_GUARD_MARKER", timestamp);
       insertDocument(store.db, "docs", "guard.md", "Guard", "lexical-only", timestamp, timestamp);
 
@@ -345,7 +346,7 @@ describe("embedding identity state machine", () => {
     expect(store.db.prepare("SELECT COUNT(*) AS count FROM documents").get()).toEqual({ count: 1 });
     expect(store.db.prepare("SELECT COUNT(*) AS count FROM llm_cache").get()).toEqual({ count: 1 });
     expect(store.db.prepare(
-      "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'vectors_vec'",
+      `SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = '${VEC_TABLE}'`,
     ).get()).toEqual({ count: 1 });
     store.close();
   });
@@ -617,6 +618,51 @@ describe("embedding identity state machine", () => {
         provider,
       );
       expect(results.map(result => result.displayPath)).toEqual(["docs/live.md"]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("vector search still fills its limit when closer rows of an older build fill even the widest scan window", async () => {
+    const store = await createTempStore();
+    const model = "remote-search-model";
+    const provider = new OpenAIEmbeddingProvider({
+      apiKey: "test-only-key",
+      model,
+      dimension: 3,
+      fetch: async () => { throw new Error("Precomputed searches must not call the provider"); },
+    });
+    const activeIdentity = remoteEmbeddingIdentity(provider);
+    const now = new Date(0).toISOString();
+    try {
+      const lease = beginEmbeddingBuild(store.db, activeIdentity, {
+        ownerId: "search-writer",
+        now: Date.now(),
+        leaseMs: 60_000,
+        allowDestructiveRebuild: true,
+      });
+      store.db.transaction(() => {
+        // sqlite-vec caps one scan at 4096 rows; more closer stale rows than that
+        // leave no slot for the current build however far the window doubles.
+        for (let index = 0; index < 4100; index += 1) {
+          const hash = `stale-${index}`;
+          store.insertContent(hash, "stale body", now);
+          store.insertDocument("docs", `stale-${index}.md`, `Stale ${index}`, hash, now, now);
+          insertCorruptEmbedding(store, hash, new Float32Array([1, 0, 0]), model, "stale-full-fingerprint", now);
+        }
+        store.insertContent("active-hash", "active body", now);
+        store.insertDocument("docs", "active.md", "Active", "active-hash", now, now);
+        insertEmbedding(
+          store.db, "active-hash", 0, 0, new Float32Array([0.7, 0.7, 0]), model, now, 1,
+          activeIdentity.fingerprint, lease,
+        );
+      })();
+      completeEmbeddingBuild(store.db, lease);
+
+      for (const scope of ["docs", undefined]) {
+        const results = await searchVec(store.db, "query", model, 1, scope, undefined, [1, 0, 0], provider);
+        expect(results.map(result => result.displayPath)).toEqual(["docs/active.md"]);
+      }
     } finally {
       store.close();
     }
@@ -998,7 +1044,7 @@ describe("embedding identity state machine", () => {
 
     expect(store.db.prepare(`SELECT COUNT(*) AS n FROM content_vectors`).get()).toEqual({ n: 0 });
     expect(store.db.prepare(`
-      SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vectors_vec'
+      SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '${VEC_TABLE}'
     `).get()).toBeFalsy();
     expect(store.db.prepare(`SELECT 1 FROM embedding_index_state`).get()).toBeFalsy();
     store.close();

@@ -19,6 +19,7 @@ import {
 } from "../src/embedding/identity.js";
 import { writeCanonicalEmbeddingConfig } from "../src/embedding/config.js";
 import type { EmbeddingProvider } from "../src/embedding/provider.js";
+import { LEGACY_VEC_TABLE, VEC_ROWS_TABLE, VEC_TABLE, vecLayout } from "../src/vec-layout.js";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 beforeEach(() => {
@@ -45,7 +46,12 @@ function snapshot(store: Store) {
       .prepare("SELECT * FROM content_vectors ORDER BY hash,seq")
       .all(),
     payload: store.db
-      .prepare("SELECT hash_seq,embedding FROM vectors_vec ORDER BY hash_seq")
+      .prepare(`
+        SELECT vr.hash, vr.seq, vr.collection_id, v.embedding
+        FROM ${VEC_ROWS_TABLE} vr
+        JOIN ${VEC_TABLE} v ON v.rowid = vr.id
+        ORDER BY vr.hash, vr.seq, vr.collection_id
+      `)
       .all(),
   };
 }
@@ -143,6 +149,68 @@ describe("remote-only core boundaries", () => {
       "configured remote",
     );
     expect(snapshot(sdk.internal)).toEqual(before);
+  });
+  test("opening a database with the legacy vector table converts it in place without a remote request or identity change", async () => {
+    const fetchSpy = vi.fn(async () => {
+      throw new Error("converting the vector layout must not make a network request");
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const dir = await mkdtemp(join(tmpdir(), "qmd-legacy-layout-"));
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    const dbPath = join(dir, "legacy.sqlite");
+    const seeded = createStore(dbPath);
+    addDocument(seeded);
+    const provider = remoteProvider();
+    const identity = createEmbeddingIdentity({
+      providerId: provider.providerId,
+      model: provider.model,
+      dimension: 3,
+      remote: true,
+      canonicalMaterial: canonicalEmbeddingBuildMaterial(provider.canonicalIdentityMaterial(), "regex"),
+    });
+    const lease = beginEmbeddingBuild(seeded.db, identity, {
+      ownerId: "old-generation",
+      now: Date.now(),
+      leaseMs: 60_000,
+      allowDestructiveRebuild: true,
+    });
+    // The table an older build wrote instead: one row per chunk, keyed by hash_seq.
+    seeded.db.exec(`DROP TABLE ${VEC_TABLE}`);
+    seeded.db.exec(
+      `CREATE VIRTUAL TABLE ${LEGACY_VEC_TABLE} USING vec0(hash_seq TEXT PRIMARY KEY, collection TEXT, embedding float[3] distance_metric=cosine)`,
+    );
+    seeded.db.prepare(`
+      INSERT INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
+      VALUES ('doc', 0, 0, ?, ?, 1, ?)
+    `).run(provider.model, identity.fingerprint, new Date(0).toISOString());
+    seeded.db.prepare(`INSERT INTO ${LEGACY_VEC_TABLE} (hash_seq, collection, embedding) VALUES (?, ?, ?)`)
+      .run("doc_0", "docs", new Float32Array([0.25, 0.5, 0.75]));
+    completeEmbeddingBuild(seeded.db, lease);
+    seeded.db.exec("PRAGMA user_version = 1");
+    const stateBefore = seeded.db.prepare("SELECT * FROM embedding_index_state").all();
+    const metadataBefore = seeded.db.prepare("SELECT * FROM content_vectors ORDER BY hash, seq").all();
+    seeded.close();
+
+    const converted = createStore(dbPath);
+    cleanups.push(() => converted.close());
+
+    expect(vecLayout(converted.db).kind).toBe("partitioned");
+    expect(converted.db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE name = ?",
+    ).get(LEGACY_VEC_TABLE)).toBeUndefined();
+    expect(converted.db.prepare("SELECT * FROM embedding_index_state").all()).toEqual(stateBefore);
+    expect(converted.db.prepare("SELECT * FROM content_vectors ORDER BY hash, seq").all()).toEqual(metadataBefore);
+    const stored = converted.db.prepare(`
+      SELECT vr.hash, vr.seq, v.embedding
+      FROM ${VEC_ROWS_TABLE} vr JOIN ${VEC_TABLE} v ON v.rowid = vr.id
+    `).all() as { hash: string; seq: number; embedding: Uint8Array }[];
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ hash: "doc", seq: 0 });
+    expect(Array.from(new Float32Array(stored[0]!.embedding.buffer, stored[0]!.embedding.byteOffset, 3)))
+      .toEqual([0.25, 0.5, 0.75]);
+    expect(converted.searchFTS("authentication", 5)).toHaveLength(1);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
   test("missing model configuration permits explicit BM25 but never silently skips model operations", async () => {
     const store = createStore(":memory:");

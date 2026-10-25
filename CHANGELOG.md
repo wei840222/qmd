@@ -4,6 +4,41 @@
 
 ### Changed
 
+- The vector index is partitioned by collection. Each embedded chunk is
+  stored once per collection that holds it, under an integer collection id,
+  so a collection-scoped `qmd query` or `qmd vsearch` scans only that
+  collection's vectors instead of pre-filtering the whole index, and a small
+  collection is never crowded out of the results by a large one. The first
+  command after upgrading converts the index in place and prints its
+  progress; the conversion resumes from where it stopped if interrupted, two
+  commands started at once share it, and a VACUUM at the end reclaims the
+  space of the old table. `qmd collection rename` no longer touches vectors,
+  `qmd update` removes, as it finishes, the vectors of content that no
+  indexed document holds any more (content that comes back later is embedded
+  again), and `qmd update` and `qmd embed` copy an already-embedded document
+  into a collection that gains it instead of embedding it again. A
+  metadata-filtered vector search returns the nearest documents the filter
+  admits however many chunks it admits, and a vector search fills its limit
+  even when one long document holds all of the nearest chunks. Downgrading
+  to an older qmd afterwards needs `qmd embed -f`, and a `qmd mcp` server
+  started before the upgrade must be restarted. #983 (thanks @brettdavies)
+- **Vector layout conversion is automatic, and the one exception to "no
+  automatic vector conversion".** Opening an index that still has the legacy
+  `vectors_vec` table moves its vectors into the per-collection layout. The
+  conversion sends no request to any remote API and never re-embeds; it copies
+  vectors byte for byte when their chunk metadata belongs to an active document,
+  and leaves `embedding_index_state` unchanged. Vectors with no chunk metadata
+  or no active document are not copied. Chunk metadata with no vector is deleted
+  so the next embed recreates it; `qmd update` and `qmd cleanup` retain a live
+  document's vectorless metadata. This copy requires a `hash_seq`-keyed legacy
+  table with parsed dimensions; a readable legacy table without either is
+  dropped without copying its vectors. For a supported table, a verification
+  pass copies rows the walk missed, and the legacy table is dropped in the
+  transaction that stamps the new schema version. Do not run an older build
+  against the index during conversion. Without sqlite-vec loaded the
+  conversion is deferred and lexical search keeps working. Back up
+  `~/.cache/qmd/index.sqlite*` first, since an older build cannot read the
+  converted index and going back costs a full paid `qmd embed --force`.
 - Update the bundled QMD skill and query/MCP references for remote-only models, offline lexical requests, explicit vector rebuilds, and current MCP parameter names; remove retired local-model setup and unsupported latency/batch guarantees.
 - Remove retired fine-tuning datasets, training/conversion tools, and GPU/Bun container smoke assets. Replace the GGUF configuration example with explicit remote APIs and retain legacy-index diagnostics and search-quality benchmarks.
 - **Remote-only runtime (unpublished review build `2026.10.18-remote.0`)**: Remove local GGUF inference and the `node-llama-cpp` dependency. CLI, MCP, and SDK keep local SQLite/BM25, CJK, AST, collections, reads, and maintenance; embedding, query expansion, and reranking use explicitly configured remote APIs. `qmd pull` now reports retirement and exits unsuccessfully without downloading anything. Existing local-model databases remain available for lexical reads; remote vector use requires an explicit manual rebuild rather than automatic vector conversion or deletion. Package and model regression checks use mocks or loopback HTTP only.
@@ -13,6 +48,19 @@
 
 ### Fixed
 
+- Copying vectors into a collection that gains an embedded document no longer
+  deletes anything: a chunk whose vector is gone keeps its metadata and is
+  embedded again on its own, instead of upstream's delete of every chunk of the
+  document (which also ran without an embedding build lease). A vector search
+  whose closest rows belong to an older embedding build now keeps scanning
+  until it has `limit` current results, including past sqlite-vec's 4096-row cap.
+- `qmd update` no longer deactivates every document in a collection whose root
+  folder is missing, for example an unmounted drive or an offline network share.
+  The folder globbed to an empty list, which read as "every file was deleted",
+  so search went empty and a `qmd cleanup` before the drive came back deleted
+  the rows for good. The collection is now reported as not found and its index
+  is left unchanged. Permission and I/O errors still fail with their original
+  cause (#989). #990 (thanks @ParkerRex)
 - Metadata-filtered keyword search (`--filter`) no longer returns false-empty or
   incomplete results when stronger matches outside the filter fill the old
   `limit * 10` candidate window. The filter now sees the complete match set;

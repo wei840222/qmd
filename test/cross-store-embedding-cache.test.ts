@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createStore, type QMDStore } from "../src/index.js";
+import { VEC_ROWS_TABLE } from "../src/vec-layout.js";
 
 const stores: QMDStore[] = [];
 const directories: string[] = [];
@@ -69,7 +70,7 @@ function expectReadyChunk(store: QMDStore) {
     SELECT cv.seq, cv.total_chunks
     FROM documents d
     JOIN content_vectors cv ON cv.hash = d.hash
-    JOIN vectors_vec vv ON vv.hash_seq = cv.hash || '_' || cv.seq
+    JOIN ${VEC_ROWS_TABLE} vr ON vr.hash = cv.hash AND vr.seq = cv.seq
     WHERE d.active = 1
   `).all()).toEqual([{ seq: 0, total_chunks: 1 }]);
 }

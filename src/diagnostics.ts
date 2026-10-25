@@ -9,6 +9,7 @@ import type { OpenAIEmbeddingModel, VoyageEmbeddingModel } from "./embedding/con
 
 import { getCjkAnalyzerFingerprint } from "./search/cjk-index.js";
 import { canonicalEmbeddingBuildMaterial } from "./store.js";
+import { LEGACY_VEC_TABLE, VEC_ROWS_TABLE, vecLayout } from "./vec-layout.js";
 
 export type DiagnosticReadiness =
   | "missing"
@@ -113,10 +114,17 @@ function countRows(db: Database, table: string): number | null {
     return Number(row.count);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (table === "vectors_vec" && /no such module:\s*vec0/i.test(message)) return null;
+    if (table === LEGACY_VEC_TABLE && /no such module:\s*vec0/i.test(message)) return null;
     if (table.startsWith("documents_fts") && /no such column/i.test(message)) return null;
     throw error;
   }
+}
+
+/** Distinct embedded chunks in the partitioned index: one per (hash, seq), whatever the collection count. */
+function countVectorChunks(db: Database): number | null {
+  if (!tableExists(db, VEC_ROWS_TABLE)) return null;
+  const row = db.prepare(`SELECT COUNT(*) AS count FROM (SELECT 1 FROM ${VEC_ROWS_TABLE} GROUP BY hash, seq)`).get() as { count: number };
+  return Number(row.count);
 }
 
 function activeDocumentCount(db: Database): number {
@@ -197,8 +205,13 @@ function inspectEmbeddingDiagnostics(
   const hasMetadata = metadataColumns.has("hash") && metadataColumns.has("seq");
   const hasFingerprint = metadataColumns.has("embed_fingerprint");
   const hasLayouts = metadataColumns.has("total_chunks");
-  const hasVectors = tableExists(db, "vectors_vec");
-  const vectorChunkCount = countRows(db, "vectors_vec");
+  const layout = vecLayout(db);
+  const hasVectors = layout.kind !== "none";
+  // The partitioned index keeps a plain-table map of its rows, readable
+  // without the vec0 module; only a legacy table needs the module to count.
+  const vectorChunkCount = layout.kind === "partitioned"
+    ? countVectorChunks(db)
+    : countRows(db, LEGACY_VEC_TABLE);
   const vectorsReadable = vectorChunkCount != null;
   const hasEmbeddingRows = (countRows(db, "content_vectors") ?? 0) > 0
     || (vectorChunkCount ?? 0) > 0;
@@ -208,9 +221,24 @@ function inspectEmbeddingDiagnostics(
   let incompleteLayouts = 0;
   let pendingDocuments = activeDocs;
   if (hasMetadata) {
-    if (vectorsReadable) {
+    if (vectorsReadable && layout.kind === "partitioned") {
+      // A hash no active document references keeps its metadata until the
+      // orphan cleanup, so only active documents count as missing vectors.
+      metadataOnly = Number((db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM content_vectors cv
+        WHERE EXISTS (SELECT 1 FROM documents d WHERE d.hash = cv.hash AND d.active = 1)
+          AND NOT EXISTS (SELECT 1 FROM ${VEC_ROWS_TABLE} vr WHERE vr.hash = cv.hash AND vr.seq = cv.seq)
+      `).get() as { count: number }).count);
+      vectorOnly = Number((db.prepare(`
+        SELECT COUNT(*) AS count FROM (
+          SELECT hash, seq FROM ${VEC_ROWS_TABLE} GROUP BY hash, seq
+        ) vr
+        WHERE NOT EXISTS (SELECT 1 FROM content_vectors cv WHERE cv.hash = vr.hash AND cv.seq = vr.seq)
+      `).get() as { count: number }).count);
+    } else if (vectorsReadable) {
       const cvRows = db.prepare(`SELECT hash, seq FROM content_vectors`).all() as Array<{ hash: string; seq: number }>;
-      const vvRows = db.prepare(`SELECT hash_seq FROM vectors_vec`).all() as Array<{ hash_seq: string }>;
+      const vvRows = db.prepare(`SELECT hash_seq FROM ${LEGACY_VEC_TABLE}`).all() as Array<{ hash_seq: string }>;
       const vvKeys = new Set(vvRows.map(r => r.hash_seq));
       const cvKeys = new Set(cvRows.map(r => `${r.hash}_${r.seq}`));
       for (const cv of cvRows) {
