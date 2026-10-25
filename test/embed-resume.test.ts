@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   clearAllEmbeddings,
   cleanupOrphanedVectors,
+  copyVectorsToNewCollections,
   createStore,
   finalizeEmbeddingBuild,
   generateEmbeddings,
@@ -25,7 +26,7 @@ import {
 import type { EmbeddingProvider } from "../src/embedding/provider.js";
 import { OpenAIEmbeddingProvider } from "../src/embedding/openai.js";
 import { remoteEmbeddingIdentity } from "../src/embedding/remote-embedding.js";
-import { VEC_TABLE, allocateCollectionId, upsertPartitionVector } from "../src/vec-layout.js";
+import { VEC_ROWS_TABLE, VEC_TABLE, allocateCollectionId, upsertPartitionVector } from "../src/vec-layout.js";
 
 const tempDirs: string[] = [];
 
@@ -606,37 +607,31 @@ describe("embedding partial resume persistence", () => {
     }
   });
 
-  test("embedding leaves a chunk that lost its vector alone until it holds the build lease", async () => {
+  test("copying vectors into a gained collection keeps the metadata of a chunk that has no vector", async () => {
     const store = await createTempStore();
     const now = new Date(0).toISOString();
-    insertContent(store.db, "kept-hash", "body", now);
-    insertDocument(store.db, "docs", "kept.md", "Kept", "kept-hash", now, now);
-    // Metadata of another build whose vector is gone. Copying vectors into
-    // collections would queue this chunk by deleting its row, which an
-    // unauthorized run must not do to data it cannot yet vouch for.
-    store.db.prepare(`
-      INSERT INTO content_vectors(hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
-      VALUES ('kept-hash', 0, 0, 'other-model', 'other-fingerprint', 1, ?)
-    `).run(now);
-    store.embeddingProvider = {
-      providerId: "unknown-dimension",
-      model: "unknown-dimension-model",
-      dimension: null,
-      remote: true,
-      canonicalIdentityMaterial: () => "unknown-dimension",
-      formatQuery: (text: string) => text,
-      formatDocument: (text: string) => text,
-      embed: async () => ({ vector: [1, 0, 0], model: "unknown-dimension-model", dimension: 3 }),
-      embedBatch: async (texts: string[]) => texts.map(() => ({ vector: [1, 0, 0], model: "unknown-dimension-model", dimension: 3 })),
-      close: async () => {},
-    };
-    store.authorizeRemoteRequest = () => {};
+    store.ensureVecTable(3);
+    insertContent(store.db, "shared-hash", "body", now);
+    insertDocument(store.db, "alpha", "shared.md", "Shared", "shared-hash", now, now);
+    insertDocument(store.db, "beta", "shared.md", "Shared", "shared-hash", now, now);
+    // Two chunks: only the first still has a vector, and only in one collection.
+    for (const seq of [0, 1]) {
+      store.db.prepare(`
+        INSERT INTO content_vectors(hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
+        VALUES ('shared-hash', ?, ?, 'any-model', 'any-fingerprint', 2, ?)
+      `).run(seq, seq * 10, now);
+    }
+    upsertPartitionVector(store.db, "shared-hash", 0, allocateCollectionId(store.db, "alpha"), new Float32Array([1, 0, 0]));
 
-    await expect(generateEmbeddings(store)).rejects.toThrow();
+    // No lease is held: the copy adds rows from stored bytes and deletes nothing.
+    expect(copyVectorsToNewCollections(store.db)).toEqual({ copied: 1, queued: 1 });
 
-    expect(store.db.prepare(`SELECT hash, model FROM content_vectors`).all()).toEqual([
-      { hash: "kept-hash", model: "other-model" },
-    ]);
+    expect(store.db.prepare(`SELECT seq FROM content_vectors ORDER BY seq`).all()).toEqual([{ seq: 0 }, { seq: 1 }]);
+    expect(store.db.prepare(`
+      SELECT ci.name AS collection FROM ${VEC_ROWS_TABLE} vr
+      JOIN vector_collection_ids ci ON ci.id = vr.collection_id
+      WHERE vr.hash = 'shared-hash' AND vr.seq = 0 ORDER BY ci.name
+    `).all()).toEqual([{ collection: "alpha" }, { collection: "beta" }]);
     store.close();
   });
 });

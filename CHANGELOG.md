@@ -26,8 +26,10 @@
   automatic vector conversion".** Opening an index that still has the legacy
   `vectors_vec` table moves its vectors into the per-collection layout. The
   conversion sends no request to any remote API and never re-embeds; it copies
-  every vector, verifies the copy, and drops the legacy table only in the same
-  transaction that stamps the new schema version. Without sqlite-vec loaded the
+  every vector that belongs to a document still in the index, does not carry
+  over vectors nothing refers to (or chunk metadata that has no vector, which
+  the next embed recreates), verifies the copy, and drops the legacy table only
+  in the same transaction that stamps the new schema version. Without sqlite-vec loaded the
   conversion is deferred and lexical search keeps working. Back up
   `~/.cache/qmd/index.sqlite*` first, since an older build cannot read the
   converted index and going back costs a full paid `qmd embed --force`.
@@ -40,6 +42,12 @@
 
 ### Fixed
 
+- Copying vectors into a collection that gains an embedded document no longer
+  deletes anything: a chunk whose vector is gone keeps its metadata and is
+  embedded again on its own, instead of upstream's delete of every chunk of the
+  document (which also ran without an embedding build lease). A vector search
+  whose closest rows belong to an older embedding build now keeps scanning
+  until it has `limit` current results, including past sqlite-vec's 4096-row cap.
 - `qmd update` no longer deactivates every document in a collection whose root
   folder is missing, for example an unmounted drive or an offline network share.
   The folder globbed to an empty list, which read as "every file was deleted",

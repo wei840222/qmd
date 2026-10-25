@@ -3442,12 +3442,7 @@ export async function generateEmbeddings(
   if (provider?.dimension !== null && provider?.dimension !== undefined) {
     store.ensureVecTable(provider.dimension);
   }
-  // Copying queues chunks no partition holds by deleting their metadata, so it
-  // runs only once the build lease vouches for the index identity. It runs
-  // before the repair below: the repair drops vectors outside a document's
-  // chunk layout, and a chunk row left without its vector would otherwise queue
-  // the whole document for embedding instead of just the stale row being pruned.
-  const chunksCopied = embeddingLease ? copyVectorsToNewCollections(db, options?.collection).copied : 0;
+  const chunksCopied = copyVectorsToNewCollections(db, options?.collection).copied;
   if (embeddingLease && provider?.dimension !== null && provider?.dimension !== undefined) {
     repairVectorOnlyEmbeddingRows(db, model, fingerprint, embeddingLease);
   }
@@ -4271,6 +4266,15 @@ export function getHashesNeedingEmbedding(db: Database, collection?: string, mod
   const fingerprint = storedIdentity?.model === effectiveModel
     ? storedIdentity.fingerprint
     : getEmbeddingFingerprint(effectiveModel);
+  // A chunk whose vector is gone leaves its metadata behind; the document is
+  // still waiting for an embed.
+  const vectorless = vecLayout(db).kind === "partitioned"
+    ? `OR EXISTS (
+          SELECT 1 FROM content_vectors cv
+          WHERE cv.hash = d.hash AND cv.model = ? AND cv.embed_fingerprint = ?
+            AND NOT EXISTS (SELECT 1 FROM ${VEC_ROWS_TABLE} vr WHERE vr.hash = cv.hash AND vr.seq = cv.seq)
+        )`
+    : ``;
   return withLazyContentVectorMigration(db, () => {
     const stmt = db.prepare(`
       SELECT COUNT(DISTINCT d.hash) as count
@@ -4282,10 +4286,13 @@ export function getHashesNeedingEmbedding(db: Database, collection?: string, mod
         GROUP BY hash, model, embed_fingerprint
       ) v ON d.hash = v.hash
       WHERE d.active = 1
-        AND (v.hash IS NULL OR v.chunk_count < v.expected_chunks)
+        AND (v.hash IS NULL OR v.chunk_count < v.expected_chunks ${vectorless})
         ${collectionFilter}
     `);
-    const result = (collection ? stmt.get(effectiveModel, fingerprint, collection) : stmt.get(effectiveModel, fingerprint)) as { count: number };
+    const params: SQLiteValue[] = [effectiveModel, fingerprint];
+    if (vectorless) params.push(effectiveModel, fingerprint);
+    if (collection) params.push(collection);
+    const result = stmt.get(...params) as { count: number };
     return result.count;
   });
 }
@@ -6096,6 +6103,44 @@ function metadataEligibleRowsSql(filter: MetadataFilter): { sql: string; params:
 }
 
 /**
+ * Like knnVecScanner, but restricted inside the scan to the rows whose chunk
+ * metadata belongs to `identity`'s embedding build. The restriction wraps the
+ * metadata eligibility subquery when there is one, so both reach vec0 as a
+ * single `rowid IN`.
+ */
+function currentBuildKnnScanner(
+  db: Database,
+  partitioned: boolean,
+  filter: MetadataFilter | undefined,
+  identity: { model: string; fingerprint: string },
+): (embedding: Float32Array, k: number, target: VecScanTarget) => VecMatch[] {
+  const eligible = filter ? metadataEligibleRowsSql(filter) : undefined;
+  const base = eligible
+    ? `SELECT vr.id AS id ${eligible.sql}${partitioned ? " AND vr.collection_id = ?" : ""}`
+    : `SELECT vr.id AS id FROM ${VEC_ROWS_TABLE} vr${partitioned ? " WHERE vr.collection_id = ?" : ""}`;
+  const statement = db.prepare(`
+    SELECT rowid, distance
+    FROM ${VEC_TABLE}
+    WHERE embedding MATCH ? AND k = ?${partitioned ? " AND collection_id = ?" : ""}
+      AND rowid IN (
+        SELECT e.id FROM (${base}) e
+        JOIN ${VEC_ROWS_TABLE} ivr ON ivr.id = e.id
+        JOIN content_vectors cv ON cv.hash = ivr.hash AND cv.seq = ivr.seq
+        WHERE cv.model = ? AND cv.embed_fingerprint = ?
+      )
+  `);
+  return (embedding, k, target) => {
+    const params: SQLiteValue[] = [embedding, k];
+    const partition = vecInteger(target.collectionId ?? 0);
+    if (partitioned) params.push(partition);
+    if (eligible) params.push(...eligible.params);
+    if (partitioned) params.push(partition);
+    params.push(identity.model, identity.fingerprint);
+    return statement.all(...params) as VecMatch[];
+  };
+}
+
+/**
  * Ids of the collections holding at least one vector row a metadata filter
  * admits. The filter runs once per document and EXISTS probes for a row, so
  * the cost follows the documents in scope rather than their chunk count.
@@ -6125,7 +6170,7 @@ function vecDocumentResolver(
   db: Database,
   filter?: MetadataFilter,
   identity?: { model: string; fingerprint: string },
-): (matches: readonly VecMatch[]) => VecDocumentMatch[] {
+): (matches: readonly VecMatch[]) => { documents: VecDocumentMatch[]; foreign: number } {
   // Re-apply the filter on the document join: vectors are content-scoped,
   // so one hash can belong to both matching and non-matching documents.
   const current = filter ? compileCurrentMetadataFilter(filter) : undefined;
@@ -6150,19 +6195,23 @@ function vecDocumentResolver(
     WHERE d.active = 1${current ? ` AND ${current.sql}` : ""}
   `));
   return (matches) => {
-    if (matches.length === 0) return [];
+    if (matches.length === 0) return { documents: [], foreign: 0 };
     const distanceByRowid = new Map(matches.map(r => [r.rowid, r.distance]));
     const rows = statement.all(rowidList(matches.map(r => r.rowid)), ...(current?.params ?? [])) as (Omit<VecDocumentMatch, "distance"> & { model: string; fingerprint: string })[];
     const best = new Map<string, VecDocumentMatch>();
+    let foreign = 0;
     for (const row of rows) {
       // Checked here rather than in the statement: an extra predicate next to a
       // wide metadata filter changes the join order and slows the lookup several-fold.
-      if (identity && (row.model !== identity.model || row.fingerprint !== identity.fingerprint)) continue;
+      if (identity && (row.model !== identity.model || row.fingerprint !== identity.fingerprint)) {
+        foreign++;
+        continue;
+      }
       const distance = distanceByRowid.get(row.rowid) ?? 1;
       const existing = best.get(row.filepath);
       if (!existing || distance < existing.distance) best.set(row.filepath, { ...row, distance });
     }
-    return Array.from(best.values()).sort((a, b) => a.distance - b.distance);
+    return { documents: Array.from(best.values()).sort((a, b) => a.distance - b.distance), foreign };
   };
 }
 
@@ -6171,6 +6220,12 @@ function vecDocumentResolver(
  * per requested document. Chunks of one long document can still fill every
  * slot, so while the matches collapse into fewer than `limit` documents and
  * the target holds rows beyond them, k doubles, up to sqlite-vec's cap.
+ *
+ * Rows of another embedding build take slots too and are dropped after the
+ * lookup. When that leaves fewer than `limit` documents with the window full,
+ * the scan repeats restricted to the current build's rows, which no stale row
+ * can crowd out. That restriction reads every row of the target, so it is
+ * the fallback rather than the default.
  */
 function nearestVecDocuments(
   scan: ReturnType<typeof knnVecScanner>,
@@ -6178,13 +6233,20 @@ function nearestVecDocuments(
   queryVec: Float32Array,
   limit: number,
   target: VecScanTarget,
+  currentBuildScan?: () => ReturnType<typeof knnVecScanner>,
 ): VecDocumentMatch[] {
-  for (let k = limit * 3; ; k *= 2) {
-    const vecK = Math.max(1, Math.min(SQLITE_VEC_MAX_K, k));
-    const matches = scan(queryVec, vecK, target);
-    const documents = resolve(matches);
-    if (documents.length >= limit || matches.length < vecK || vecK === SQLITE_VEC_MAX_K) return documents;
-  }
+  const collect = (scanner: ReturnType<typeof knnVecScanner>) => {
+    for (let k = limit * 3; ; k *= 2) {
+      const vecK = Math.max(1, Math.min(SQLITE_VEC_MAX_K, k));
+      const matches = scanner(queryVec, vecK, target);
+      const { documents, foreign } = resolve(matches);
+      const windowFull = matches.length >= vecK;
+      if (documents.length >= limit || !windowFull || vecK === SQLITE_VEC_MAX_K) return { documents, windowFull, foreign };
+    }
+  };
+  const first = collect(scan);
+  if (first.documents.length >= limit || !first.windowFull || first.foreign === 0 || !currentBuildScan) return first.documents;
+  return collect(currentBuildScan()).documents;
 }
 
 function queryProviderIdentityMaterial(provider: EmbeddingProvider): string {
@@ -6319,8 +6381,11 @@ export async function searchVec(
   const scanned = collectionIds && eligible ? collectionIds.filter(id => eligible.has(id)) : collectionIds;
   const scanTargets: VecScanTarget[] = scanned ? scanned.map(collectionId => ({ collectionId })) : eligible?.size === 0 ? [] : [{}];
   if (scanTargets.length === 0) return [];
+  const buildIdentity = { model, fingerprint: activeFingerprint };
   const scan = knnVecScanner(db, collectionIds !== undefined, filter);
-  const resolve = vecDocumentResolver(db, filter, { model, fingerprint: activeFingerprint });
+  const resolve = vecDocumentResolver(db, filter, buildIdentity);
+  let currentBuildScanner: ReturnType<typeof knnVecScanner> | undefined;
+  const currentBuildScan = () => currentBuildScanner ??= currentBuildKnnScanner(db, collectionIds !== undefined, filter, buildIdentity);
   const queryVec = new Float32Array(embedding);
   // Bodies are capped at BODY_CAP_CHARS, as in searchFTS, so a large document cannot
   // put its whole text on the heap for each result.
@@ -6330,7 +6395,7 @@ export async function searchVec(
   // merging them by distance gives the scope's exact nearest `limit`. Ties go
   // to the smaller filepath, as in searchFTS.
   return scanTargets
-    .flatMap(target => nearestVecDocuments(scan, resolve, queryVec, limit, target))
+    .flatMap(target => nearestVecDocuments(scan, resolve, queryVec, limit, target, currentBuildScan))
     .sort((a, b) => a.distance - b.distance || compareFilepaths(a, b))
     .slice(0, limit)
     .flatMap((row): SearchResult[] => {
@@ -6494,8 +6559,12 @@ export const VECTOR_COPY_BATCH_ROWS = 1000;
  * Give every active (hash, collection) pair whose chunks are embedded a row
  * in that collection's partition, copied from any partition that holds the
  * chunk, so a hash that gains a collection is searchable there without
- * another model call. A chunk no partition holds is queued for embedding by
- * deleting its hash's rows, which the pending detector then picks up.
+ * another model call. The copy only adds rows from bytes already stored, so
+ * it needs no build lease. A chunk no partition holds is counted in `queued`
+ * and left as it is: its metadata stays, the pending detector sees it as
+ * missing a vector, and the next embed recreates just that chunk (upstream
+ * deletes the whole hash's rows here, which re-embeds every chunk of the
+ * document and deletes metadata without a lease).
  *
  * Rows commit in batches of VECTOR_COPY_BATCH_ROWS so a collection that gains
  * thousands of embedded hashes does not hold the write lock for the whole
@@ -6510,33 +6579,23 @@ export function copyVectorsToNewCollections(db: Database, collection?: string): 
     if (missing.length === 0) return { copied: 0, queued: 0 };
     const writer = layout.kind === "partitioned" ? new PartitionWriter(db) : null;
     const storedVector = writer ? storedEmbeddingLookup(db) : null;
-    const deleteChunks = db.prepare(`DELETE FROM content_vectors WHERE hash = ?`);
-    const queued = new Set<string>();
+    const vectorless = new Set<string>();
     let copied = 0;
     const copyBatch = (rows: MissingPartitionRow[]) => {
-      const queuedNow: string[] = [];
       for (const row of rows) {
-        if (queued.has(row.hash)) continue;
         const vector = storedVector?.(row.hash, row.seq);
         if (!vector || !writer) {
-          queued.add(row.hash);
-          queuedNow.push(row.hash);
+          vectorless.add(row.hash);
           continue;
         }
         if (writer.writeToCollection(row.hash, row.seq, row.collection, vector)) copied++;
-      }
-      // Deleting by hash also removes rows an earlier batch already committed
-      // for it; the run-level set keeps a later batch from copying it again.
-      for (const hash of queuedNow) {
-        deletePartitionRowsOfHash(db, hash);
-        deleteChunks.run(hash);
       }
     };
     for (let start = 0; start < missing.length; start += VECTOR_COPY_BATCH_ROWS) {
       const batch = missing.slice(start, start + VECTOR_COPY_BATCH_ROWS);
       db.transaction(() => copyBatch(batch)).immediate();
     }
-    return { copied, queued: queued.size };
+    return { copied, queued: vectorless.size };
   });
 }
 

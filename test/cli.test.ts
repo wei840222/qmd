@@ -1763,7 +1763,10 @@ describe("orphaned embedding vectors (#768)", () => {
       WHERE EXISTS (SELECT 1 FROM documents d WHERE d.hash = cv.hash AND d.active = 1)
     `).get() as { c: number }).c;
     db.close();
-    expect(vectorlessLiveChunks).toBe(0);
+    // The chunk of a live document that has no vector keeps its metadata: the
+    // next embed recreates that chunk, and deleting it here, without a build
+    // lease, would also discard what the rest of the document still holds.
+    expect(vectorlessLiveChunks).toBe(1);
   });
 
   test("cleanup --dry-run reports what would be removed without deleting", async () => {
@@ -1784,7 +1787,7 @@ describe("orphaned embedding vectors (#768)", () => {
     const cache = (db.prepare(`SELECT COUNT(*) as c FROM llm_cache`).get() as { c: number }).c;
     const inactive = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE active = 0`).get() as { c: number }).c;
     db.close();
-    expect(vectors).toBe(3);
+    expect(vectors).toBe(4);
     expect(cache).toBe(2);
     expect(inactive).toBe(1);
   });

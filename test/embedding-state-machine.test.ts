@@ -623,6 +623,51 @@ describe("embedding identity state machine", () => {
     }
   });
 
+  test("vector search still fills its limit when closer rows of an older build fill even the widest scan window", async () => {
+    const store = await createTempStore();
+    const model = "remote-search-model";
+    const provider = new OpenAIEmbeddingProvider({
+      apiKey: "test-only-key",
+      model,
+      dimension: 3,
+      fetch: async () => { throw new Error("Precomputed searches must not call the provider"); },
+    });
+    const activeIdentity = remoteEmbeddingIdentity(provider);
+    const now = new Date(0).toISOString();
+    try {
+      const lease = beginEmbeddingBuild(store.db, activeIdentity, {
+        ownerId: "search-writer",
+        now: Date.now(),
+        leaseMs: 60_000,
+        allowDestructiveRebuild: true,
+      });
+      store.db.transaction(() => {
+        // sqlite-vec caps one scan at 4096 rows; more closer stale rows than that
+        // leave no slot for the current build however far the window doubles.
+        for (let index = 0; index < 4100; index += 1) {
+          const hash = `stale-${index}`;
+          store.insertContent(hash, "stale body", now);
+          store.insertDocument("docs", `stale-${index}.md`, `Stale ${index}`, hash, now, now);
+          insertCorruptEmbedding(store, hash, new Float32Array([1, 0, 0]), model, "stale-full-fingerprint", now);
+        }
+        store.insertContent("active-hash", "active body", now);
+        store.insertDocument("docs", "active.md", "Active", "active-hash", now, now);
+        insertEmbedding(
+          store.db, "active-hash", 0, 0, new Float32Array([0.7, 0.7, 0]), model, now, 1,
+          activeIdentity.fingerprint, lease,
+        );
+      })();
+      completeEmbeddingBuild(store.db, lease);
+
+      for (const scope of ["docs", undefined]) {
+        const results = await searchVec(store.db, "query", model, 1, scope, undefined, [1, 0, 0], provider);
+        expect(results.map(result => result.displayPath)).toEqual(["docs/active.md"]);
+      }
+    } finally {
+      store.close();
+    }
+  });
+
   test("vector search applies the full fingerprint before global KNN truncation", async () => {
     const store = await createTempStore();
     const model = "remote-search-model";

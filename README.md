@@ -612,12 +612,15 @@ and rebuilds vectors as a user-requested operation; lexical content is retained.
 Vectors are stored in one index partitioned by collection, so a scoped query scans
 only that collection's vectors. An index written by an older build keeps its vectors
 in a single `vectors_vec` table; the first command that opens it converts it in
-place. The conversion copies every stored vector unchanged, sends no request to any
-provider, never re-embeds, and leaves the embedding identity and chunk metadata
-alone. It prints its progress, resumes if interrupted, and drops the old table only
-after the copy is verified, then runs a `VACUUM` that can take minutes on a large
-index. Without sqlite-vec loaded the conversion is deferred and keyword search keeps
-working.
+place. The conversion copies every vector that belongs to a document still in the
+index unchanged, sends no request to any provider, never re-embeds, and leaves the
+embedding identity alone. It does not carry over a vector that no document refers
+to any more, and it drops chunk metadata that has no vector so the next
+`qmd embed` recreates it (`qmd update` and `qmd cleanup` remove the same rows). It
+prints its progress, resumes if interrupted, and drops the old table only after a
+verification pass, then runs a `VACUUM` that can take minutes on a large index. Do
+not run an older build against the index while it converts. Without sqlite-vec
+loaded the conversion is deferred and keyword search keeps working.
 
 An older build cannot read the converted index, and going back means a full paid
 `qmd embed --force`. Back up the index before the first command after upgrading:

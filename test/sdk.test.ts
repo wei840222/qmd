@@ -1823,6 +1823,40 @@ describe("embed", () => {
     }
   });
 
+  test("store.embed sends only the chunk that lost its vector, not the whole document", async () => {
+    const bigDir = join(testDir, `vector-gap-${Date.now()}`);
+    await mkdir(bigDir, { recursive: true });
+    // Long enough to split into several chunks.
+    await writeFile(join(bigDir, "long.md"), `# Long\n\n${"A sentence that fills the chunk window. ".repeat(500)}\n`);
+    const store = await createStore({
+      dbPath: freshDbPath(),
+      config: { collections: { long: { path: bigDir, pattern: "**/*.md" } } },
+    });
+    store.internal.embeddingProvider = createFakeEmbedProvider();
+
+    try {
+      await store.update();
+      await store.embed();
+      const chunks = store.internal.db.prepare(`SELECT seq FROM content_vectors ORDER BY seq`).all() as { seq: number }[];
+      expect(chunks.length).toBeGreaterThanOrEqual(3);
+      const middle = chunks[1]!.seq;
+      const middleRowids = (store.internal.db.prepare(`SELECT id FROM ${VEC_ROWS_TABLE} WHERE seq = ?`).all(middle) as { id: number }[]).map(row => row.id);
+      expect(middleRowids.length).toBeGreaterThan(0);
+      deletePartitionRows(store.internal.db, middleRowids);
+
+      const repairProvider = createFakeEmbedProvider();
+      store.internal.embeddingProvider = repairProvider;
+      await store.update();
+      const repaired = await store.embed();
+
+      expect(repaired.chunksEmbedded).toBe(1);
+      expect(repairProvider.embedBatchCalls.flat()).toHaveLength(1);
+      expect(store.internal.db.prepare(`SELECT COUNT(DISTINCT seq) AS n FROM ${VEC_ROWS_TABLE}`).get()).toEqual({ n: chunks.length });
+    } finally {
+      await store.close();
+    }
+  });
+
   test("store.embed rejects invalid batch limits", async () => {
     const store = await createStore({
       dbPath: freshDbPath(),

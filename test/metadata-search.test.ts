@@ -29,6 +29,7 @@ import { remoteEmbeddingIdentity } from "../src/embedding/remote-embedding.js";
 import type { EmbeddingProvider } from "../src/embedding/provider.js";
 import { parseMetadataFilter, type MetadataFilter } from "../src/metadata-filter.js";
 import type { Database, SQLiteValue } from "../src/db.js";
+import { allocateCollectionId, upsertPartitionVector } from "../src/vec-layout.js";
 
 let testDir: string;
 let store: Store;
@@ -456,6 +457,32 @@ describe("searchVec with metadata filter", () => {
     }
     expect(bound).toEqual([]);
   });
+
+  test("a filtered search still fills its limit when closer eligible rows of an older build fill the widest scan", async () => {
+    const fixture = beginFixture(3);
+    const now = new Date().toISOString();
+    store.db.transaction(() => {
+      // More closer stale rows than one scan can return (4096), all eligible.
+      for (let i = 0; i < 4100; i++) {
+        const hash = `stale-${i}`;
+        insertContent(store.db, hash, `# Stale ${i}`, now);
+        const documentId = insertDocument(store.db, "book", `stale-${i}.md`, "Stale", hash, now, now);
+        replaceDocumentMetadata(store.db, documentId, { metadata: { eligible: true }, extractionVersion: METADATA_EXTRACTION_VERSION });
+        store.db.prepare(`
+          INSERT INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
+          VALUES (?, 0, 0, ?, 'older-build-fingerprint', 1, ?)
+        `).run(hash, model, now);
+        upsertPartitionVector(store.db, hash, 0, allocateCollectionId(store.db, "book"), new Float32Array([1, 0, 0]));
+      }
+    })();
+    await insertEmbeddedDoc("book", "current.md", "# Current", [0.7, 0.7, 0], { eligible: true }, fixture);
+    completeEmbeddingBuild(store.db, fixture.lease);
+
+    for (const scope of ["book", undefined]) {
+      const results = await searchVec(store.db, "q", model, 1, scope, undefined, queryEmbedding, provider, eligibleOnly);
+      expect(results.map(r => r.displayPath)).toEqual(["book/current.md"]);
+    }
+  }, 120_000);
 
   test("shared content hash within one collection returns only the matching document path", async () => {
     const fixture = beginFixture(3);

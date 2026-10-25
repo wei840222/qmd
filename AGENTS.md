@@ -177,7 +177,7 @@ pnpm run measure:cjk    # Measure CJK rebuild latency, DB payload size, and reca
 - Rerank API: a `rerank_api_url` ending in `/rerank` posts `{model, query, documents}` and reads Cohere-style `results[].{index, relevance_score}`; one ending in `/chat/completions` scores with an LLM. Voyage's own `/v1/rerank` answers with `data`, not `results`, so reach it through a Cohere-shaped gateway or proxy.
 - `RemoteLLM` has no circuit breaker: a failed expansion or rerank request rejects, and the next request tries the endpoint again, so a recovered backend works on a long-running client such as `qmd mcp --http`. When Jev is the rerank fallback, `Hybrid` skips a failed rerank API for a cooldown (60 seconds by default, `rerankCooldownMs` on `Hybrid`) so an outage does not make every query wait for the request timeout; without Jev there is nothing to fall back to, so every request tries the API.
 - Rerank scores are cached under the model that produced them (the result's `model`), and results map back to chunks by `index`, not filename. When a fallback answers while other chunks came from the preferred model's cache, every chunk is rescored in one call so a ranking never mixes two models' scores.
-- Vectors live in one vec0 table partitioned by collection id (`vectors_by_collection`), one row per chunk and collection. `vector_rows` maps each rowid to `(hash, seq, collection_id)` and `vector_collection_ids` maps names to ids. `src/vec-layout.ts` is the only place that spells these table names; `src/store-migrations.ts` owns the versioned `PRAGMA user_version` steps, including the one-time conversion from the legacy `vectors_vec` table. `qmd embed` and `qmd update` copy an already-embedded chunk into a collection that gains it instead of embedding it again; `generateEmbeddings` does that only while it holds the embedding build lease.
+- Vectors live in one vec0 table partitioned by collection id (`vectors_by_collection`), one row per chunk and collection. `vector_rows` maps each rowid to `(hash, seq, collection_id)` and `vector_collection_ids` maps names to ids. `src/vec-layout.ts` is the only place that spells these table names; `src/store-migrations.ts` owns the versioned `PRAGMA user_version` steps, including the one-time conversion from the legacy `vectors_vec` table. `qmd embed` and `qmd update` copy an already-embedded chunk into a collection that gains it instead of embedding it again; The copy only adds rows from bytes already stored, so it needs no lease and deletes nothing: a chunk with no vector anywhere keeps its metadata, is counted as pending, and `qmd embed` recreates just that chunk.
 - Reciprocal Rank Fusion (RRF) for combining results
 - Smart chunking: 900 tokens/chunk with 15% overlap, prefers markdown headings as boundaries
 - AST-aware chunking: use `--chunk-strategy auto` to chunk code files (.ts/.js/.py/.go/.rs) at function/class/import boundaries via tree-sitter. Default is `regex` (existing behavior). Markdown and unknown file types always use regex chunking.
@@ -216,13 +216,18 @@ or automatic deletion or recomputation of vectors. Old local databases remain
 lexically readable; moving them to a remote embedding model requires an explicit
 manual remote rebuild.
 
-The one automatic vector change is the lossless layout upgrade
-(`src/store-migrations.ts`): opening a store converts a legacy `vectors_vec`
-table into the per-collection layout in place. It copies each stored vector byte
-for byte, makes no remote request, never re-embeds, never touches the embedding
-identity or `content_vectors`, and drops the legacy table only in the transaction
-that stamps the new schema version after the copy is verified. Keep it that way:
-anything that discards or recomputes a vector still needs an explicit command.
+The one automatic vector change is the layout upgrade (`src/store-migrations.ts`):
+opening a store converts a legacy `vectors_vec` table into the per-collection
+layout in place. It copies, byte for byte, every vector whose chunk metadata
+belongs to an active document, makes no remote request, never re-embeds, and
+never touches `embedding_index_state`. It does not carry over what no search can
+reach (a vector with no chunk metadata or no active document), and it deletes
+chunk metadata that has no vector so the next embed recreates it. `qmd update`
+and `qmd cleanup` already remove the same rows. The legacy table is dropped only
+in the transaction that stamps the new schema version, after a verification pass
+that copies any row the walk missed. Do not run an older build against the index
+while it converts. Anything beyond this that discards or recomputes a vector
+still needs an explicit command.
 `qmd pull` is retired and must exit nonzero without downloads. Tests and package
 smoke use mocks or loopback HTTP, with no paid API or local-model setup.
 
