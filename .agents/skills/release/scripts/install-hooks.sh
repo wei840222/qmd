@@ -1,38 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Install git hooks for release validation.
-# Idempotent — safe to run multiple times.
+# Explicit hook installation for normal checkouts and linked worktrees.
+# Resolve core.hooksPath through Git; preserve an existing hook before replacing it.
 
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-if [[ -z "$REPO_ROOT" ]]; then
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+if [[ -z "$repo_root" ]]; then
   echo "Error: not in a git repository" >&2
   exit 1
 fi
+cd "$repo_root"
 
-HOOKS_DIR="$REPO_ROOT/.git/hooks"
-SOURCE="$REPO_ROOT/scripts/pre-push"
+hooks_dir=$(git rev-parse --path-format=absolute --git-path hooks)
+hook_source="$repo_root/scripts/pre-push"
+hook_target="$hooks_dir/pre-push"
 
-if [[ ! -f "$SOURCE" ]]; then
-  echo "Error: scripts/pre-push not found at $SOURCE" >&2
+if [[ ! -f "$hook_source" ]]; then
+  echo "Error: scripts/pre-push not found at $hook_source" >&2
   exit 1
 fi
 
-# Install pre-push hook
-if [[ -L "$HOOKS_DIR/pre-push" ]] && [[ "$(readlink "$HOOKS_DIR/pre-push")" == "$SOURCE" ]]; then
-  echo "pre-push hook: already installed (symlink)"
-elif [[ -f "$HOOKS_DIR/pre-push" ]]; then
-  # Existing hook that isn't our symlink — back it up
-  BACKUP="$HOOKS_DIR/pre-push.backup.$(date +%s)"
-  echo "pre-push hook: backing up existing hook to $(basename "$BACKUP")"
-  mv "$HOOKS_DIR/pre-push" "$BACKUP"
-  ln -sf "$SOURCE" "$HOOKS_DIR/pre-push"
-  echo "pre-push hook: installed (symlink → scripts/pre-push)"
-else
-  ln -sf "$SOURCE" "$HOOKS_DIR/pre-push"
-  echo "pre-push hook: installed (symlink → scripts/pre-push)"
+mkdir -p "$hooks_dir"
+if [[ -f "$hook_target" && ! -L "$hook_target" && -x "$hook_target" ]] && cmp -s "$hook_source" "$hook_target"; then
+  echo "pre-push hook: already installed"
+  exit 0
 fi
 
-# Ensure the source is executable
-chmod +x "$SOURCE"
-echo "Done."
+if [[ -e "$hook_target" || -L "$hook_target" ]]; then
+  hook_backup="$hook_target.backup.$(date +%s).$$"
+  mv "$hook_target" "$hook_backup"
+  echo "pre-push hook: backed up existing hook to $hook_backup"
+fi
+
+# Copy rather than link: shared hooks must survive removal of this worktree.
+cp "$hook_source" "$hook_target"
+chmod 755 "$hook_target"
+echo "pre-push hook: installed at $hook_target"

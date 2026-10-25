@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -155,7 +156,7 @@ describe(".agents/skills/release/scripts/release-context.sh (#796)", () => {
     expect(result.stdout).toMatch(/previous release style reference/);
   });
 
-  test("silently installs the pre-push hook", () => {
+  test("gathers context without installing a hook", () => {
     const root = makeReleaseFixture();
     const hook = join(root, ".git", "hooks", "pre-push");
     expect(existsSync(hook)).toBe(false);
@@ -163,7 +164,55 @@ describe(".agents/skills/release/scripts/release-context.sh (#796)", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).not.toMatch(/pre-push hook/);
     expect(result.stdout).not.toMatch(/^Done\.$/m);
-    expect(existsSync(hook)).toBe(true);
+    expect(existsSync(hook)).toBe(false);
+  });
+
+  test("preserves an existing hook while gathering context", () => {
+    const root = makeReleaseFixture();
+    const hookDir = join(root, ".git", "hooks");
+    const hook = join(hookDir, "pre-push");
+    const original = "#!/bin/sh\n# existing user hook\nexit 0\n";
+    writeFileSync(hook, original);
+    const before = readdirSync(hookDir);
+    const result = runContext(root, "2.6.4");
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(hook, "utf8")).toBe(original);
+    expect(readdirSync(hookDir)).toEqual(before);
+  });
+
+  test("installs the release hook from a linked worktree", () => {
+    const root = makeReleaseFixture();
+    const linked = mkdtempSync(join(tmpdir(), "qmd-release-worktree-"));
+    fixtures.push(linked);
+    git(root, ["worktree", "add", "-b", "release-test", linked, "HEAD"]);
+    const result = spawnSync("bash", [join(linked, ".agents", "skills", "release", "scripts", "install-hooks.sh")], {
+      cwd: linked,
+      encoding: "utf8",
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const hookDir = git(linked, ["rev-parse", "--path-format=absolute", "--git-path", "hooks"]).stdout.trim();
+    expect(readFileSync(join(hookDir, "pre-push"), "utf8")).toBe(readFileSync(prePushSrc, "utf8"));
+  });
+
+  test("honors core.hooksPath, preserves its existing hook, and is idempotent", () => {
+    const root = makeReleaseFixture();
+    const hookDir = join(root, "custom hooks");
+    mkdirSync(hookDir);
+    git(root, ["config", "core.hooksPath", hookDir]);
+    const original = "#!/bin/sh\n# custom hook\nexit 0\n";
+    writeFileSync(join(hookDir, "pre-push"), original);
+    for (let i = 0; i < 2; i++) {
+      const result = spawnSync("bash", [join(root, ".agents", "skills", "release", "scripts", "install-hooks.sh")], {
+        cwd: root,
+        encoding: "utf8",
+      });
+      expect(result.status, result.stderr).toBe(0);
+    }
+    expect(readFileSync(join(hookDir, "pre-push"), "utf8")).toBe(readFileSync(prePushSrc, "utf8"));
+    const backups = readdirSync(hookDir).filter(name => name.startsWith("pre-push.backup."));
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(join(hookDir, backups[0]!), "utf8")).toBe(original);
+    expect(existsSync(join(root, ".git", "hooks", "pre-push"))).toBe(false);
   });
 
   test("shows a dirty working tree", () => {

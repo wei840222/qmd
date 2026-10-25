@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Gather release context for the /release skill (.agents/skills/release/SKILL.md step 1).
-# Silently installs git hooks, then prints version info, working-tree status,
+# Read-only: prints version info, working-tree status,
 # commits and files since the last release tag, the current [Unreleased]
 # changelog block, and the previous release entry for style reference.
 #
@@ -10,19 +10,12 @@ set -euo pipefail
 
 VERSION_ARG="${1:?Usage: release-context.sh [patch|minor|major|<version>]}"
 
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
 if [[ -z "$REPO_ROOT" ]]; then
   echo "Error: not in a git repository" >&2
   exit 1
 fi
 cd "$REPO_ROOT"
-
-# Hooks are installed silently — the skill documents this as the auto-install path.
-if [[ -x "$SCRIPT_DIR/install-hooks.sh" ]]; then
-  "$SCRIPT_DIR/install-hooks.sh" >/dev/null
-fi
 
 bump_version() {
   local current="$1" type="$2"

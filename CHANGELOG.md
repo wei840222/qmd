@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Update the release skill for the personal npm package `@wei840222/qmd`;
+  make release context read-only and hook installation work with linked worktrees
+  and custom hooks directories.
 - Refresh the vendor TypeSafe skill from its tracked upstream with Skills CLI.
 - Organize README around human architecture/usage and AGENTS around coding
   workflows/invariants. Align them and example configuration with writable-only
