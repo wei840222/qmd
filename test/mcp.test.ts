@@ -12,6 +12,7 @@ import { readFileSync, unlinkSync } from "node:fs";
 import { mkdtemp, writeFile, readdir, unlink, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { request as httpRequest } from "node:http";
 import YAML from "yaml";
 import type { CollectionConfig } from "../src/collections.js";
 import { setConfigIndexName } from "../src/collections.js";
@@ -919,6 +920,64 @@ describe("MCP HTTP Transport", () => {
     expect(typeof body.uptime).toBe("number");
   });
 
+  test.each(["/mcp", "/query", "/search", "/metadata"])("%s rejects bodies over 1 MiB and stays healthy", async (path) => {
+    const res = await fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ padding: "x".repeat(1024 * 1024) }),
+    });
+    expect(res.status).toBe(413);
+    await res.text();
+    expect((await fetch(`${baseUrl}/health`)).status).toBe(200);
+  });
+
+  test.each(["/mcp", "/query", "/search", "/metadata"])("%s bounds chunked bodies without Content-Length", async (path) => {
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = httpRequest(`${baseUrl}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }, res => {
+        res.resume();
+        res.on("end", () => resolve(res.statusCode!));
+      });
+      req.on("error", reject);
+      req.setTimeout(5000, () => req.destroy(new Error("body limit response timed out")));
+      req.write('{"padding":"');
+      req.write("x".repeat(600_000));
+      req.end("x".repeat(600_000) + '"}');
+    });
+    expect(status).toBe(413);
+    expect((await fetch(`${baseUrl}/health`)).status).toBe(200);
+  });
+
+  test("body limit counts UTF-8 bytes rather than characters", async () => {
+    const body = JSON.stringify({ padding: "é".repeat(600_000) });
+    expect(body.length).toBeLessThan(1024 * 1024);
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+    expect(res.status).toBe(413);
+    await res.text();
+  });
+
+  test("rejects an oversized Content-Length before the client sends its body", async () => {
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = httpRequest(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": 1024 * 1024 + 1 },
+      }, res => {
+        res.resume();
+        res.on("end", () => { resolve(res.statusCode!); req.destroy(); });
+      });
+      req.on("error", reject);
+      req.setTimeout(5000, () => req.destroy(new Error("declared body limit response timed out")));
+      req.flushHeaders();
+    });
+    expect(status).toBe(413);
+  });
+
   test("GET /other returns 404", async () => {
     const res = await fetch(`${baseUrl}/other`);
     expect(res.status).toBe(404);
@@ -1362,6 +1421,29 @@ describe("MCP HTTP Transport — 2026-07-28 protocol", () => {
     expect(toolNames).toEqual(["query", "get", "multi_get", "status", "metadata"]);
     const serverInfo = json.result._meta?.["io.modelcontextprotocol/serverInfo"];
     expect(serverInfo?.name).toBe("qmd");
+  });
+
+  test.each([
+    ["array elements", Array(10_001).fill(null)],
+    ["object members", Object.fromEntries(Array.from({ length: 10_001 }, (_, i) => [String(i), null]))],
+  ])("tools/call bounds %s before validation and accepts the next normal call", async (_label, padding) => {
+    const headers = {
+      "MCP-Protocol-Version": MCP_2026,
+      "Mcp-Method": "tools/call",
+      "Mcp-Name": "status",
+    };
+    const call = (args: Record<string, unknown>) => postMcp({
+      jsonrpc: "2.0", id: 30, method: "tools/call",
+      params: { name: "status", arguments: args, _meta: mcp2026Meta },
+    }, headers);
+    const rejected = await call({ padding });
+    expect(rejected.status).toBe(200);
+    expect(rejected.json.result.isError).toBe(true);
+    expect(JSON.stringify(rejected.json.result)).toContain("maximum of 10000 elements");
+    const normal = await call({});
+    expect(normal.status).toBe(200);
+    expect(normal.json.error).toBeUndefined();
+    expect(normal.json.result.isError).not.toBe(true);
   });
 
   test("POST without Mcp-Method is HeaderMismatch (-32020)", async () => {

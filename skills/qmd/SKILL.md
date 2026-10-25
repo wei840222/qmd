@@ -2,7 +2,7 @@
 name: qmd
 description: Search local markdown knowledge bases, notes, docs, and wikis with QMD. Use when users ask to find notes, retrieve documents, inspect a wiki, answer from indexed markdown, or set up QMD access.
 license: MIT
-compatibility: Requires Node.js >=24.21.0 and qmd CLI or MCP server. Model-backed operations require explicitly configured remote APIs.
+compatibility: Requires Node.js >=26.0.0 and qmd CLI or MCP server. Model-backed operations require explicitly configured remote APIs.
 metadata:
   author: wei840222
   version: "2026.10.19"

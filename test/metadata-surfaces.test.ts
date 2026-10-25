@@ -457,7 +457,7 @@ describe("MCP and HTTP metadata filter", () => {
     expect(unsafeLimit.json.error ?? unsafeLimit.json.result?.isError).toBeTruthy();
   });
 
-  test("MCP metadata tool keeps the filter line over an empty result and reports the binding budget", async () => {
+  test("MCP metadata tool keeps the filter line over an empty result and rejects oversized tool inputs", async () => {
     // Every seeded document declares a status, so this filter admits none.
     const empty = await callTool("metadata", { filter: { field: "status", operator: "exists", value: false } });
     expect(empty.json.result.isError).toBeFalsy();
@@ -468,7 +468,9 @@ describe("MCP and HTTP metadata filter", () => {
 
     const overBudget = await callTool("metadata", buildWidePredicates());
     expect(overBudget.json.result.isError).toBe(true);
-    expect(overBudget.json.result.content[0].text).toMatch(/^Error: filter and match together bind \d+ SQL parameters, over the budget of 30000\./);
+    // MCP rejects this payload before SQL compilation; SDK and REST below still
+    // exercise the independent SQL binding budget with the same predicates.
+    expect(overBudget.json.result.content[0].text).toBe("Invalid arguments for tool metadata: arguments contain more than the maximum of 10000 elements");
   });
 
   test("MCP metadata tool rejects invalid filters and matches", async () => {

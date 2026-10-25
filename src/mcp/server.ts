@@ -42,6 +42,11 @@ import { enableProductionMode, type ExpansionErrorEvent } from "../store.js";
 import type { ExpansionDecision } from "../search/query-expansion.js";
 import { checkRequestOrigin, resolveOriginGuard } from "./origin-guard.js";
 
+const MAX_HTTP_REQUEST_BODY_BYTES = 1024 * 1024;
+const MAX_TOOL_INPUT_ELEMENTS = 10_000;
+
+class RequestBodyTooLargeError extends Error {}
+
 // =============================================================================
 // Types for structured content
 // =============================================================================
@@ -246,6 +251,7 @@ async function createMcpServer(store: QMDStore, inflight?: InflightGate): Promis
     { name: "qmd", version: getPackageVersion() },
     {
       instructions: await getInstructions(store),
+      maxToolInputElements: MAX_TOOL_INPUT_ELEMENTS,
       // tools/list is static for the process lifetime; resources/read stays
       // uncacheable because the index can change under us.
       cacheHints: {
@@ -1083,7 +1089,7 @@ export async function startMcpHttpServer(
   // 2025-era traffic statelessly by default (`legacy: "stateless"`).
   const mcpHandler = createMcpHandler(
     () => createMcpServer(store),
-    { responseMode: "json" },
+    { responseMode: "json", maxRequestBodySize: MAX_HTTP_REQUEST_BODY_BYTES },
   );
 
   const startTime = Date.now();
@@ -1142,8 +1148,19 @@ export async function startMcpHttpServer(
 
   // Helper to collect request body
   async function collectBody(req: IncomingMessage): Promise<string> {
+    if (Number(req.headers["content-length"]) > MAX_HTTP_REQUEST_BODY_BYTES) {
+      throw new RequestBodyTooLargeError();
+    }
     const chunks: Buffer[] = [];
-    for await (const chunk of req) chunks.push(chunk as Buffer);
+    let bytes = 0;
+    // Keep the socket alive long enough to send 413 when streaming exceeds the
+    // limit. The default async iterator destroys it when the loop throws.
+    for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+      const buffer = chunk as Buffer;
+      bytes += buffer.length;
+      if (bytes > MAX_HTTP_REQUEST_BODY_BYTES) throw new RequestBodyTooLargeError();
+      chunks.push(buffer);
+    }
     return Buffer.concat(chunks).toString();
   }
 
@@ -1413,6 +1430,16 @@ export async function startMcpHttpServer(
       nodeRes.writeHead(404);
       nodeRes.end("Not Found");
     } catch (err) {
+      if (err instanceof RequestBodyTooLargeError) {
+        nodeReq.resume();
+        nodeRes.writeHead(413, { "Content-Type": "application/json", Connection: "close" });
+        nodeRes.end(JSON.stringify({
+          jsonrpc: "2.0",
+          error: { code: -32000, message: "Request body exceeds the 1 MiB limit" },
+          id: null,
+        }));
+        return;
+      }
       console.error("HTTP handler error:", err);
       nodeRes.writeHead(500);
       nodeRes.end("Internal Server Error");

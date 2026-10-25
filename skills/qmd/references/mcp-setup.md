@@ -3,7 +3,7 @@
 ## Install and prepare collections
 
 Perform installation, indexing, or server startup only when the user requests
-setup. Node.js >=24.21.0 is required. BM25 and document reads need no model settings:
+setup. Node.js >=26.0.0 is required. BM25 and document reads need no model settings:
 
 ```bash
 pnpm add -g @wei840222/qmd

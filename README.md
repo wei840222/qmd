@@ -102,7 +102,7 @@ for ranking details.
 
 ### System Requirements
 
-- **Node.js** >= 24.21.0
+- **Node.js** >= 26.0.0
 - **macOS**: Homebrew SQLite (for extension support)
   ```sh
   brew install sqlite
@@ -1306,6 +1306,11 @@ server after changing its installed code, model settings, or collection config.
 After editing collection/context YAML manually, first run `qmd ls` to reconcile
 those settings into SQLite; read-only MCP does not synchronize the config itself.
 Path/pattern changes still require an explicit `qmd update` to re-index files.
+
+HTTP request bodies for `/mcp`, `/query`, `/search`, and `/metadata` are limited
+to 1 MiB, including chunked uploads. Larger requests receive HTTP 413. MCP tool
+arguments allow at most 10,000 combined array elements and object members;
+calls over that limit return a tool error. Split larger requests into smaller calls.
 
 For a model-free smoke test, call the `query` tool with these arguments:
 

@@ -5,7 +5,7 @@ for human readers; keep implementation instructions and safeguards here.
 
 ## Working conventions
 
-- Use Node.js >=24.21.0 and pnpm. Do not substitute npm or Bun commands.
+- Use Node.js >=26.0.0 and pnpm. Do not substitute npm or Bun commands.
 - Inspect the current tree and nearby tests before editing. Match existing code
   and fixture conventions; keep changes within the requested scope.
 - Add user-facing changes under `## [Unreleased]` in `CHANGELOG.md` as you work.
@@ -154,6 +154,10 @@ effect of tests or documentation work.
 
 ## MCP and deployment
 
+- Keep HTTP bodies bounded to 1 MiB while reading, before parsing, including
+  chunked requests and the REST aliases. Keep the SDK's 10,000-element tool input
+  limit enabled before schema validation. Oversized uploads must receive 413
+  without destroying the socket before the response can be sent.
 - Existing indexes are opened read-only by stdio/HTTP MCP. Reconcile manual
   collection/context YAML edits through a writable CLI open before restarting;
   MCP does not sync those settings. Restart after code/model/config changes.

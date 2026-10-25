@@ -4,6 +4,12 @@
 
 ### Changed
 
+- Require Node.js 26 or newer and run CI/publishing on Node 26. Upgrade the
+  MCP server SDK, Zod, Vitest, and the Vite override to patched releases; remove
+  the obsolete audit exception for a withdrawn advisory.
+- Bound MCP/REST HTTP uploads to 1 MiB before parsing, including chunked bodies,
+  and enable the MCP SDK's 10,000-element tool input limit before validation to
+  complete its memory-exhaustion remediation. Oversized uploads return HTTP 413.
 - Update the release skill for the personal npm package `@wei840222/qmd`;
   make release context read-only and hook installation work with linked worktrees
   and custom hooks directories.

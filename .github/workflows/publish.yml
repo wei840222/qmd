@@ -19,7 +19,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26
           registry-url: https://registry.npmjs.org
           cache: pnpm
 
@@ -30,12 +30,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Tests
-        run: npx vitest run --reporter=verbose --testTimeout 60000 test/
+        run: pnpm run test:unit
         env:
           CI: true
 
       - name: Build
-        run: npm run build
+        run: pnpm run build
 
       - name: Publish
         run: npm publish --provenance --access public

@@ -13,7 +13,5 @@ overrides:
   postcss: 8.5.28
   rollup: 4.63.5
   source-map-js: 1.2.2
-  vite: 7.3.5
-audit:
-  ignore:
-    - GHSA-vfj7-8cjw-p6xm
+  vite: 7.3.7
+  zod: 4.6.6

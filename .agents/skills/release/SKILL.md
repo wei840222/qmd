@@ -19,7 +19,7 @@ accounts, force-push, or bypass failed checks.
 
 ## Prerequisites
 
-Work from the repository root. Use Node.js >=24.21.0 and pnpm from `package.json`;
+Work from the repository root. Use Node.js >=26.0.0 and pnpm from `package.json`;
 release helpers also require Bash, Git, jq, and Perl. GitHub automation additionally
 needs an available authenticated `gh` CLI; do not assume a particular agent tool.
 Read `AGENTS.md`, `package.json`, `CHANGELOG.md`, and the current release scripts.
