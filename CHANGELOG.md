@@ -4,6 +4,8 @@
 
 ### Changed
 
+- Document npm 12 installation-security checks and GitHub OIDC publisher
+  permissions in the release workflow guidance; keep pnpm build approvals scoped.
 - Consolidate query syntax into the README and bundled agent reference; remove
   the duplicate `docs/SYNTAX.md` and update CLI help. Clarify expansion versus
   model-free retrieval, typed-query validation, intent handling, and MCP payloads.

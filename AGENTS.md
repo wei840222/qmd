@@ -182,6 +182,11 @@ steps when updates are in scope, keeping package/lock/source pins, generated
 dictionary, third-party notices, and version-specific tests consistent. Never
 fetch these sources automatically at runtime, build, or install time.
 
+Follow the release skill's [npm installation security](.agents/skills/release/SKILL.md#npm-installation-security)
+and [publication routes](.agents/skills/release/SKILL.md#publication-routes) for npm
+12 consumer checks and OIDC permissions. Keep pnpm's build approvals scoped;
+npm's `allowScripts` does not replace the workspace's `allowBuilds` policy.
+
 Use `/release <version>` only when requested. Follow the
 [release skill](.agents/skills/release/SKILL.md) for checks, hooks, and cutting a
 release. It renames `[Unreleased]` at release time; keep external PR credits in

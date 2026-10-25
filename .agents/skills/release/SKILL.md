@@ -164,7 +164,41 @@ update, keep `sqlite-vec` and its platform packages aligned, update the pnpm
 lockfile, and run the relevant package/grammar checks. `pnpm outdated` is an
 optional report, not permission to expand the release.
 
+## npm installation security
+
+Development and CI use pnpm with the reviewed `allowBuilds` policy in
+`pnpm-workspace.yaml`. npm's `allowScripts` is a separate consumer policy; do not
+replace pnpm configuration with npm fields or broadly approve dependency scripts.
+
+With its security defaults, npm 12 blocks unapproved dependency lifecycle scripts
+and disallows Git and remote URL dependencies. Registry version/range dependencies
+remain the normal installation route. The published package must work from its compiled
+`dist/` files, shipped WASM grammars, and native platform packages without requiring
+consumer install-script approval. `pnpm run test:package` tests a local packed
+consumer with scripts disabled; when checking npm 12 compatibility, also install
+the exact published version by registry name in a temporary consumer with npm 12's
+security defaults, then check CLI, native Jieba, and AST/WASM grammar execution.
+Keep config and cache isolated from the real index. A Node 26 installation does
+not establish which npm major is installed: record `npm --version` for the check.
+
+If a future dependency needs an install script or a Git/URL exception, review the
+specific dependency and use the chosen package manager's scoped approval policy.
+Keep the existing script-disabled smoke check; do not resolve an installation
+failure by permitting all scripts, Git sources, or remote URLs. See the
+[npm security announcement](https://github.blog/changelog/2026-07-08-npm-install-time-security-and-gat-bypass2fa-deprecation/).
+
 ## Publication routes
+
+Use the existing GitHub OIDC route for automated publication. Verify the workflow
+has `id-token: write`, uses a supported npm CLI (at least 11.5.1), and matches the
+package's Trusted Publisher: GitHub owner `wei840222`, repository `qmd`, filename
+`publish.yml`, and the actual job environment (currently none). The existing
+workflow runs direct `npm publish`, so the publisher must allow `npm publish`;
+stage-only permission is insufficient. `OIDC permission denied for this action`
+requires checking that permission, not adding a long-lived publish token.
+Publisher/account/token administration requires the owner's interactive 2FA and
+existing authorization. Do not infer from a generic GAT deprecation notice that
+this workflow used a token. See the [Trusted Publisher documentation](https://docs.npmjs.com/trusted-publishers/).
 
 For an authorized local npm release, use pnpm and the explicit package registry.
 The following assumes the reviewed tarball and actual branch have been selected:
