@@ -4,6 +4,8 @@
 
 ### Changed
 
+- Build and typecheck with stable TypeScript 7.0.2. Keep the compiler as a
+  development dependency so QMD consumers do not need to install TypeScript.
 - Document npm 12 installation-security checks and GitHub OIDC publisher
   permissions in the release workflow guidance; keep pnpm build approvals scoped.
 - Consolidate query syntax into the README and bundled agent reference; remove

@@ -1,6 +1,6 @@
 {
   "name": "@wei840222/qmd",
-  "version": "2026.10.25",
+  "version": "2026.11.4",
   "description": "Hybrid search for markdown with local BM25 and remote embedding, expansion, and reranking APIs",
   "author": "Wan, Jiun Wei <wei840222@gmail.com>",
   "license": "MIT",
@@ -110,6 +110,7 @@
     "@oxlint/plugins": "1.85.0",
     "oxlint": "1.85.0",
     "tsx": "4.23.15",
+    "typescript": "7.0.2",
     "vitest": "4.1.12"
   },
   "overrides": {
@@ -120,8 +121,5 @@
     "source-map-js": "1.2.2",
     "vite": "7.3.7",
     "zod": "4.6.6"
-  },
-  "peerDependencies": {
-    "typescript": "^5.9.3 || ^6.0.0-0"
   }
 }
