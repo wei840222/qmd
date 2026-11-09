@@ -1802,6 +1802,7 @@ function initializeDatabase(db: Database): void {
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection, active)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(hash)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_hash_collection_active ON documents(hash, collection, active)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(path, active)`);
 
   // Cache table for LLM API calls
